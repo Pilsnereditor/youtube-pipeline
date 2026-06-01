@@ -249,7 +249,22 @@ export async function sendPuppetType(channelId, userId, text) {
   const session = activeSetupSessions.get(channelId);
   if (session && session.page) {
     try {
-      await session.page.keyboard.type(text);
+      // 1. Try direct DOM value injection first for focused inputs (bypasses Google's bot-detection event blocks)
+      const injected = await session.page.evaluate((txt) => {
+        const el = document.activeElement;
+        if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.contentEditable === 'true')) {
+          el.value = txt;
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+          return true;
+        }
+        return false;
+      }, text);
+
+      // 2. Fall back to standard keyboard typing if no input element was in active focus
+      if (!injected) {
+        await session.page.keyboard.type(text, { delay: 50 });
+      }
     } catch (e) {
       console.error(`[Puppet] Type error for channel ${channelId}:`, e);
     }

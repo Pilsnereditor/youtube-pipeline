@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Master Auto — Login</title>
+  <link rel="stylesheet" href="/index.css">
+  <style>
+    body {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      margin: 0;
+      background: var(--bg-primary);
+      overflow: hidden;
+      position: relative;
+    }
+
+    /* Ambient background glows */
+    .glow-bg {
+      position: absolute;
+      width: 500px;
+      height: 500px;
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(99, 102, 241, 0.15) 0%, transparent 70%);
+      top: -100px;
+      right: -100px;
+      z-index: 0;
+      pointer-events: none;
+    }
+
+    .glow-bg-2 {
+      position: absolute;
+      width: 600px;
+      height: 600px;
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(139, 92, 246, 0.12) 0%, transparent 70%);
+      bottom: -200px;
+      left: -200px;
+      z-index: 0;
+      pointer-events: none;
+    }
+
+    .login-container {
+      position: relative;
+      z-index: 1;
+      width: 100%;
+      max-width: 440px;
+      padding: var(--sp-lg);
+      margin: var(--sp-md);
+      background: var(--bg-card);
+      backdrop-filter: blur(25px);
+      border: var(--border-glass-l);
+      border-radius: var(--r-xl);
+      box-shadow: var(--shadow-lg), var(--shadow-glow);
+      animation: slideUp 0.6s var(--ease-out);
+    }
+
+    @keyframes slideUp {
+      from { opacity: 0; transform: translateY(30px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .logo-container {
+      text-align: center;
+      margin-bottom: var(--sp-lg);
+    }
+
+    .logo-v {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 64px;
+      height: 64px;
+      border-radius: 50%;
+      background: var(--grad-primary);
+      box-shadow: 0 0 20px rgba(99, 102, 241, 0.5);
+      margin-bottom: var(--sp-sm);
+    }
+
+    .logo-v svg {
+      width: 32px;
+      height: 32px;
+      fill: none;
+      stroke: #ffffff;
+      stroke-width: 3;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    .login-header h1 {
+      font-size: 24px;
+      font-weight: 800;
+      background: linear-gradient(135deg, #ffffff 0%, var(--text-accent) 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      margin-bottom: var(--sp-xs);
+    }
+
+    .login-header p {
+      color: var(--text-secondary);
+      font-size: 14px;
+    }
+
+    .form-group {
+      margin-bottom: var(--sp-md);
+      text-align: left;
+    }
+
+    .form-group label {
+      display: block;
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--text-secondary);
+      margin-bottom: 6px;
+    }
+
+    .input-wrapper {
+      position: relative;
+    }
+
+    .input-wrapper svg {
+      position: absolute;
+      left: 12px;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 18px;
+      height: 18px;
+      color: var(--text-muted);
+      transition: var(--t-fast);
+    }
+
+    .form-control {
+      width: 100%;
+      padding: 12px 12px 12px 40px;
+      background: var(--bg-input);
+      border: var(--border-input);
+      border-radius: var(--r-md);
+      color: var(--text-primary);
+      font-size: 14px;
+      transition: var(--t-fast);
+    }
+
+    .form-control:focus {
+      outline: none;
+      border-color: var(--accent-indigo);
+      box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.25);
+    }
+
+    .form-control:focus + svg {
+      color: var(--accent-indigo);
+    }
+
+    .form-options {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: var(--sp-lg);
+      font-size: 13px;
+      color: var(--text-secondary);
+    }
+
+    .remember-me {
+      display: flex;
+      align-items: center;
+      gap: var(--sp-xs);
+      cursor: pointer;
+    }
+
+    .remember-me input {
+      accent-color: var(--accent-indigo);
+      cursor: pointer;
+    }
+
+    .btn-login {
+      width: 100%;
+      padding: 12px;
+      background: var(--grad-primary);
+      border: none;
+      border-radius: var(--r-md);
+      color: #ffffff;
+      font-size: 15px;
+      font-weight: 600;
+      cursor: pointer;
+      box-shadow: var(--shadow-sm);
+      transition: var(--t-fast);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: var(--sp-xs);
+    }
+
+    .btn-login:hover {
+      box-shadow: 0 0 15px rgba(99, 102, 241, 0.4);
+      transform: translateY(-1px);
+    }
+
+    .btn-login:active {
+      transform: translateY(0);
+    }
+
+    .alert {
+      padding: var(--sp-sm) var(--sp-md);
+      background: rgba(248, 113, 113, 0.15);
+      border: 1px solid rgba(248, 113, 113, 0.3);
+      border-radius: var(--r-md);
+      color: var(--accent-red);
+      font-size: 13px;
+      margin-bottom: var(--sp-md);
+      display: none;
+      align-items: center;
+      gap: 8px;
+    }
+
+    /* Loading Spinner */
+    .spinner {
+      width: 18px;
+      height: 18px;
+      border: 2px solid rgba(255,255,255,0.3);
+      border-radius: 50%;
+      border-top-color: #ffffff;
+      animation: spin 0.8s linear infinite;
+      display: none;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+  </style>
+</head>
+<body>
+
+  <div class="glow-bg"></div>
+  <div class="glow-bg-2"></div>
+
+  <div class="login-container">
+    <div class="logo-container">
+      <div class="logo-v">
+        <svg viewBox="0 0 24 24">
+          <path d="M4 4.5L12 19.5L20 4.5" stroke="currentColor"/>
+        </svg>
+      </div>
+      <div class="login-header">
+        <h1>Master Auto</h1>
+        <p>YouTube Pipeline Dashboard Login</p>
+      </div>
+    </div>
+
+    <div id="errorAlert" class="alert">
+      <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="10"></circle>
+        <line x1="12" y1="8" x2="12" y2="12"></line>
+        <line x1="12" y1="16" x2="12.01" y2="16"></line>
+      </svg>
+      <span id="errorMessage">Invalid email or password.</span>
+    </div>
+
+    <form id="loginForm">
+      <div class="form-group">
+        <label for="licenseKey">License Key</label>
+        <div class="input-wrapper">
+          <input type="text" id="licenseKey" class="form-control" placeholder="xxxx-xxxx-xxxx-xxxx" required autocomplete="off">
+          <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+            <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+            <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+          </svg>
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label for="email">Email Address</label>
+        <div class="input-wrapper">
+          <input type="email" id="email" class="form-control" placeholder="name@domain.com" required autocomplete="email">
+          <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+            <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"></path>
+            <polyline points="22,6 12,13 2,6"></polyline>
+          </svg>
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label for="password">Password</label>
+        <div class="input-wrapper">
+          <input type="password" id="password" class="form-control" placeholder="••••••••" required autocomplete="current-password">
+          <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+            <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"></path>
+          </svg>
+        </div>
+      </div>
+
+      <div class="form-options">
+        <label class="remember-me">
+          <input type="checkbox" id="rememberMe"> Remember me
+        </label>
+      </div>
+
+      <button type="submit" class="btn-login" id="loginBtn">
+        <span class="spinner" id="btnSpinner"></span>
+        <span id="btnText">Sign In</span>
+      </button>
+    </form>
+  </div>
+
+  <script>
+    document.addEventListener('DOMContentLoaded', () => {
+      const loginForm = document.getElementById('loginForm');
+      const licenseKeyInput = document.getElementById('licenseKey');
+      const emailInput = document.getElementById('email');
+      const passwordInput = document.getElementById('password');
+      const rememberMeCheckbox = document.getElementById('rememberMe');
+      const errorAlert = document.getElementById('errorAlert');
+      const errorMessage = document.getElementById('errorMessage');
+      const loginBtn = document.getElementById('loginBtn');
+      const btnSpinner = document.getElementById('btnSpinner');
+      const btnText = document.getElementById('btnText');
+
+      // Pre-fill remembered items
+      const rememberedKey = localStorage.getItem('license_key');
+      const rememberedEmail = localStorage.getItem('email');
+      if (rememberedKey) licenseKeyInput.value = rememberedKey;
+      if (rememberedEmail) {
+        emailInput.value = rememberedEmail;
+        rememberMeCheckbox.checked = true;
+      }
+
+      loginForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        
+        // Reset states
+        errorAlert.style.display = 'none';
+        btnSpinner.style.display = 'inline-block';
+        btnText.textContent = 'Authenticating...';
+        loginBtn.disabled = true;
+
+        const email = emailInput.value.trim();
+        const password = passwordInput.value;
+        const license_key = licenseKeyInput.value.trim();
+
+        try {
+          const response = await fetch('/api/client/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email, password, license_key })
+          });
+
+          const data = await response.json();
+
+          if (!response.ok) {
+            throw new Error(data.error || 'Login failed.');
+          }
+
+          // Save to local storage if "Remember me" is checked
+          if (rememberMeCheckbox.checked) {
+            localStorage.setItem('license_key', license_key);
+            localStorage.setItem('email', email);
+          } else {
+            localStorage.removeItem('license_key');
+            localStorage.removeItem('email');
+          }
+
+          // Successful login: redirect
+          window.location.href = '/';
+        } catch (err) {
+          errorMessage.textContent = err.message;
+          errorAlert.style.display = 'flex';
+          
+          btnSpinner.style.display = 'none';
+          btnText.textContent = 'Sign In';
+          loginBtn.disabled = false;
+        }
+      });
+    });
+  </script>
+</body>
+</html>

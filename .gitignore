@@ -1,0 +1,12 @@
+node_modules/
+data/videos/
+data/profiles/
+data/thumbnails/
+data/pipeline.db
+data/pipeline.db-journal
+*.log
+.env
+sessions.db
+sessions.db-journal
+check_settings.js
+check_settings_new.js

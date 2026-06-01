@@ -1,0 +1,371 @@
+import cron from 'node-cron';
+import { queryAll, queryOne, run, insert } from '../db/database.js';
+import { uploadVideo, setThumbnail, addComment } from './youtube.js';
+import { uploadVideoBrowser } from './puppet.js';
+import { runWeeklyCleanup } from './videoCleanup.js';
+
+let broadcastFn = null;
+let cronTask = null;
+let cleanupTask = null;
+
+/**
+ * Initialise the scheduler. Starts a cron job that runs every minute, checking
+ * for scheduled posts that are due.
+ * @param {Function} broadcast  WebSocket broadcast function.
+ */
+export function init(broadcast) {
+  broadcastFn = broadcast;
+
+  // Run every minute
+  cronTask = cron.schedule('* * * * *', async () => {
+    try {
+      await checkDuePosts();
+    } catch (err) {
+      console.error('[Scheduler] Error checking due posts:', err);
+    }
+  });
+
+  // Weekly cleanup on Thursdays at 3:00 AM
+  cleanupTask = cron.schedule('0 3 * * 4', async () => {
+    try {
+      console.log('[Scheduler] Running Thursday weekly video cleanup...');
+      const deletedCount = await runWeeklyCleanup();
+      console.log(`[Scheduler] Thursday weekly video cleanup finished. Deleted ${deletedCount} files.`);
+    } catch (err) {
+      console.error('[Scheduler] Error running weekly cleanup:', err);
+    }
+  });
+
+  console.log('[Scheduler] Started — checking every minute for due posts and weekly on Thursdays for cleanup.');
+}
+
+/**
+ * Check for posts that are due (scheduled_at <= now and still pending).
+ */
+async function checkDuePosts() {
+  const localDate = new Date();
+  const tzOffset = localDate.getTimezoneOffset() * 60000;
+  const now = new Date(localDate.getTime() - tzOffset).toISOString().slice(0, 19);
+
+  const duePosts = queryAll(
+    `SELECT * FROM scheduled_posts 
+     WHERE (status = 'pending' AND scheduled_at <= @now)
+        OR (status = 'error' AND retry_count < 3 AND next_retry_at <= @now)
+     ORDER BY scheduled_at ASC`,
+    { now },
+  );
+
+  for (const post of duePosts) {
+    await processPost(post);
+  }
+}
+
+/**
+ * Process (upload) a single scheduled post.
+ *
+ * Workflow:
+ *  1. Look up the video file (via video_id or video_path)
+ *  2. Upload to YouTube with title, description, tags
+ *  3. Set the custom thumbnail if one is linked
+ *  4. Post auto-comment from the channel's comment_template
+ *  5. Record the upload and mark post as complete
+ */
+export async function processPost(post) {
+  const notify = (msg) => {
+    console.log(`[Scheduler] ${msg}`);
+    if (broadcastFn) {
+      broadcastFn({ type: 'schedule:status', postId: post.id, message: msg }, post.user_id);
+    }
+  };
+
+  try {
+    run(`UPDATE scheduled_posts SET status = 'processing' WHERE id = @id`, { id: post.id });
+    notify(`Processing scheduled post ${post.id}: "${post.title}"`);
+
+    // --- Resolve video path ---
+    let videoPath = post.video_path || null;
+    if (!videoPath && post.video_id) {
+      const video = queryOne('SELECT filepath FROM videos WHERE id = @id', { id: post.video_id });
+      if (video) videoPath = video.filepath;
+    }
+    if (!videoPath) {
+      throw new Error('No video file associated with this scheduled post.');
+    }
+
+    // --- Resolve thumbnail path ---
+    let thumbnailPath = null;
+    let finalThumbnailId = post.thumbnail_id;
+    if (!finalThumbnailId && post.video_id) {
+      const video = queryOne('SELECT thumbnail_id FROM videos WHERE id = @id', { id: post.video_id });
+      if (video) finalThumbnailId = video.thumbnail_id;
+    }
+    if (finalThumbnailId) {
+      const thumb = queryOne('SELECT filepath FROM thumbnails WHERE id = @id', { id: finalThumbnailId });
+      if (thumb) thumbnailPath = thumb.filepath;
+    }
+
+    // --- Parse tags ---
+    let tags = [];
+    try {
+      tags = post.tags ? JSON.parse(post.tags) : [];
+    } catch {
+      tags = post.tags ? post.tags.split(',').map((t) => t.trim()).filter(Boolean) : [];
+    }
+
+    // --- Get channel info ---
+    const channel = queryOne('SELECT * FROM channels WHERE id = @id', { id: post.channel_id });
+    if (!channel) throw new Error(`Channel ${post.channel_id} not found.`);
+
+    // --- Upload video to YouTube ---
+    notify(`Uploading "${post.title}" to channel "${channel.name}"...`);
+    if (broadcastFn) {
+      broadcastFn({ type: 'schedule:uploading', postId: post.id, channel: channel.name, title: post.title }, post.user_id);
+    }
+
+    let videoId = '';
+    if (channel.upload_mode === 'browser') {
+      const result = await uploadVideoBrowser(post.channel_id, {
+        videoPath,
+        title: post.title,
+        description: post.description || '',
+        tags,
+        privacy: channel.upload_privacy,
+        category: channel.category,
+        scheduledAt: post.scheduled_at,
+        thumbnailPath: thumbnailPath || null,
+        isPremiere: post.is_premiere || 0,
+      }, (msg) => notify(msg));
+      videoId = result.videoId;
+    } else {
+      const result = await uploadVideo(post.channel_id, {
+        videoPath,
+        title: post.title,
+        description: post.description || '',
+        tags,
+        privacy: channel.upload_privacy,
+        category: channel.category,
+        scheduledAt: post.scheduled_at,
+      });
+      videoId = result.videoId;
+    }
+
+    notify(`Uploaded: YouTube video ID ${videoId}`);
+
+    // --- Set thumbnail ---
+    if (thumbnailPath) {
+      if (channel.upload_mode !== 'browser') {
+        try {
+          await setThumbnail(post.channel_id, videoId, thumbnailPath);
+          notify(`Thumbnail set for video ${videoId}`);
+        } catch (err) {
+          notify(`Thumbnail error for ${videoId}: ${err.message}`);
+        }
+      } else {
+        notify(`Thumbnail was uploaded during browser upload flow for video ${videoId}`);
+      }
+      // Mark thumbnail as used
+      if (post.thumbnail_id) {
+        run(`UPDATE thumbnails SET used = 1 WHERE id = @id`, { id: post.thumbnail_id });
+      }
+    }
+
+    // --- Pinned Comment ---
+    const rawCommentTemplate = post.custom_comment || channel.comment_template || '';
+    if (rawCommentTemplate) {
+      try {
+        const commentText = rawCommentTemplate
+          .replace(/\{title\}/gi, post.title)
+          .replace(/\{videoId\}/gi, videoId);
+        await addComment(post.channel_id, videoId, commentText);
+        notify(`Comment posted on video ${videoId}`);
+      } catch (err) {
+        notify(`Comment error on ${videoId}: ${err.message}`);
+      }
+    }
+
+    // --- Record upload in uploads table ---
+    insert(
+      `INSERT INTO uploads (channel_id, youtube_video_id, title, description, thumbnail_path, status, uploaded_at)
+       VALUES (@channelId, @videoId, @title, @desc, @thumb, 'complete', datetime('now'))`,
+      {
+        channelId: post.channel_id,
+        videoId,
+        title: post.title,
+        desc: post.description || '',
+        thumb: thumbnailPath,
+      },
+    );
+
+    // --- Mark scheduled post as complete and record YouTube Video ID ---
+    run(`UPDATE scheduled_posts SET status = 'complete', youtube_video_id = @videoId WHERE id = @id`, {
+      videoId,
+      id: post.id
+    });
+    notify(`Scheduled post ${post.id} completed successfully.`);
+
+    if (broadcastFn) {
+      broadcastFn({ type: 'schedule:complete', postId: post.id, videoId }, post.user_id);
+    }
+  } catch (err) {
+    notify(`Error processing post ${post.id}: ${err.message}`);
+
+    // Record the error in uploads table too
+    insert(
+      `INSERT INTO uploads (channel_id, title, status, error_message, uploaded_at)
+       VALUES (@channelId, @title, 'error', @err, datetime('now'))`,
+      { channelId: post.channel_id, title: post.title, err: err.message },
+    );
+
+    // Call backoff retry handler
+    handlePostFailure(post, err.message);
+
+    if (broadcastFn) {
+      broadcastFn({ type: 'schedule:error', postId: post.id, error: err.message }, post.user_id);
+    }
+  }
+}
+
+/**
+ * Add a new scheduled post to the database.
+ */
+export function schedulePost({ userId, channelId, title, description, tags, thumbnailId, videoId, videoPath, scheduledAt, customComment, isPremiere }) {
+  const tagsStr = Array.isArray(tags) ? JSON.stringify(tags) : tags || '';
+  const id = run(
+    `INSERT INTO scheduled_posts (user_id, channel_id, title, description, tags, thumbnail_id, video_id, video_path, scheduled_at, custom_comment, is_premiere)
+     VALUES (@userId, @channelId, @title, @description, @tags, @thumbnailId, @videoId, @videoPath, @scheduledAt, @customComment, @isPremiere)`,
+    {
+      userId,
+      channelId,
+      title,
+      description: description || '',
+      tags: tagsStr,
+      thumbnailId: thumbnailId || null,
+      videoId: videoId || null,
+      videoPath: videoPath || '',
+      scheduledAt,
+      customComment: customComment || '',
+      isPremiere: isPremiere ? 1 : 0,
+    },
+  ).lastInsertRowid;
+
+  if (broadcastFn) {
+    broadcastFn({ type: 'schedule:created', postId: Number(id) });
+  }
+  return Number(id);
+}
+
+/**
+ * Reclaim the assets (title and thumbnail) used by a scheduled post.
+ */
+export function reclaimPostAssets(post) {
+  if (!post) return;
+
+  // Reclaim thumbnail
+  if (post.thumbnail_id) {
+    run(`UPDATE thumbnails SET used = 0 WHERE id = @id`, { id: post.thumbnail_id });
+  }
+
+  // Reclaim title
+  if (post.title) {
+    run(`
+      UPDATE titles 
+      SET used = 0 
+      WHERE id = (
+        SELECT id FROM titles 
+        WHERE channel_id = @channelId AND text = @title AND used = 1 
+        ORDER BY id DESC 
+        LIMIT 1
+      )
+    `, { channelId: post.channel_id, title: post.title });
+  }
+}
+
+/**
+ * Cancel a scheduled post.
+ */
+export function cancelPost(id) {
+  const post = queryOne('SELECT * FROM scheduled_posts WHERE id = @id', { id });
+  if (post) {
+    reclaimPostAssets(post);
+    run(`UPDATE scheduled_posts SET status = 'cancelled' WHERE id = @id AND status = 'pending'`, { id });
+    if (broadcastFn) {
+      broadcastFn({ type: 'schedule:cancelled', postId: id });
+    }
+  }
+}
+
+/**
+ * Get upcoming (pending) scheduled posts.
+ */
+export function getUpcoming(userId) {
+  if (userId) {
+    return queryAll(
+      `SELECT sp.*, c.name AS channel_name, c.upload_mode AS channel_upload_mode
+       FROM scheduled_posts sp
+       LEFT JOIN channels c ON c.id = sp.channel_id
+       WHERE sp.status = 'pending' AND sp.user_id = @userId
+       ORDER BY sp.scheduled_at ASC`,
+      { userId }
+    );
+  }
+  return queryAll(
+    `SELECT sp.*, c.name AS channel_name, c.upload_mode AS channel_upload_mode
+     FROM scheduled_posts sp
+     LEFT JOIN channels c ON c.id = sp.channel_id
+     WHERE sp.status = 'pending'
+     ORDER BY sp.scheduled_at ASC`,
+  );
+}
+
+/**
+ * Handles backoff and retry scheduling when a scheduled post fails.
+ *
+ * @param {object} post
+ * @param {string} errorMessage
+ */
+export function handlePostFailure(post, errorMessage) {
+  const nextAttempt = (post.retry_count || 0) + 1;
+  
+  if (nextAttempt <= 3) {
+    // 1st retry: 5 mins, 2nd: 30 mins, 3rd: 120 mins (2 hours)
+    let backoffMinutes = 5;
+    if (nextAttempt === 2) backoffMinutes = 30;
+    else if (nextAttempt === 3) backoffMinutes = 120;
+
+    const localDate = new Date();
+    const tzOffset = localDate.getTimezoneOffset() * 60000;
+    const nowLocal = new Date(localDate.getTime() - tzOffset);
+    const nextRetryDate = new Date(nowLocal.getTime() + backoffMinutes * 60000);
+    const nextRetryAt = nextRetryDate.toISOString().slice(0, 19);
+
+    run(
+      `UPDATE scheduled_posts 
+       SET status = 'error', retry_count = @retryCount, next_retry_at = @nextRetryAt, error_message = @errorMessage
+       WHERE id = @id`,
+      { retryCount: nextAttempt, nextRetryAt, errorMessage, id: post.id }
+    );
+    console.log(`[Scheduler] Post ${post.id} failed: "${errorMessage}". Scheduled retry #${nextAttempt} at ${nextRetryAt}.`);
+  } else {
+    // Max retries exceeded, stop retrying
+    run(
+      `UPDATE scheduled_posts 
+       SET status = 'error', next_retry_at = NULL, error_message = @errorMessage
+       WHERE id = @id`,
+      { errorMessage, id: post.id }
+    );
+    console.log(`[Scheduler] Post ${post.id} failed: "${errorMessage}". Max retries reached.`);
+  }
+}
+
+/**
+ * Stop the cron task (used during shutdown).
+ */
+export function stop() {
+  if (cronTask) {
+    cronTask.stop();
+  }
+  if (cleanupTask) {
+    cleanupTask.stop();
+  }
+  console.log('[Scheduler] Stopped.');
+}

@@ -198,6 +198,11 @@ router.post('/yt-setup/verify', async (req, res) => {
           }
           // Copy global profile to channel profile
           fs.cpSync(globalProfile, channelProfile, { recursive: true });
+          // Remove Chrome lock files from the copy (VNC Chrome still holds locks on the original)
+          for (const lockFile of ['SingletonLock', 'SingletonSocket', 'SingletonCookie']) {
+            const lf = path.join(channelProfile, lockFile);
+            try { if (fs.existsSync(lf)) fs.unlinkSync(lf); } catch (e) {}
+          }
           console.log(`[YT Setup] Copied login profile to channel_${channelId}`);
         }
       } catch (copyErr) {

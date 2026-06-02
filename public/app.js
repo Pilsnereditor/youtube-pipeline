@@ -1240,16 +1240,18 @@ async function createChannel() {
   const uploadMode = document.getElementById('newChannelUploadMode').value;
   const scheduleAsPremiere = document.getElementById('newChannelScheduleAsPremiere') ? document.getElementById('newChannelScheduleAsPremiere').checked : false;
   
-  const proxy_type = document.getElementById('newChannelProxyType').value;
+  const select_proxy_type = document.getElementById('newChannelProxyType').value;
+  let proxy_type = select_proxy_type;
   let proxy_host = '';
   let proxy_port = '';
   let proxy_username = '';
   let proxy_password = '';
 
-  if (proxy_type === 'nordvpn') {
+  if (select_proxy_type === 'nordvpn') {
+    proxy_type = 'socks5';
     proxy_host = document.getElementById('newChannelVpnLocation').value;
     proxy_port = '1080';
-  } else if (proxy_type !== 'none') {
+  } else if (select_proxy_type !== 'none') {
     proxy_host = document.getElementById('newChannelProxyHost').value;
     proxy_port = document.getElementById('newChannelProxyPort').value;
     proxy_username = document.getElementById('newChannelProxyUsername').value;
@@ -1334,7 +1336,11 @@ async function openEditChannelModal(channelId) {
   }
   
   // Fill proxy details
-  const proxyType = channel.proxy_type || 'none';
+  let proxyType = channel.proxy_type || 'none';
+  const NORDVPN_KEYS = ['us-atlanta', 'us-chicago', 'us-dallas', 'us-los-angeles', 'us-new-york', 'nl-amsterdam', 'se-stockholm'];
+  if (proxyType === 'socks5' && NORDVPN_KEYS.includes(channel.proxy_host)) {
+    proxyType = 'nordvpn';
+  }
   document.getElementById('editChProxyType').value = proxyType;
   toggleEditChannelProxyFields();
   
@@ -1377,16 +1383,18 @@ async function saveChannel() {
   const uploadMode = document.getElementById('editChUploadMode').value;
   const scheduleAsPremiere = document.getElementById('editChScheduleAsPremiere') ? document.getElementById('editChScheduleAsPremiere').checked : false;
 
-  const proxy_type = document.getElementById('editChProxyType').value;
+  const select_proxy_type = document.getElementById('editChProxyType').value;
+  let proxy_type = select_proxy_type;
   let proxy_host = '';
   let proxy_port = '';
   let proxy_username = '';
   let proxy_password = '';
 
-  if (proxy_type === 'nordvpn') {
+  if (select_proxy_type === 'nordvpn') {
+    proxy_type = 'socks5';
     proxy_host = document.getElementById('editChVpnLocation').value;
     proxy_port = '1080';
-  } else if (proxy_type !== 'none') {
+  } else if (select_proxy_type !== 'none') {
     proxy_host = document.getElementById('editChProxyHost').value;
     proxy_port = document.getElementById('editChProxyPort').value;
     proxy_username = document.getElementById('editChProxyUsername').value;

@@ -508,6 +508,13 @@
         <h2>Settings</h2>
       </div>
 
+      <!-- Add New Channel Quick Actions -->
+      <div class="glass settings-section">
+        <h3>📺 Channel Actions</h3>
+        <p class="subtitle">Quickly create a new channel profile in your dashboard</p>
+        <button class="btn-primary" onclick="openModal('addChannelModal')">＋ Add New Channel</button>
+      </div>
+
       <!-- Google OAuth -->
       <div class="glass settings-section" style="display: none;">
         <h3>🔗 YouTube Connection</h3>
@@ -803,11 +810,11 @@
           <label>Auto-Comment Template</label>
           <textarea id="newChannelComment" class="form-input" rows="2" placeholder="📌 Pin this comment! Subscribe for more..."></textarea>
         </div>
-        <div class="form-group">
+        <div class="form-group" style="display: none;">
           <label>Upload Mode</label>
           <select id="newChannelUploadMode" class="form-input">
+            <option value="browser" selected>Automated Browser (Puppet Mode - Bypasses Quotas)</option>
             <option value="api">Official YouTube API (Daily quota limited)</option>
-            <option value="browser">Automated Browser (Puppet Mode - Bypasses Quotas)</option>
           </select>
         </div>
         <div class="form-group" style="display: flex; align-items: center; gap: 8px; margin-top: 10px;">

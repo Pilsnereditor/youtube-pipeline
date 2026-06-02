@@ -1308,6 +1308,12 @@ async function createChannel() {
     
     await loadChannels();
     openEditChannelModal(newChannel.id);
+    
+    // Automatically launch the remote browser login setup window
+    setTimeout(async () => {
+      showToast('Launching remote browser login window...', 'info');
+      await startBrowserLogin();
+    }, 300);
   } catch (err) {
     showToast('Failed to create channel: ' + err.message, 'error');
   }

@@ -777,27 +777,27 @@
           <label>Channel Name</label>
           <input type="text" id="newChannelName" class="form-input" placeholder="My YouTube Channel">
         </div>
-        <div class="form-group">
+        <div class="form-group" style="display: none;">
           <label>Niche / Category</label>
           <input type="text" id="newChannelNiche" class="form-input" placeholder="e.g., Relaxation, Tech Reviews, Gaming">
         </div>
-        <div class="form-group">
+        <div class="form-group" style="display: none;">
           <label>Description</label>
           <textarea id="newChannelDesc" class="form-input" rows="3" placeholder="Brief channel description for AI context"></textarea>
         </div>
-        <div class="form-row">
+        <div class="form-row" style="display: none;">
           <div class="form-group">
             <label>Default Privacy</label>
             <select id="newChannelPrivacy" class="form-input">
               <option value="public">Public</option>
               <option value="unlisted">Unlisted</option>
-              <option value="private">Private</option>
+              <option value="private" selected>Private</option>
             </select>
           </div>
           <div class="form-group">
             <label>Category</label>
             <select id="newChannelCategory" class="form-input">
-              <option value="22">People & Blogs</option>
+              <option value="22" selected>People & Blogs</option>
               <option value="10">Music</option>
               <option value="20">Gaming</option>
               <option value="24">Entertainment</option>
@@ -806,7 +806,7 @@
             </select>
           </div>
         </div>
-        <div class="form-group">
+        <div class="form-group" style="display: none;">
           <label>Auto-Comment Template</label>
           <textarea id="newChannelComment" class="form-input" rows="2" placeholder="📌 Pin this comment! Subscribe for more..."></textarea>
         </div>
@@ -817,7 +817,7 @@
             <option value="api">Official YouTube API (Daily quota limited)</option>
           </select>
         </div>
-        <div class="form-group" style="display: flex; align-items: center; gap: 8px; margin-top: 10px;">
+        <div class="form-group" style="display: none; align-items: center; gap: 8px; margin-top: 10px;">
           <input type="checkbox" id="newChannelScheduleAsPremiere" style="cursor: pointer; width: 16px; height: 16px;">
           <label for="newChannelScheduleAsPremiere" style="margin-bottom: 0; cursor: pointer; font-size: 0.85rem; color: var(--text-secondary);">Schedule as Premiere (Normal Videos Only)</label>
         </div>

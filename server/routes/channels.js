@@ -175,7 +175,7 @@ router.post('/yt-setup/verify', async (req, res) => {
         channelsCreated.push({ id: existing.id, name: ch.name, action: 'updated' });
       } else {
         const result2 = run(
-          `INSERT INTO channels (name, user_id, upload_mode, privacy, category) 
+          `INSERT INTO channels (name, user_id, upload_mode, upload_privacy, category) 
            VALUES (@name, @userId, 'puppet', 'private', '22')`,
           { name: ch.name, userId }
         );

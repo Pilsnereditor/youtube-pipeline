@@ -2636,3 +2636,86 @@ select.form-input option {
   box-shadow: 0 0 4px rgba(156, 163, 175, 0.3);
 }
 
+/* ── YouTube Login Setup Wizard ──────────────────────────── */
+.yt-step-indicator {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: rgba(255,255,255,0.06);
+  border: 2px solid rgba(255,255,255,0.12);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  flex-shrink: 0;
+}
+
+.yt-step-indicator .yt-step-num {
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: var(--text-muted);
+  transition: color 0.3s ease;
+}
+
+.yt-step-indicator.active {
+  background: linear-gradient(135deg, #6366f1, #8b5cf6);
+  border-color: #818cf8;
+  box-shadow: 0 0 16px rgba(99,102,241,0.4);
+}
+
+.yt-step-indicator.active .yt-step-num {
+  color: #fff;
+}
+
+.yt-step-indicator.complete {
+  background: linear-gradient(135deg, #10b981, #059669);
+  border-color: #34d399;
+  box-shadow: 0 0 12px rgba(16,185,129,0.3);
+}
+
+.yt-step-indicator.complete .yt-step-num {
+  color: #fff;
+}
+
+.yt-step-line {
+  flex: 1;
+  height: 3px;
+  background: rgba(255,255,255,0.08);
+  border-radius: 2px;
+  margin: 0 8px;
+  position: relative;
+  overflow: hidden;
+}
+
+.yt-step-line.active::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  height: 100%;
+  width: 100%;
+  background: linear-gradient(90deg, #6366f1, #8b5cf6);
+  border-radius: 2px;
+  animation: stepLineProgress 0.5s ease forwards;
+}
+
+@keyframes stepLineProgress {
+  from { width: 0; }
+  to   { width: 100%; }
+}
+
+.yt-setup-spinner {
+  width: 40px;
+  height: 40px;
+  border: 3px solid rgba(99,102,241,0.2);
+  border-top-color: #6366f1;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+#ytSetupScreenContainer.focused {
+  border-color: rgba(99,102,241,0.7);
+  box-shadow: 0 0 24px rgba(99,102,241,0.2);
+}
+

@@ -5,7 +5,7 @@ import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { queryAll, queryOne, run, insert } from '../db/database.js';
 import { syncChannelWithYouTube } from '../services/youtube.js';
-import { setupBrowserSession, checkBrowserSessionActive, closeBrowserSession } from '../services/puppet.js';
+import { setupBrowserSession, checkBrowserSessionActive, closeBrowserSession, launchGlobalSetupSession, isGlobalSetupActive, verifyGlobalSetupChannels, closeGlobalSetupSession } from '../services/puppet.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -117,6 +117,89 @@ router.post('/', (req, res) => {
     );
     const channel = queryOne('SELECT * FROM channels WHERE id = @id AND user_id = @userId', { id, userId });
     res.status(201).json(channel);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// YouTube Setup Wizard (Settings page — global setup, not per-channel)
+// These routes MUST be defined before /:id routes to avoid Express param matching
+// ---------------------------------------------------------------------------
+
+/**
+ * POST /api/channels/yt-setup/launch — Launch global browser for YouTube login
+ */
+router.post('/yt-setup/launch', async (req, res) => {
+  const userId = req.session.userId;
+  try {
+    launchGlobalSetupSession(userId, broadcast).catch(err => {
+      console.error('[YT Setup] Error launching global browser:', err);
+    });
+    res.json({ success: true, message: 'Browser session started.' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * GET /api/channels/yt-setup/status — Check if global setup session is active
+ */
+router.get('/yt-setup/status', (req, res) => {
+  res.json({ active: isGlobalSetupActive() });
+});
+
+/**
+ * POST /api/channels/yt-setup/verify — Verify channels from YouTube Studio
+ */
+router.post('/yt-setup/verify', async (req, res) => {
+  const userId = req.session.userId;
+  try {
+    const result = await verifyGlobalSetupChannels(userId);
+    
+    // Create or update channels in the database
+    const channelsCreated = [];
+    
+    for (const ch of result.channels) {
+      if (!ch.name) continue;
+      
+      // Check if channel already exists for this user
+      const existing = queryOne(
+        'SELECT id FROM channels WHERE name = @name AND user_id = @userId',
+        { name: ch.name, userId }
+      );
+      
+      if (existing) {
+        // Update existing channel
+        run(
+          'UPDATE channels SET upload_mode = @mode WHERE id = @id',
+          { mode: 'puppet', id: existing.id }
+        );
+        channelsCreated.push({ id: existing.id, name: ch.name, action: 'updated' });
+      } else {
+        // Create new channel
+        const result2 = run(
+          `INSERT INTO channels (name, user_id, upload_mode, privacy, category) 
+           VALUES (@name, @userId, 'puppet', 'private', '22')`,
+          { name: ch.name, userId }
+        );
+        channelsCreated.push({ id: result2.lastInsertRowid, name: ch.name, action: 'created' });
+      }
+    }
+    
+    res.json({ success: true, channels: channelsCreated });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * POST /api/channels/yt-setup/close — Save and close global setup browser
+ */
+router.post('/yt-setup/close', async (req, res) => {
+  try {
+    await closeGlobalSetupSession();
+    res.json({ success: true, message: 'Browser session saved and closed.' });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

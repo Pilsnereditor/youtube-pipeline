@@ -328,7 +328,6 @@
           <p class="subtitle">Manage your YouTube channels, titles, and thumbnails</p>
         </div>
         <div class="tab-actions">
-          <button id="btnAddChannel" class="btn-primary" onclick="openModal('addChannelModal')">＋ New Channel</button>
           <button id="btnRefreshChannels" class="btn-secondary" onclick="loadChannels()">Refresh</button>
         </div>
       </div>
@@ -508,11 +507,116 @@
         <h2>Settings</h2>
       </div>
 
-      <!-- Add New Channel Quick Actions -->
-      <div class="glass settings-section">
-        <h3>📺 Channel Actions</h3>
-        <p class="subtitle">Quickly create a new channel profile in your dashboard</p>
-        <button class="btn-primary" onclick="openModal('addChannelModal')">＋ Add New Channel</button>
+      <!-- YouTube Login Setup -->
+      <div class="glass settings-section" id="ytLoginSetupSection">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+          <h3 style="margin:0;">🔐 YouTube Login Setup</h3>
+          <button class="btn-secondary btn-sm" onclick="refreshYtLoginSetup()" style="display:flex; align-items:center; gap:4px; padding:6px 12px; font-size:0.8rem; border-radius:6px;">🔄 Refresh</button>
+        </div>
+        <p class="subtitle" style="margin-bottom:16px;">Log in to your YouTube channels to enable the pipeline</p>
+
+        <!-- Step indicators -->
+        <div id="ytSetupSteps" style="display:flex; align-items:center; gap:0; margin-bottom:20px;">
+          <div id="ytStep1Indicator" class="yt-step-indicator active" onclick="goToYtSetupStep(1)">
+            <span class="yt-step-num">1</span>
+          </div>
+          <div class="yt-step-line" id="ytStepLine"></div>
+          <div id="ytStep2Indicator" class="yt-step-indicator" onclick="goToYtSetupStep(2)">
+            <span class="yt-step-num">2</span>
+          </div>
+        </div>
+
+        <!-- Step 1: Launch Browser -->
+        <div id="ytSetupStep1" style="margin-top:0;">
+          <h4 style="font-size:0.95rem; color:var(--text-bright); margin-bottom:8px;">Step 1 — Launch Browser</h4>
+          <p style="font-size:0.82rem; color:var(--text-secondary); line-height:1.5; margin-bottom:16px;">
+            Click the button below to launch a remote Chrome browser on the server. You will see the browser screen appear here so you can log in to your YouTube channels.
+          </p>
+          <button id="btnYtSetupLaunch" class="btn-primary" onclick="launchYtSetupBrowser()" style="display:flex; align-items:center; gap:6px; padding:10px 20px; font-size:0.92rem; font-weight:600;">
+            🚀 Launch Chrome Browser
+          </button>
+          <div id="ytSetupLaunchStatus" style="margin-top:12px; font-size:0.8rem; color:var(--text-muted); display:none;"></div>
+        </div>
+
+        <!-- Step 2: Login & Verify -->
+        <div id="ytSetupStep2" style="display:none; margin-top:0;">
+          <h4 style="font-size:0.95rem; color:var(--text-bright); margin-bottom:6px;">Step 2 — Log into YouTube</h4>
+          <p style="font-size:0.82rem; color:var(--text-secondary); line-height:1.5; margin-bottom:12px;">
+            Chrome is running — log in to YouTube in the browser above, then click <strong style="color:#4ade80;">Verify Channels</strong>.
+          </p>
+
+          <!-- Instructions checklist -->
+          <div style="margin-bottom:16px; padding:12px 16px; border-radius:10px; background:rgba(99,102,241,0.06); border:1px solid rgba(99,102,241,0.15);">
+            <div style="display:flex; align-items:flex-start; gap:8px; margin-bottom:8px;">
+              <span style="color:#f59e0b; font-size:0.85rem; margin-top:1px;">⚠️</span>
+              <span style="font-size:0.78rem; color:#f59e0b; line-height:1.4;">If Chrome asks to use your existing profile, click <strong>"Don't sign in"</strong> / <strong>"Cancel"</strong>. This uses a separate Chrome profile. This keeps the app's cookies private from yours.</span>
+            </div>
+            <div style="display:flex; align-items:flex-start; gap:8px; margin-bottom:8px;">
+              <span style="color:#10b981; font-size:0.85rem; margin-top:1px;">✅</span>
+              <span style="font-size:0.78rem; color:var(--text-secondary); line-height:1.4;">Sign in to your <strong style="color:var(--text-bright);">Google / Gmail account</strong>.</span>
+            </div>
+            <div style="display:flex; align-items:flex-start; gap:8px; margin-bottom:8px;">
+              <span style="color:#10b981; font-size:0.85rem; margin-top:1px;">✅</span>
+              <span style="font-size:0.78rem; color:var(--text-secondary); line-height:1.4;">Navigate to YouTube and <strong style="color:var(--text-bright);">open all your YouTube channels</strong>. Navigate on YouTube and make sure you're logged in.</span>
+            </div>
+            <div style="display:flex; align-items:flex-start; gap:8px; margin-bottom:8px;">
+              <span style="color:#10b981; font-size:0.85rem; margin-top:1px;">✅</span>
+              <span style="font-size:0.78rem; color:var(--text-secondary); line-height:1.4;">Make sure YouTube is in <strong style="color:var(--text-bright);">English</strong>. If it's not in English, click your profile pic → <em>Language</em> → Change it before clicking Verify.</span>
+            </div>
+            <div style="display:flex; align-items:flex-start; gap:8px;">
+              <span style="color:#10b981; font-size:0.85rem; margin-top:1px;">✅</span>
+              <span style="font-size:0.78rem; color:var(--text-secondary); line-height:1.4;">Click <strong style="color:#4ade80;">"Verify Channels"</strong> below and wait.<br><span style="font-size:0.72rem; color:var(--text-muted);">This crawls your logo, channels & branding, and verifies the session. It may take 10-60 seconds — don't close the browser.</span></span>
+            </div>
+          </div>
+
+          <!-- Remote Browser Screen -->
+          <div id="ytSetupScreenContainer" style="margin-bottom:16px; border-radius:12px; overflow:hidden; background:#0a0a0f; border:2px solid rgba(99,102,241,0.3); position:relative; min-height:200px;">
+            <!-- Loading animation -->
+            <div id="ytSetupScreenLoading" style="position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:12px; z-index:2; background:#0a0a0f;">
+              <div class="yt-setup-spinner"></div>
+              <span style="font-size:0.82rem; color:var(--text-muted);">Connecting to remote browser...</span>
+            </div>
+            <!-- Screen wrapper -->
+            <div style="position:relative; width:100%;" onclick="focusYtSetupKeyboard()">
+              <img id="ytSetupScreenImg"
+                   style="width:100%; height:auto; display:block; cursor:crosshair;"
+                   alt="Remote browser loading..."
+                   src="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='1024' height='700' viewBox='0 0 1024 700'><rect width='1024' height='700' fill='%230a0a0f'/><text x='512' y='350' fill='%23333' font-family='sans-serif' font-size='16' text-anchor='middle'>Waiting for browser...</text></svg>">
+              <!-- Keyboard input overlay (invisible, sits on top) -->
+              <textarea id="ytSetupKeyboardSink"
+                        autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"
+                        onkeydown="onYtSetupKeyDown(event)"
+                        oninput="onYtSetupInput(event)"
+                        onkeyup="onYtSetupKeyUp(event)"
+                        onfocus="onYtSetupScreenFocus()"
+                        onblur="onYtSetupScreenBlur()"
+                        style="position:absolute; inset:0; width:100%; height:100%; opacity:0; cursor:crosshair; z-index:5; border:none; padding:0; margin:0; resize:none; outline:none; background:transparent;"
+                        aria-label="Remote browser keyboard input"></textarea>
+              <!-- Click overlay -->
+              <div id="ytSetupClickOverlay"
+                   style="position:absolute; inset:0; cursor:crosshair; z-index:3;"
+                   onmousedown="event.preventDefault();"
+                   onclick="handleYtSetupClick(event)"></div>
+            </div>
+          </div>
+
+          <!-- Keyboard focus indicator -->
+          <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:16px;">
+            <span style="font-size:0.72rem; color:#64748b; line-height:1.4;">💡 <strong style="color:#94a3b8;">Click on the screen</strong> to focus it, then type directly with your keyboard.</span>
+            <span id="ytSetupFocusIndicator" style="display:none; font-size:0.68rem; color:#4ade80; background:rgba(74,222,128,0.12); border:1px solid rgba(74,222,128,0.3); border-radius:4px; padding:2px 8px; font-weight:500;">⌨️ Keyboard Active</span>
+          </div>
+
+          <!-- Bottom action buttons -->
+          <div style="display:flex; align-items:center; gap:10px; padding-top:12px; border-top:1px solid rgba(255,255,255,0.06);">
+            <button id="btnYtSetupVerify" class="btn-primary" onclick="verifyYtSetupChannels()" style="background:linear-gradient(135deg, #10b981, #059669); padding:10px 20px; font-size:0.88rem; font-weight:600; display:flex; align-items:center; gap:6px; border-radius:8px;">
+              ✅ Verify Channels
+            </button>
+            <button id="btnYtSetupSave" class="btn-secondary" onclick="saveAndCloseYtSetup()" style="padding:10px 20px; font-size:0.88rem; font-weight:600; display:flex; align-items:center; gap:6px; border-radius:8px;">
+              💾 Save & Close Browser
+            </button>
+            <span id="ytSetupVerifyStatus" style="margin-left:auto; font-size:0.78rem; color:var(--text-muted);"></span>
+          </div>
+        </div>
       </div>
 
       <!-- Google OAuth -->

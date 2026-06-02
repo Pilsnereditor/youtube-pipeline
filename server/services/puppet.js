@@ -1116,3 +1116,250 @@ export async function rescheduleVideoBrowser(channelId, youtubeVideoId, schedule
   }
 }
 
+// ---------------------------------------------------------------------------
+// GLOBAL YOUTUBE SETUP SESSION (Settings page wizard)
+// ---------------------------------------------------------------------------
+let globalSetupSession = null;
+
+/**
+ * Launch a global setup browser (not tied to any channel).
+ * Used from Settings > YouTube Login Setup wizard.
+ */
+export async function launchGlobalSetupSession(userId, broadcastFn) {
+  await closeGlobalSetupSession();
+
+  const profilePath = path.join(PROFILES_DIR, 'yt_setup_global');
+  if (!fs.existsSync(profilePath)) fs.mkdirSync(profilePath, { recursive: true });
+
+  const chromePath = getChromePath();
+
+  // Clean lock files
+  try {
+    for (const f of ['SingletonLock', 'SingletonSocket', 'SingletonCookie']) {
+      const p = path.join(profilePath, f);
+      if (fs.existsSync(p)) fs.unlinkSync(p);
+    }
+  } catch (e) {
+    console.warn(`[Puppet] Failed to pre-clean lock files for global setup: ${e.message}`);
+  }
+
+  console.log('[Puppet] Launching global setup browser for YouTube login...');
+
+  let browser;
+  try {
+    browser = await launchBrowserWithRetry(chromePath, profilePath, true, 3, 3000, null);
+  } catch (err) {
+    console.error('[Puppet] Global setup browser launch failed:', err);
+    if (broadcastFn) {
+      broadcastFn({ type: 'puppet:session_error', channelId: '__yt_setup__', error: err.message }, userId);
+    }
+    throw err;
+  }
+
+  const [page] = await browser.pages();
+  await page.setExtraHTTPHeaders({ 'Accept-Language': 'en-US,en;q=0.9' });
+  await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+  await page.setViewport({ width: 1024, height: 700 });
+
+  await page.evaluateOnNewDocument(() => {
+    Object.defineProperty(navigator, 'webdriver', { get: () => false });
+    Object.defineProperty(navigator, 'plugins', {
+      get: () => [
+        { name: 'PDF Viewer' }, { name: 'Chrome PDF Viewer' },
+        { name: 'Chromium PDF Viewer' }, { name: 'Microsoft Edge PDF Viewer' },
+        { name: 'WebKit built-in PDF' }
+      ]
+    });
+  });
+
+  const client = await page.target().createCDPSession();
+  await client.send('Page.startScreencast', { format: 'jpeg', quality: 40, maxWidth: 1024, maxHeight: 700 });
+
+  client.on('Page.screencastFrame', async ({ data, metadata, sessionId }) => {
+    try {
+      if (broadcastFn) {
+        broadcastFn({
+          type: 'puppet:screencast',
+          channelId: '__yt_setup__',
+          frame: data,
+          width: metadata.deviceWidth,
+          height: metadata.deviceHeight
+        }, userId);
+      }
+    } catch (err) {
+      console.error('[Puppet] Global setup screencast error:', err);
+    } finally {
+      try { await client.send('Page.ackScreencastFrame', { sessionId }); } catch (e) {}
+    }
+  });
+
+  globalSetupSession = { browser, page, client, userId };
+
+  browser.on('disconnected', () => {
+    globalSetupSession = null;
+    if (broadcastFn) {
+      broadcastFn({ type: 'puppet:session_closed', channelId: '__yt_setup__' }, userId);
+    }
+  });
+
+  if (broadcastFn) {
+    broadcastFn({ type: 'puppet:session_ready', channelId: '__yt_setup__' }, userId);
+  }
+
+  console.log('[Puppet] Navigating to YouTube Studio for global setup...');
+  page.goto('https://studio.youtube.com?hl=en&persist_hl=1', {
+    waitUntil: 'domcontentloaded',
+    timeout: 60000
+  }).catch(err => {
+    console.warn(`[Puppet] Global setup navigation warning: ${err.message}`);
+  });
+
+  return browser;
+}
+
+/**
+ * Check if global setup session is active
+ */
+export function isGlobalSetupActive() {
+  return globalSetupSession !== null;
+}
+
+/**
+ * Get the global setup session (for sending clicks/keys)
+ */
+export function getGlobalSetupSession() {
+  return globalSetupSession;
+}
+
+/**
+ * Verify channels by crawling YouTube Studio channel switcher
+ */
+export async function verifyGlobalSetupChannels(userId) {
+  if (!globalSetupSession) {
+    throw new Error('No active browser session. Please launch Chrome first.');
+  }
+
+  const { page } = globalSetupSession;
+  const url = page.url();
+
+  // Check if we're on YouTube Studio
+  if (url.includes('accounts.google.com')) {
+    throw new Error('Not logged in yet. Please sign in to your Google account in the remote browser first.');
+  }
+
+  // Navigate to YouTube Studio if not already there
+  if (!url.includes('studio.youtube.com')) {
+    await page.goto('https://studio.youtube.com?hl=en&persist_hl=1', {
+      waitUntil: 'domcontentloaded',
+      timeout: 30000
+    });
+    await new Promise(r => setTimeout(r, 3000));
+  }
+
+  // Try to get channel info from the Studio page
+  const channelInfo = await page.evaluate(() => {
+    const channels = [];
+    
+    // Method 1: Get current channel from Studio header
+    const accountBtn = document.querySelector('#avatar-btn, .channel-avatar, img.ytcp-account-settings');
+    const channelName = document.querySelector('.channel-name, .ytcpAppHeaderChannelName, .ytcp-account-settings__channel-name');
+    
+    // Method 2: Try to find channel info from the dashboard
+    const dashTitle = document.querySelector('.dashboard-channel-name, .ytcpAppHeaderChannelName');
+    const ytcpName = document.querySelector('[class*="channel-name"], .ytcp-account-settings__channel-name');
+    
+    let name = '';
+    if (channelName) name = channelName.textContent.trim();
+    else if (dashTitle) name = dashTitle.textContent.trim();
+    else if (ytcpName) name = ytcpName.textContent.trim();
+    
+    // Get the current URL for channel ID extraction  
+    const currentUrl = window.location.href;
+    
+    // Try to find the channel ID from the page
+    const channelIdMatch = currentUrl.match(/channel\/([A-Za-z0-9_-]+)/) ||
+                           document.querySelector('link[rel="canonical"]')?.href?.match(/channel\/([A-Za-z0-9_-]+)/);
+    
+    if (name) {
+      channels.push({
+        name: name,
+        ytChannelId: channelIdMatch ? channelIdMatch[1] : '',
+        url: currentUrl
+      });
+    }
+    
+    return { channels, pageTitle: document.title, url: currentUrl };
+  });
+
+  return channelInfo;
+}
+
+/**
+ * Close global setup session
+ */
+export async function closeGlobalSetupSession() {
+  if (globalSetupSession) {
+    try {
+      await globalSetupSession.browser.close();
+    } catch (e) {
+      console.warn('[Puppet] Error closing global setup browser:', e.message);
+    }
+    globalSetupSession = null;
+  }
+
+  // Clean lock files
+  const profilePath = path.join(PROFILES_DIR, 'yt_setup_global');
+  try {
+    for (const f of ['SingletonLock', 'SingletonSocket', 'SingletonCookie']) {
+      const p = path.join(profilePath, f);
+      if (fs.existsSync(p)) fs.unlinkSync(p);
+    }
+  } catch (e) {}
+
+  await new Promise(r => setTimeout(r, 500));
+}
+
+/**
+ * Send click to global setup session
+ */
+export async function sendGlobalSetupClick(x, y) {
+  if (globalSetupSession && globalSetupSession.page) {
+    try {
+      await globalSetupSession.page.mouse.click(Number(x), Number(y));
+    } catch (e) {
+      console.error('[Puppet] Global setup click error:', e);
+    }
+  }
+}
+
+/**
+ * Send type to global setup session
+ */
+export async function sendGlobalSetupType(text) {
+  if (globalSetupSession && globalSetupSession.page) {
+    try {
+      await globalSetupSession.page.keyboard.type(text, { delay: 0 });
+    } catch (e) {
+      console.error('[Puppet] Global setup type error:', e);
+    }
+  }
+}
+
+/**
+ * Send key to global setup session
+ */
+export async function sendGlobalSetupKey(key, modifiers = {}) {
+  if (globalSetupSession && globalSetupSession.page) {
+    try {
+      if (modifiers.ctrl) await globalSetupSession.page.keyboard.down('Control');
+      if (modifiers.shift) await globalSetupSession.page.keyboard.down('Shift');
+      if (modifiers.alt) await globalSetupSession.page.keyboard.down('Alt');
+      await globalSetupSession.page.keyboard.press(key);
+      if (modifiers.ctrl) await globalSetupSession.page.keyboard.up('Control');
+      if (modifiers.shift) await globalSetupSession.page.keyboard.up('Shift');
+      if (modifiers.alt) await globalSetupSession.page.keyboard.up('Alt');
+    } catch (e) {
+      console.error('[Puppet] Global setup key error:', e);
+    }
+  }
+}

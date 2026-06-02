@@ -3446,16 +3446,36 @@ function handleWSMessage(data) {
       }
     });
   } else if (data.type === 'puppet:screencast') {
-    // Use == (not ===) to handle any string/number type mismatch
-    if (Number(state.selectedChannelId) === Number(data.channelId)) {
+    // Global YT Setup wizard (Settings page)
+    if (data.channelId === '__yt_setup__') {
+      const img = document.getElementById('ytSetupScreenImg');
+      if (img) {
+        img.src = 'data:image/jpeg;base64,' + data.frame;
+        // Hide loading spinner on first frame
+        if (!ytSetupFirstFrameReceived) {
+          ytSetupFirstFrameReceived = true;
+          const loading = document.getElementById('ytSetupScreenLoading');
+          if (loading) loading.style.display = 'none';
+        }
+      }
+    }
+    // Per-channel puppet session (edit channel modal)
+    else if (Number(state.selectedChannelId) === Number(data.channelId)) {
       const img = document.getElementById('puppetScreenImg');
       if (img) {
         img.src = 'data:image/jpeg;base64,' + data.frame;
       }
     }
   } else if (data.type === 'puppet:session_ready') {
-    // Server signals the browser session is ready — show the screen immediately
-    if (Number(state.selectedChannelId) === Number(data.channelId)) {
+    // Global YT Setup wizard
+    if (data.channelId === '__yt_setup__') {
+      const container = document.getElementById('ytSetupScreenContainer');
+      if (container) {
+        setTimeout(() => focusYtSetupKeyboard(), 150);
+      }
+    }
+    // Per-channel puppet session
+    else if (Number(state.selectedChannelId) === Number(data.channelId)) {
       const container = document.getElementById('puppetScreenContainer');
       if (container) {
         container.style.display = 'block';
@@ -3470,13 +3490,21 @@ function handleWSMessage(data) {
       if (openBtn) { openBtn.textContent = '🔑 Browser Login Open'; openBtn.disabled = true; }
     }
   } else if (data.type === 'puppet:session_error') {
-    if (Number(state.selectedChannelId) === Number(data.channelId)) {
+    if (data.channelId === '__yt_setup__') {
+      showToast(`Browser failed to start: ${data.error}`, 'error');
+    }
+    else if (Number(state.selectedChannelId) === Number(data.channelId)) {
       showToast(`Browser failed to start: ${data.error}`, 'error');
       const openBtn = document.getElementById('btnBrowserLoginOpen');
       if (openBtn) { openBtn.textContent = '🔑 Start Browser Login'; openBtn.disabled = false; }
     }
   } else if (data.type === 'puppet:session_closed') {
-    if (Number(state.selectedChannelId) === Number(data.channelId)) {
+    if (data.channelId === '__yt_setup__') {
+      ytSetupSessionActive = false;
+      ytSetupFirstFrameReceived = false;
+      goToYtSetupStep(1);
+    }
+    else if (Number(state.selectedChannelId) === Number(data.channelId)) {
       const container = document.getElementById('puppetScreenContainer');
       if (container) container.style.display = 'none';
       updateBrowserLoginStatus(data.channelId);
@@ -4404,7 +4432,6 @@ function getVideoDuration(file) {
   });
 }
 
-// Global hook to dynamically save video duration if not already stored
 window.saveVideoDuration = async (videoId, duration) => {
   try {
     const res = await fetch(`${API_BASE}/media/videos/${videoId}/duration`, {
@@ -4421,4 +4448,280 @@ window.saveVideoDuration = async (videoId, duration) => {
     console.error('Error saving video duration:', e);
   }
 };
+
+// ---------------------------------------------------------------------------
+// 15. YouTube Login Setup Wizard (Settings Tab)
+// ---------------------------------------------------------------------------
+
+let ytSetupSessionActive = false;
+let ytSetupFirstFrameReceived = false;
+
+/**
+ * Refresh the YouTube Login Setup section — check if a session is already running
+ */
+async function refreshYtLoginSetup() {
+  try {
+    const res = await fetch(`${API_BASE}/channels/yt-setup/status`);
+    const data = await res.json();
+    
+    if (data.active) {
+      ytSetupSessionActive = true;
+      goToYtSetupStep(2);
+      showToast('Active browser session found.', 'info');
+    } else {
+      ytSetupSessionActive = false;
+      goToYtSetupStep(1);
+    }
+  } catch (err) {
+    console.error('Failed to refresh YT setup status:', err);
+  }
+}
+
+/**
+ * Navigate between step 1 and step 2
+ */
+function goToYtSetupStep(step) {
+  const step1 = document.getElementById('ytSetupStep1');
+  const step2 = document.getElementById('ytSetupStep2');
+  const ind1 = document.getElementById('ytStep1Indicator');
+  const ind2 = document.getElementById('ytStep2Indicator');
+  const line = document.getElementById('ytStepLine');
+  
+  if (!step1 || !step2) return;
+
+  if (step === 1) {
+    step1.style.display = 'block';
+    step2.style.display = 'none';
+    ind1.className = 'yt-step-indicator active';
+    ind2.className = 'yt-step-indicator';
+    line.className = 'yt-step-line';
+  } else {
+    step1.style.display = 'none';
+    step2.style.display = 'block';
+    ind1.className = 'yt-step-indicator complete';
+    ind2.className = 'yt-step-indicator active';
+    line.className = 'yt-step-line active';
+    
+    // Show loading if no frame yet
+    const loading = document.getElementById('ytSetupScreenLoading');
+    if (loading && !ytSetupFirstFrameReceived) {
+      loading.style.display = 'flex';
+    }
+  }
+}
+
+/**
+ * Launch the Chrome browser for YouTube login setup
+ */
+async function launchYtSetupBrowser() {
+  const btn = document.getElementById('btnYtSetupLaunch');
+  const statusDiv = document.getElementById('ytSetupLaunchStatus');
+  
+  btn.disabled = true;
+  btn.innerHTML = '⏳ Launching Chrome...';
+  if (statusDiv) {
+    statusDiv.style.display = 'block';
+    statusDiv.textContent = 'Starting headless Chrome on the server. This may take a few seconds...';
+  }
+
+  try {
+    const res = await fetch(`${API_BASE}/channels/yt-setup/launch`, { method: 'POST' });
+    const data = await res.json();
+    
+    if (data.success) {
+      ytSetupSessionActive = true;
+      ytSetupFirstFrameReceived = false;
+      showToast('Chrome browser launched! Loading remote screen...', 'success');
+      
+      // Move to step 2
+      goToYtSetupStep(2);
+    } else {
+      throw new Error(data.error || 'Failed to launch browser');
+    }
+  } catch (err) {
+    showToast('Failed to launch browser: ' + err.message, 'error');
+    if (statusDiv) {
+      statusDiv.textContent = '❌ ' + err.message;
+      statusDiv.style.color = '#f87171';
+    }
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '🚀 Launch Chrome Browser';
+  }
+}
+
+/**
+ * Verify channels — crawls YouTube Studio to find connected channels
+ */
+async function verifyYtSetupChannels() {
+  const btn = document.getElementById('btnYtSetupVerify');
+  const status = document.getElementById('ytSetupVerifyStatus');
+  
+  btn.disabled = true;
+  btn.innerHTML = '⏳ Verifying...';
+  if (status) status.textContent = 'Crawling YouTube Studio for your channels...';
+
+  try {
+    const res = await fetch(`${API_BASE}/channels/yt-setup/verify`, { method: 'POST' });
+    const data = await res.json();
+    
+    if (data.success) {
+      const count = data.channels ? data.channels.length : 0;
+      showToast(`✅ Found ${count} channel(s)! They have been added/updated.`, 'success');
+      if (status) status.textContent = `✅ Verified — ${count} channel(s) found and saved.`;
+      if (status) status.style.color = '#4ade80';
+      
+      // Reload channels in the app
+      loadChannels();
+      loadAllData();
+    } else {
+      throw new Error(data.error || 'Verification failed');
+    }
+  } catch (err) {
+    showToast('Verification failed: ' + err.message, 'error');
+    if (status) {
+      status.textContent = '❌ ' + err.message;
+      status.style.color = '#f87171';
+    }
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '✅ Verify Channels';
+  }
+}
+
+/**
+ * Save session cookies and close the browser
+ */
+async function saveAndCloseYtSetup() {
+  const btn = document.getElementById('btnYtSetupSave');
+  
+  btn.disabled = true;
+  btn.innerHTML = '⏳ Saving...';
+
+  try {
+    const res = await fetch(`${API_BASE}/channels/yt-setup/close`, { method: 'POST' });
+    const data = await res.json();
+    
+    if (data.success) {
+      showToast('Browser session saved and closed.', 'success');
+      ytSetupSessionActive = false;
+      ytSetupFirstFrameReceived = false;
+      
+      // Reset to step 1
+      goToYtSetupStep(1);
+      
+      // Reset the screen image
+      const img = document.getElementById('ytSetupScreenImg');
+      if (img) {
+        img.src = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='1024' height='700' viewBox='0 0 1024 700'><rect width='1024' height='700' fill='%230a0a0f'/><text x='512' y='350' fill='%23333' font-family='sans-serif' font-size='16' text-anchor='middle'>Browser closed</text></svg>";
+      }
+
+      // Show loading state again for next time
+      const loading = document.getElementById('ytSetupScreenLoading');
+      if (loading) loading.style.display = 'flex';
+    } else {
+      throw new Error(data.error || 'Failed to close session');
+    }
+  } catch (err) {
+    showToast('Error: ' + err.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '💾 Save & Close Browser';
+  }
+}
+
+/**
+ * Handle remote screen click (YouTube Setup wizard)
+ */
+function handleYtSetupClick(event) {
+  event.preventDefault();
+  event.stopPropagation();
+
+  const img = document.getElementById('ytSetupScreenImg');
+  if (!img) return;
+
+  const rect = img.getBoundingClientRect();
+  const displayX = event.clientX - rect.left;
+  const displayY = event.clientY - rect.top;
+
+  if (displayX < 0 || displayY < 0 || displayX > rect.width || displayY > rect.height) return;
+
+  const x = Math.round((displayX / rect.width) * 1024);
+  const y = Math.round((displayY / rect.height) * 700);
+
+  console.log(`[YT Setup Click] Display(${displayX.toFixed(0)}, ${displayY.toFixed(0)}) => Remote(${x}, ${y})`);
+  
+  if (state.ws && state.ws.readyState === WebSocket.OPEN) {
+    state.ws.send(JSON.stringify({ type: 'puppet:click', channelId: '__yt_setup__', x, y }));
+  }
+
+  focusYtSetupKeyboard();
+}
+
+/**
+ * Focus the keyboard sink for YT Setup screen
+ */
+function focusYtSetupKeyboard() {
+  const sink = document.getElementById('ytSetupKeyboardSink');
+  if (sink) {
+    sink.focus({ preventScroll: true });
+    sink.value = '';
+  }
+}
+
+/**
+ * Keyboard handlers for YT Setup screen
+ */
+function onYtSetupKeyDown(event) {
+  const key = event.key;
+  if (['Control', 'Shift', 'Alt', 'Meta'].includes(key)) return;
+
+  if (event.ctrlKey) {
+    if (key.toLowerCase() === 'v') return; // Allow paste
+    event.preventDefault();
+    event.stopPropagation();
+    const comboKey = key.length === 1 ? key.toUpperCase() : key;
+    sendYtSetupCmd('puppet:key', { key: comboKey, modifiers: { ctrl: true, shift: event.shiftKey, alt: event.altKey } });
+    return;
+  }
+
+  if (PUPPET_SPECIAL_KEYS.has(key)) {
+    event.preventDefault();
+    event.stopPropagation();
+    sendYtSetupCmd('puppet:key', { key });
+  }
+}
+
+function onYtSetupInput(event) {
+  const text = event.target.value;
+  if (text.length > 0) {
+    sendYtSetupCmd('puppet:type', { text });
+    event.target.value = '';
+  }
+}
+
+function onYtSetupKeyUp(event) {
+  const sink = document.getElementById('ytSetupKeyboardSink');
+  if (sink) sink.value = '';
+}
+
+function onYtSetupScreenFocus() {
+  const indicator = document.getElementById('ytSetupFocusIndicator');
+  const container = document.getElementById('ytSetupScreenContainer');
+  if (indicator) indicator.style.display = 'inline-flex';
+  if (container) container.classList.add('focused');
+}
+
+function onYtSetupScreenBlur() {
+  const indicator = document.getElementById('ytSetupFocusIndicator');
+  const container = document.getElementById('ytSetupScreenContainer');
+  if (indicator) indicator.style.display = 'none';
+  if (container) container.classList.remove('focused');
+}
+
+function sendYtSetupCmd(type, payload = {}) {
+  if (state.ws && state.ws.readyState === WebSocket.OPEN) {
+    state.ws.send(JSON.stringify({ type, channelId: '__yt_setup__', ...payload }));
+  }
+}
 

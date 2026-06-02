@@ -167,11 +167,13 @@ router.post('/yt-setup/verify', async (req, res) => {
         { name: ch.name, userId }
       );
       
+      let channelId;
       if (existing) {
         run(
           'UPDATE channels SET upload_mode = @mode WHERE id = @id',
           { mode: 'browser', id: existing.id }
         );
+        channelId = existing.id;
         channelsCreated.push({ id: existing.id, name: ch.name, action: 'updated' });
       } else {
         const result2 = run(
@@ -179,7 +181,27 @@ router.post('/yt-setup/verify', async (req, res) => {
            VALUES (@name, @userId, 'browser', 'private', '22')`,
           { name: ch.name, userId }
         );
-        channelsCreated.push({ id: result2.lastInsertRowid, name: ch.name, action: 'created' });
+        channelId = result2.lastInsertRowid;
+        channelsCreated.push({ id: channelId, name: ch.name, action: 'created' });
+      }
+
+      // Copy VNC global Chrome profile to the channel's profile directory
+      // This transfers login cookies so the upload system can find them
+      try {
+        const globalProfile = path.join(__dirname, '..', '..', 'data', 'profiles', 'yt_setup_global');
+        const channelProfile = path.join(__dirname, '..', '..', 'data', 'profiles', `channel_${channelId}`);
+        
+        if (fs.existsSync(globalProfile)) {
+          // Remove old channel profile if it exists
+          if (fs.existsSync(channelProfile)) {
+            fs.rmSync(channelProfile, { recursive: true, force: true });
+          }
+          // Copy global profile to channel profile
+          fs.cpSync(globalProfile, channelProfile, { recursive: true });
+          console.log(`[YT Setup] Copied login profile to channel_${channelId}`);
+        }
+      } catch (copyErr) {
+        console.warn(`[YT Setup] Failed to copy profile for channel ${channelId}:`, copyErr.message);
       }
     }
     

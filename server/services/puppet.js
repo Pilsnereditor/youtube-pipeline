@@ -35,13 +35,19 @@ export function resolveChannelProxy(channel) {
     return null;
   }
 
+  // Bypass VPS-only proxies when running locally on Windows to allow successful local testing
+  if (process.platform === 'win32') {
+    console.log(`[Proxy] Local Windows environment detected. Bypassing proxy "${channel.proxy_type}" for channel "${channel.name}" to use direct connection.`);
+    return null;
+  }
+
   let host = channel.proxy_host;
   let port = channel.proxy_port || 1080;
   let username = channel.proxy_username || '';
   let password = channel.proxy_password || '';
   let type = channel.proxy_type;
 
-  if (channel.proxy_type === 'nordvpn') {
+  if (channel.proxy_type === 'nordvpn' || (channel.proxy_type === 'socks5' && NORDVPN_SERVERS[channel.proxy_host])) {
     type = 'socks5';
     host = NORDVPN_SERVERS[channel.proxy_host] || 'atlanta.us.socks.nordhold.net';
     port = 1080;
@@ -118,6 +124,7 @@ async function launchBrowserWithRetry(chromePath, profilePath, headless = false,
         headless,
         userDataDir: profilePath,
         defaultViewport: null,
+        ignoreDefaultArgs: ['--enable-automation'],
         args
       });
       return browser;
@@ -144,22 +151,43 @@ export async function setupBrowserSession(channelId, userId, broadcastFn) {
   const profilePath = getProfilePath(channelId);
   const chromePath = getChromePath();
 
+  // Force clean up browser lock files to prevent lock-on-launch crashes
+  try {
+    const lockPath = path.join(profilePath, 'SingletonLock');
+    const socketPath = path.join(profilePath, 'SingletonSocket');
+    const cookiePath = path.join(profilePath, 'SingletonCookie');
+    if (fs.existsSync(lockPath)) fs.unlinkSync(lockPath);
+    if (fs.existsSync(socketPath)) fs.unlinkSync(socketPath);
+    if (fs.existsSync(cookiePath)) fs.unlinkSync(cookiePath);
+  } catch (e) {
+    console.warn(`[Puppet] Failed to pre-clean lock files: ${e.message}`);
+  }
+
   // Load and resolve channel proxy details
   const channel = queryOne('SELECT * FROM channels WHERE id = @id', { id: channelId });
   const proxyConfig = resolveChannelProxy(channel);
   const proxyUrl = proxyConfig ? proxyConfig.proxyUrl : null;
-  
+
   if (proxyUrl) {
     console.log(`[Puppet] Routing setup session for channel ${channelId} via proxy: ${proxyUrl}`);
   }
 
   console.log(`[Puppet] Launching headless browser setup for channel ${channelId}`);
-  const browser = await launchBrowserWithRetry(chromePath, profilePath, true, 3, 3000, proxyUrl);
+
+  let browser;
+  try {
+    browser = await launchBrowserWithRetry(chromePath, profilePath, true, 3, 3000, proxyUrl);
+  } catch (err) {
+    console.error(`[Puppet] Browser launch failed for channel ${channelId}:`, err);
+    // Notify frontend that launch failed
+    if (broadcastFn) {
+      broadcastFn({ type: 'puppet:session_error', channelId, error: err.message }, userId);
+    }
+    throw err;
+  }
 
   const [page] = await browser.pages();
-  await page.setExtraHTTPHeaders({
-    'Accept-Language': 'en-US,en;q=0.9'
-  });
+  await page.setExtraHTTPHeaders({ 'Accept-Language': 'en-US,en;q=0.9' });
   await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
   await page.setViewport({ width: 1024, height: 700 });
 
@@ -170,19 +198,33 @@ export async function setupBrowserSession(channelId, userId, broadcastFn) {
     });
   }
 
-  // Navigate to YouTube Studio
-  await page.goto('https://studio.youtube.com?hl=en&persist_hl=1', { waitUntil: 'networkidle2' });
+  // Override webdriver and plugins to bypass Google bot block
+  await page.evaluateOnNewDocument(() => {
+    Object.defineProperty(navigator, 'webdriver', {
+      get: () => false,
+    });
+    Object.defineProperty(navigator, 'plugins', {
+      get: () => [
+        { name: 'PDF Viewer' },
+        { name: 'Chrome PDF Viewer' },
+        { name: 'Chromium PDF Viewer' },
+        { name: 'Microsoft Edge PDF Viewer' },
+        { name: 'WebKit built-in PDF' }
+      ]
+    });
+  });
 
-  // Connect CDP session for screencasting
+  // Connect CDP session for screencasting BEFORE navigation
+  // This lets us start sending frames immediately as the page loads
   const client = await page.target().createCDPSession();
-  await client.send('Page.startScreencast', { format: 'jpeg', quality: 50, maxWidth: 1024, maxHeight: 700 });
+  await client.send('Page.startScreencast', { format: 'jpeg', quality: 60, maxWidth: 1024, maxHeight: 700 });
 
   client.on('Page.screencastFrame', async ({ data, metadata, sessionId }) => {
     try {
       if (broadcastFn) {
         broadcastFn({
           type: 'puppet:screencast',
-          channelId,
+          channelId: Number(channelId),
           frame: data,
           width: metadata.deviceWidth,
           height: metadata.deviceHeight
@@ -193,17 +235,36 @@ export async function setupBrowserSession(channelId, userId, broadcastFn) {
     } finally {
       try {
         await client.send('Page.ackScreencastFrame', { sessionId });
-      } catch (e) {
-        // ignore
-      }
+      } catch (e) { /* ignore */ }
     }
   });
 
-  // Store active session
+  // *** KEY FIX: Register session BEFORE page.goto ***
+  // This means browser-login-status immediately returns active:true
+  // and the frontend shows the screen while the page is still loading
   activeSetupSessions.set(channelId, { browser, page, client });
 
   browser.on('disconnected', () => {
     activeSetupSessions.delete(channelId);
+    if (broadcastFn) {
+      broadcastFn({ type: 'puppet:session_closed', channelId: Number(channelId) }, userId);
+    }
+  });
+
+  // Notify frontend that session is ready — screen will appear immediately
+  if (broadcastFn) {
+    broadcastFn({ type: 'puppet:session_ready', channelId: Number(channelId) }, userId);
+  }
+
+  // Navigate to YouTube Studio in background (use domcontentloaded, not networkidle2)
+  // networkidle2 hangs through SOCKS5 proxy — domcontentloaded is fast and reliable
+  console.log(`[Puppet] Navigating to YouTube Studio for channel ${channelId}...`);
+  page.goto('https://studio.youtube.com?hl=en&persist_hl=1', {
+    waitUntil: 'domcontentloaded',
+    timeout: 60000
+  }).catch(err => {
+    console.warn(`[Puppet] Navigation warning for channel ${channelId}: ${err.message}`);
+    // Don't kill the session — user can still interact
   });
 
   return browser;
@@ -217,7 +278,7 @@ export async function checkBrowserSessionActive(channelId) {
 }
 
 /**
- * Force close a login browser session
+ * Force close a login browser session and clean up any lingering processes
  */
 export async function closeBrowserSession(channelId) {
   const session = activeSetupSessions.get(channelId);
@@ -225,10 +286,29 @@ export async function closeBrowserSession(channelId) {
     try {
       await session.browser.close();
     } catch (e) {
-      console.error(`[Puppet] Error closing browser for channel ${channelId}:`, e);
+      console.warn(`[Puppet] Error closing browser for channel ${channelId}: ${e.message}`);
     }
     activeSetupSessions.delete(channelId);
   }
+
+  // Also clean up lock files regardless of whether we had a tracked session
+  // This handles cases where the server crashed and left Chrome running
+  const profilePath = getProfilePath(channelId);
+  try {
+    const lockFiles = ['SingletonLock', 'SingletonSocket', 'SingletonCookie'];
+    for (const f of lockFiles) {
+      const p = path.join(profilePath, f);
+      if (fs.existsSync(p)) {
+        fs.unlinkSync(p);
+        console.log(`[Puppet] Removed lock file: ${f} for channel ${channelId}`);
+      }
+    }
+  } catch (e) {
+    console.warn(`[Puppet] Could not clean lock files for channel ${channelId}: ${e.message}`);
+  }
+
+  // Give OS a moment to release file handles
+  await new Promise(r => setTimeout(r, 500));
 }
 
 /**
@@ -249,33 +329,41 @@ export async function sendPuppetType(channelId, userId, text) {
   const session = activeSetupSessions.get(channelId);
   if (session && session.page) {
     try {
-      // 1. Try direct DOM value injection first for focused inputs (bypasses Google's bot-detection event blocks)
-      const injected = await session.page.evaluate((txt) => {
-        const el = document.activeElement;
-        if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.contentEditable === 'true')) {
-          el.value = txt;
-          el.dispatchEvent(new Event('input', { bubbles: true }));
-          el.dispatchEvent(new Event('change', { bubbles: true }));
-          return true;
-        }
-        return false;
-      }, text);
-
-      // 2. Fall back to standard keyboard typing if no input element was in active focus
-      if (!injected) {
-        await session.page.keyboard.type(text, { delay: 50 });
-      }
+      // For single characters (real-time typing from keyboard), use keyboard.type directly.
+      // This simulates natural keypress events which Google Sign-In listens to.
+      await session.page.keyboard.type(text, { delay: 0 });
     } catch (e) {
       console.error(`[Puppet] Type error for channel ${channelId}:`, e);
     }
   }
 }
 
-export async function sendPuppetKey(channelId, userId, key) {
+export async function sendPuppetKey(channelId, userId, key, modifiers = {}) {
   const session = activeSetupSessions.get(channelId);
   if (session && session.page) {
     try {
+      // Handle modifier key combinations (e.g. Ctrl+A, Ctrl+V)
+      if (modifiers.ctrl) {
+        await session.page.keyboard.down('Control');
+      }
+      if (modifiers.shift) {
+        await session.page.keyboard.down('Shift');
+      }
+      if (modifiers.alt) {
+        await session.page.keyboard.down('Alt');
+      }
+
       await session.page.keyboard.press(key);
+
+      if (modifiers.ctrl) {
+        await session.page.keyboard.up('Control');
+      }
+      if (modifiers.shift) {
+        await session.page.keyboard.up('Shift');
+      }
+      if (modifiers.alt) {
+        await session.page.keyboard.up('Alt');
+      }
     } catch (e) {
       console.error(`[Puppet] Keypress error for channel ${channelId}:`, e);
     }
@@ -286,7 +374,10 @@ export async function resetPuppetSessionUrl(channelId) {
   const session = activeSetupSessions.get(channelId);
   if (session && session.page) {
     try {
-      await session.page.goto('https://studio.youtube.com?hl=en&persist_hl=1', { waitUntil: 'networkidle2' });
+      await session.page.goto('https://studio.youtube.com?hl=en&persist_hl=1', {
+        waitUntil: 'domcontentloaded',
+        timeout: 30000
+      });
     } catch (e) {
       console.error(`[Puppet] Reset URL error for channel ${channelId}:`, e);
     }
@@ -326,6 +417,18 @@ export async function uploadVideoBrowser(channelId, opts, logFn = console.log) {
 
   const profilePath = getProfilePath(channelId);
   const chromePath = getChromePath();
+
+  // Force clean up browser lock files to prevent lock-on-launch crashes
+  try {
+    const lockPath = path.join(profilePath, 'SingletonLock');
+    const socketPath = path.join(profilePath, 'SingletonSocket');
+    const cookiePath = path.join(profilePath, 'SingletonCookie');
+    if (fs.existsSync(lockPath)) fs.unlinkSync(lockPath);
+    if (fs.existsSync(socketPath)) fs.unlinkSync(socketPath);
+    if (fs.existsSync(cookiePath)) fs.unlinkSync(cookiePath);
+  } catch (e) {
+    logFn(`[Puppet] Failed to pre-clean lock files: ${e.message}`);
+  }
 
   if (!fs.existsSync(opts.videoPath)) {
     throw new Error(`Video file does not exist: ${opts.videoPath}`);

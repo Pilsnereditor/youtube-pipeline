@@ -1008,36 +1008,48 @@
 
             <!-- Puppet Remote Screen Container -->
             <div id="puppetScreenContainer" style="display:none; margin-top:15px; padding:15px; border:1px solid rgba(255,255,255,0.1); border-radius:12px; background:rgba(0,0,0,0.4); box-shadow:inset 0 0 20px rgba(0,0,0,0.6);">
-              <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+              <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
                 <h5 style="margin:0; font-size:0.85rem; color:var(--text-accent); font-weight:600; display:flex; align-items:center; gap:6px;">
                   🖥️ Remote Browser Screen
+                  <span id="puppetFocusIndicator" style="display:none; font-size:0.65rem; color:#4ade80; background:rgba(74,222,128,0.15); border:1px solid rgba(74,222,128,0.4); border-radius:4px; padding:1px 6px; font-weight:500;">⌨️ Keyboard Active</span>
                 </h5>
                 <div style="display:flex; gap:6px;">
                   <button type="button" class="btn-secondary btn-xs" onclick="sendPuppetCommand('puppet:url_reset')" style="padding:4px 8px; font-size:0.75rem;">Reset URL</button>
-                  <button type="button" class="btn-success btn-xs" onclick="finishBrowserLogin()" style="padding:4px 8px; font-size:0.75rem; font-weight:600;">Save & Close Session</button>
+                  <button type="button" class="btn-success btn-xs" onclick="finishBrowserLogin()" style="padding:4px 8px; font-size:0.75rem; font-weight:600;">Save &amp; Close Session</button>
                 </div>
               </div>
-              
-              <!-- The Screen Canvas/Img -->
-              <div style="position:relative; width:100%; max-height:480px; overflow:hidden; border-radius:8px; border:1px solid rgba(255,255,255,0.05); display:flex; align-items:center; justify-content:center; background:#111;">
-                <img id="puppetScreenImg" style="width:100%; height:auto; display:block; cursor:pointer;" onclick="handlePuppetClick(event)" alt="Remote screen stream connecting..." src="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='100' height='70' viewBox='0 0 100 70'><rect width='100' height='70' fill='%23111'/><text x='50' y='35' fill='%23555' font-family='sans-serif' font-size='4' text-anchor='middle'>Screencast stream starting...</text></svg>">
-              </div>
-              
-              <!-- Controls area under the screen -->
-              <div style="margin-top:12px; display:flex; flex-direction:column; gap:8px;">
-                <div style="display:flex; gap:8px;">
-                  <input type="text" id="puppetKeyboardInput" class="form-input" placeholder="Type text to send to remote browser..." style="margin-bottom:0; flex:1; height:34px; padding:6px 12px; font-size:0.85rem;" onkeydown="handlePuppetKeyboardKeyDown(event)">
-                  <button type="button" class="btn-primary btn-sm" onclick="sendPuppetText()" style="height:34px; padding:0 12px; font-size:0.8rem;">Send Text</button>
-                </div>
-                <div style="display:flex; gap:6px; flex-wrap:wrap; justify-content:center;">
-                  <button type="button" class="btn-secondary btn-xs" onclick="sendPuppetSpecialKey('Backspace')" style="padding:4px 10px; font-size:0.75rem; font-family:var(--font-mono);">Backspace ⌫</button>
-                  <button type="button" class="btn-secondary btn-xs" onclick="sendPuppetSpecialKey('Tab')" style="padding:4px 10px; font-size:0.75rem; font-family:var(--font-mono);">Tab ⇥</button>
-                  <button type="button" class="btn-secondary btn-xs" onclick="sendPuppetSpecialKey('Enter')" style="padding:4px 10px; font-size:0.75rem; font-family:var(--font-mono);">Enter ↵</button>
-                  <button type="button" class="btn-secondary btn-xs" onclick="sendPuppetSpecialKey('ArrowUp')" style="padding:4px 8px; font-size:0.75rem;">▲</button>
-                  <button type="button" class="btn-secondary btn-xs" onclick="sendPuppetSpecialKey('ArrowDown')" style="padding:4px 8px; font-size:0.75rem;">▼</button>
-                  <button type="button" class="btn-secondary btn-xs" onclick="sendPuppetSpecialKey('ArrowLeft')" style="padding:4px 8px; font-size:0.75rem;">◀</button>
-                  <button type="button" class="btn-secondary btn-xs" onclick="sendPuppetSpecialKey('ArrowRight')" style="padding:4px 8px; font-size:0.75rem;">▶</button>
-                </div>
+
+              <p style="font-size:0.72rem; color:#64748b; margin:0 0 8px; line-height:1.4;">💡 <strong style="color:#94a3b8;">Click on the screen</strong> to focus it, then type directly with your keyboard.</p>
+
+              <!-- Screen wrapper with hidden textarea as keyboard sink (noVNC approach) -->
+              <div style="position:relative; width:100%; border-radius:8px; overflow:hidden; background:#111;" onclick="focusPuppetKeyboard()">
+                <!-- The actual remote screen image -->
+                <img id="puppetScreenImg"
+                     style="width:100%; height:auto; display:block; cursor:crosshair; pointer-events:none;"
+                     alt="Remote screen loading..."
+                     src="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='1024' height='700' viewBox='0 0 1024 700'><rect width='1024' height='700' fill='%23111'/><text x='512' y='350' fill='%23444' font-family='sans-serif' font-size='18' text-anchor='middle'>Click Start Browser Login to begin</text></svg>">
+
+                <!-- Hidden textarea: the real keyboard input sink -->
+                <!-- Positioned off-screen but still receives keyboard events when focused -->
+                <textarea id="puppetKeyboardSink"
+                          autocomplete="off"
+                          autocorrect="off"
+                          autocapitalize="off"
+                          spellcheck="false"
+                          onkeydown="onPuppetKeyDown(event)"
+                          oninput="onPuppetInput(event)"
+                          onkeyup="onPuppetKeyUp(event)"
+                          onfocus="onPuppetScreenFocus()"
+                          onblur="onPuppetScreenBlur()"
+                          style="position:absolute; left:-9999px; top:0; width:1px; height:1px; opacity:0.01; pointer-events:none; z-index:1000; border:none; padding:0; margin:0; resize:none; outline:none;"
+                          tabindex="-1"
+                          aria-hidden="true"></textarea>
+
+                <!-- Click overlay: invisible layer on top to intercept clicks and route them -->
+                <div id="puppetClickOverlay"
+                     style="position:absolute; inset:0; cursor:crosshair; z-index:1;"
+                     onmousedown="event.preventDefault();"
+                     onclick="handlePuppetClick(event)"></div>
               </div>
             </div>
           </div>

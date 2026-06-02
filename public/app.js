@@ -1553,7 +1553,11 @@ async function updateBrowserLoginStatus(channelId) {
       openBtn.textContent = '🔑 Browser Login Open';
       openBtn.disabled = true;
       const container = document.getElementById('puppetScreenContainer');
-      if (container) container.style.display = 'block';
+      if (container) {
+        container.style.display = 'block';
+        // Small delay to let the DOM paint, then auto-focus the keyboard sink
+        setTimeout(() => focusPuppetKeyboard(), 100);
+      }
     } else {
       closeBtn.classList.add('hidden');
       openBtn.disabled = false;
@@ -1583,7 +1587,7 @@ async function startBrowserLogin() {
     const data = await res.json();
     
     if (data.success) {
-      showToast('Browser login window opened. Please log in to YouTube Studio in that window.', 'info');
+      showToast('Remote browser started! The screen will appear below — click on it and type to log in.', 'info');
       updateBrowserLoginStatus(channelId);
       
       // Start polling status every 2 seconds
@@ -1698,37 +1702,142 @@ function sendPuppetCommand(type, payload = {}) {
   }
 }
 
+/**
+ * Focus the hidden keyboard sink textarea so keystrokes are captured.
+ * Called when the user clicks anywhere on the remote screen.
+ */
+function focusPuppetKeyboard() {
+  const sink = document.getElementById('puppetKeyboardSink');
+  if (sink) {
+    sink.focus();
+    // Clear any accumulated text to prevent it growing unbounded
+    sink.value = '';
+  }
+}
+
+/**
+ * Handle click on the remote screen overlay.
+ * Sends the click position to the remote browser AND focuses the keyboard sink.
+ */
 function handlePuppetClick(event) {
-  const img = event.target;
+  event.preventDefault();
+  event.stopPropagation(); // don't bubble to the wrapper onclick
+
+  const img = document.getElementById('puppetScreenImg');
+  if (!img) return;
+
   const rect = img.getBoundingClientRect();
   const displayX = event.clientX - rect.left;
   const displayY = event.clientY - rect.top;
-  
-  // Viewport dimensions used in setupBrowserSession: width: 1024, height: 700
-  const originalWidth = 1024;
-  const originalHeight = 700;
-  
-  const x = Math.round((displayX / rect.width) * originalWidth);
-  const y = Math.round((displayY / rect.height) * originalHeight);
-  
-  console.log(`[Puppet Click] Click coordinate: Display(${displayX}, ${displayY}) => Viewport(${x}, ${y})`);
+
+  if (displayX < 0 || displayY < 0 || displayX > rect.width || displayY > rect.height) return;
+
+  // Map display coordinates to the remote browser viewport (1024x700)
+  const x = Math.round((displayX / rect.width) * 1024);
+  const y = Math.round((displayY / rect.height) * 700);
+
+  console.log(`[Puppet Click] Display(${displayX.toFixed(0)}, ${displayY.toFixed(0)}) => Remote(${x}, ${y})`);
   sendPuppetCommand('puppet:click', { x, y });
+
+  // Also focus the keyboard sink so user can type immediately after clicking
+  focusPuppetKeyboard();
 }
 
-function sendPuppetText() {
-  const input = document.getElementById('puppetKeyboardInput');
-  if (!input) return;
-  const text = input.value;
-  if (!text) return;
+// Non-printable keys to forward as puppet:key
+const PUPPET_SPECIAL_KEYS = new Set([
+  'Backspace', 'Delete', 'Tab', 'Enter', 'Escape', 'Home', 'End',
+  'PageUp', 'PageDown', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
+  'F1','F2','F3','F4','F5','F6','F7','F8','F9','F10','F11','F12',
+  'Insert', 'PrintScreen', 'Pause', 'NumLock', 'ScrollLock', 'CapsLock'
+]);
 
-  sendPuppetCommand('puppet:type', { text });
-  input.value = '';
-}
+/**
+ * Main keyboard handler — fires on keydown in the hidden textarea.
+ * For special/navigation keys (Backspace, Enter, Arrows) and Ctrl combos,
+ * we handle them explicitly and call event.preventDefault().
+ * For standard printable characters, we let the default browser action type
+ * them into the textarea, which is then captured and sent by onPuppetInput().
+ */
+function onPuppetKeyDown(event) {
+  const key = event.key;
 
-function handlePuppetKeyboardKeyDown(event) {
-  if (event.key === 'Enter') {
-    sendPuppetText();
+  // Skip modifier keys themselves
+  if (['Control', 'Shift', 'Alt', 'Meta'].includes(key)) return;
+
+  // Ctrl combos (except Ctrl+V which we let pass to local textarea for paste)
+  if (event.ctrlKey) {
+    if (key.toLowerCase() === 'v') {
+      // Let standard paste happen in the local textarea
+      return;
+    }
     event.preventDefault();
+    event.stopPropagation();
+    const comboKey = key.length === 1 ? key.toUpperCase() : key;
+    sendPuppetCommand('puppet:key', {
+      key: comboKey,
+      modifiers: { ctrl: true, shift: event.shiftKey, alt: event.altKey }
+    });
+    return;
+  }
+
+  if (PUPPET_SPECIAL_KEYS.has(key)) {
+    // Prevent default action (like Tab shifting focus, or Backspace navigating back)
+    event.preventDefault();
+    event.stopPropagation();
+    sendPuppetCommand('puppet:key', { key });
+  }
+  // Otherwise, do not preventDefault! The character will be typed into the textarea,
+  // triggering the input event which we capture in onPuppetInput.
+}
+
+/**
+ * Capture input (typing & pasting) in the hidden textarea.
+ * This handles printable keys, pasted strings, virtual keyboards, and IMEs.
+ */
+function onPuppetInput(event) {
+  const text = event.target.value;
+  if (text.length > 0) {
+    sendPuppetCommand('puppet:type', { text });
+    // Reset immediately so it remains empty for subsequent input
+    event.target.value = '';
+  }
+}
+
+/**
+ * Keyup handler — clear the textarea value.
+ */
+function onPuppetKeyUp(event) {
+  const sink = document.getElementById('puppetKeyboardSink');
+  if (sink) {
+    sink.value = '';
+  }
+}
+
+/**
+ * Textarea gained focus — show the keyboard active indicator and highlight screen border.
+ */
+function onPuppetScreenFocus() {
+  const indicator = document.getElementById('puppetFocusIndicator');
+  const screenWrapper = document.querySelector('#puppetScreenContainer > div:last-of-type');
+  if (indicator) indicator.style.display = 'inline-flex';
+  // Add a glowing purple border around the screen area
+  const img = document.getElementById('puppetScreenImg');
+  if (img) {
+    img.style.outline = '2px solid rgba(99,102,241,0.8)';
+    img.style.boxShadow = '0 0 0 4px rgba(99,102,241,0.2)';
+  }
+}
+
+/**
+ * Textarea lost focus — hide keyboard active indicator.
+ */
+function onPuppetScreenBlur() {
+  const indicator = document.getElementById('puppetFocusIndicator');
+  if (indicator) indicator.style.display = 'none';
+  const img = document.getElementById('puppetScreenImg');
+  if (img) {
+    img.style.outline = 'none';
+    img.style.boxShadow = 'none';
   }
 }
 
@@ -3337,11 +3446,40 @@ function handleWSMessage(data) {
       }
     });
   } else if (data.type === 'puppet:screencast') {
-    if (state.selectedChannelId === data.channelId) {
+    // Use == (not ===) to handle any string/number type mismatch
+    if (Number(state.selectedChannelId) === Number(data.channelId)) {
       const img = document.getElementById('puppetScreenImg');
       if (img) {
         img.src = 'data:image/jpeg;base64,' + data.frame;
       }
+    }
+  } else if (data.type === 'puppet:session_ready') {
+    // Server signals the browser session is ready — show the screen immediately
+    if (Number(state.selectedChannelId) === Number(data.channelId)) {
+      const container = document.getElementById('puppetScreenContainer');
+      if (container) {
+        container.style.display = 'block';
+        setTimeout(() => focusPuppetKeyboard(), 150);
+      }
+      // Update status UI
+      const statusText = document.getElementById('browserLoginStatusText');
+      const closeBtn = document.getElementById('btnBrowserLoginClose');
+      const openBtn = document.getElementById('btnBrowserLoginOpen');
+      if (statusText) { statusText.className = 'badge badge-live'; statusText.textContent = 'Active Login Window'; }
+      if (closeBtn) closeBtn.classList.remove('hidden');
+      if (openBtn) { openBtn.textContent = '🔑 Browser Login Open'; openBtn.disabled = true; }
+    }
+  } else if (data.type === 'puppet:session_error') {
+    if (Number(state.selectedChannelId) === Number(data.channelId)) {
+      showToast(`Browser failed to start: ${data.error}`, 'error');
+      const openBtn = document.getElementById('btnBrowserLoginOpen');
+      if (openBtn) { openBtn.textContent = '🔑 Start Browser Login'; openBtn.disabled = false; }
+    }
+  } else if (data.type === 'puppet:session_closed') {
+    if (Number(state.selectedChannelId) === Number(data.channelId)) {
+      const container = document.getElementById('puppetScreenContainer');
+      if (container) container.style.display = 'none';
+      updateBrowserLoginStatus(data.channelId);
     }
   }
 }

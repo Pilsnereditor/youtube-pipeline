@@ -30,8 +30,21 @@ const __dirname = path.dirname(__filename);
 // Load environment variables
 dotenv.config();
 
+// ──────────────────────────────────────────────────────────────────────────────
+// Global crash guards — prevent Puppeteer/Chrome/proxy failures from killing
+// the entire server process. These are especially important when Chrome fails
+// to connect via SOCKS5 proxy or disconnects unexpectedly.
+// ──────────────────────────────────────────────────────────────────────────────
+process.on('uncaughtException', (err) => {
+  console.error('[Server] Uncaught exception (server will continue):', err.message);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[Server] Unhandled promise rejection (server will continue):', reason?.message || reason);
+});
+
 // Init database
 initDb();
+
 
 const app = express();
 const server = http.createServer(app);
@@ -129,7 +142,7 @@ wss.on('connection', (ws, request) => {
         } else if (data.type === 'puppet:type') {
           await sendPuppetType(channelId, userId, data.text);
         } else if (data.type === 'puppet:key') {
-          await sendPuppetKey(channelId, userId, data.key);
+          await sendPuppetKey(channelId, userId, data.key, data.modifiers || {});
         } else if (data.type === 'puppet:url_reset') {
           await resetPuppetSessionUrl(channelId);
         }
@@ -170,7 +183,7 @@ function broadcast(data, targetUserId) {
   const payload = JSON.stringify(data);
   for (const client of clients) {
     if (client.readyState === 1) { // OPEN
-      if (targetUserId !== undefined && client.userId !== targetUserId) {
+      if (targetUserId !== undefined && targetUserId !== null && Number(client.userId) !== Number(targetUserId)) {
         continue;
       }
       client.send(payload);

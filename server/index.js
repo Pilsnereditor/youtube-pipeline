@@ -10,7 +10,7 @@ import sqlite3Store from 'connect-sqlite3';
 import { fileURLToPath } from 'url';
 import { initDb, queryOne } from './db/database.js';
 import { init as initScheduler } from './services/scheduler.js';
-import { sendPuppetClick, sendPuppetType, sendPuppetKey, resetPuppetSessionUrl, sendGlobalSetupClick, sendGlobalSetupType, sendGlobalSetupKey } from './services/puppet.js';
+import { sendPuppetClick, sendPuppetType, sendPuppetKey, resetPuppetSessionUrl } from './services/puppet.js';
 
 // Load routes
 import authRouter from './routes/auth.js';
@@ -128,18 +128,6 @@ wss.on('connection', (ws, request) => {
       
       // Safety check: ensure target channel belongs to this user!
       if (data.type && data.type.startsWith('puppet:')) {
-        // Global YT Setup session (from Settings wizard)
-        if (data.channelId === '__yt_setup__') {
-          if (data.type === 'puppet:click') {
-            await sendGlobalSetupClick(data.x, data.y);
-          } else if (data.type === 'puppet:type') {
-            await sendGlobalSetupType(data.text);
-          } else if (data.type === 'puppet:key') {
-            await sendGlobalSetupKey(data.key, data.modifiers || {});
-          }
-          return;
-        }
-
         // Per-channel puppet session
         const channelId = Number(data.channelId);
         if (!channelId) return;

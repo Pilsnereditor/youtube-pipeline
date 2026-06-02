@@ -530,7 +530,7 @@
         <div id="ytSetupStep1" style="margin-top:0;">
           <h4 style="font-size:0.95rem; color:var(--text-bright); margin-bottom:8px;">Step 1 — Launch Browser</h4>
           <p style="font-size:0.82rem; color:var(--text-secondary); line-height:1.5; margin-bottom:16px;">
-            Click the button below to launch a remote Chrome browser on the server. You will see the browser screen appear here so you can log in to your YouTube channels.
+            Click the button below to launch a remote Chrome browser on the server. You will see the browser appear below so you can log in to your YouTube channels.
           </p>
           <button id="btnYtSetupLaunch" class="btn-primary" onclick="launchYtSetupBrowser()" style="display:flex; align-items:center; gap:6px; padding:10px 20px; font-size:0.92rem; font-weight:600;">
             🚀 Launch Chrome Browser
@@ -542,14 +542,14 @@
         <div id="ytSetupStep2" style="display:none; margin-top:0;">
           <h4 style="font-size:0.95rem; color:var(--text-bright); margin-bottom:6px;">Step 2 — Log into YouTube</h4>
           <p style="font-size:0.82rem; color:var(--text-secondary); line-height:1.5; margin-bottom:12px;">
-            Chrome is running — log in to YouTube in the browser above, then click <strong style="color:#4ade80;">Verify Channels</strong>.
+            Chrome is running — log in to YouTube in the browser below, then click <strong style="color:#4ade80;">Verify Channels</strong>.
           </p>
 
           <!-- Instructions checklist -->
           <div style="margin-bottom:16px; padding:12px 16px; border-radius:10px; background:rgba(99,102,241,0.06); border:1px solid rgba(99,102,241,0.15);">
             <div style="display:flex; align-items:flex-start; gap:8px; margin-bottom:8px;">
               <span style="color:#f59e0b; font-size:0.85rem; margin-top:1px;">⚠️</span>
-              <span style="font-size:0.78rem; color:#f59e0b; line-height:1.4;">If Chrome asks to use your existing profile, click <strong>"Don't sign in"</strong> / <strong>"Cancel"</strong>. This uses a separate Chrome profile. This keeps the app's cookies private from yours.</span>
+              <span style="font-size:0.78rem; color:#f59e0b; line-height:1.4;">If Chrome asks to use your existing profile, click <strong>"Don't sign in"</strong> / <strong>"Cancel"</strong>. This uses a separate Chrome profile.</span>
             </div>
             <div style="display:flex; align-items:flex-start; gap:8px; margin-bottom:8px;">
               <span style="color:#10b981; font-size:0.85rem; margin-top:1px;">✅</span>
@@ -557,54 +557,34 @@
             </div>
             <div style="display:flex; align-items:flex-start; gap:8px; margin-bottom:8px;">
               <span style="color:#10b981; font-size:0.85rem; margin-top:1px;">✅</span>
-              <span style="font-size:0.78rem; color:var(--text-secondary); line-height:1.4;">Navigate to YouTube and <strong style="color:var(--text-bright);">open all your YouTube channels</strong>. Navigate on YouTube and make sure you're logged in.</span>
+              <span style="font-size:0.78rem; color:var(--text-secondary); line-height:1.4;">Navigate to YouTube and <strong style="color:var(--text-bright);">make sure you're logged in</strong>.</span>
             </div>
             <div style="display:flex; align-items:flex-start; gap:8px; margin-bottom:8px;">
               <span style="color:#10b981; font-size:0.85rem; margin-top:1px;">✅</span>
-              <span style="font-size:0.78rem; color:var(--text-secondary); line-height:1.4;">Make sure YouTube is in <strong style="color:var(--text-bright);">English</strong>. If it's not in English, click your profile pic → <em>Language</em> → Change it before clicking Verify.</span>
+              <span style="font-size:0.78rem; color:var(--text-secondary); line-height:1.4;">Make sure YouTube is in <strong style="color:var(--text-bright);">English</strong>. If not, change it before clicking Verify.</span>
             </div>
             <div style="display:flex; align-items:flex-start; gap:8px;">
               <span style="color:#10b981; font-size:0.85rem; margin-top:1px;">✅</span>
-              <span style="font-size:0.78rem; color:var(--text-secondary); line-height:1.4;">Click <strong style="color:#4ade80;">"Verify Channels"</strong> below and wait.<br><span style="font-size:0.72rem; color:var(--text-muted);">This crawls your logo, channels & branding, and verifies the session. It may take 10-60 seconds — don't close the browser.</span></span>
+              <span style="font-size:0.78rem; color:var(--text-secondary); line-height:1.4;">Click <strong style="color:#4ade80;">"Verify Channels"</strong> below and wait (10-60 seconds).</span>
             </div>
           </div>
 
-          <!-- Remote Browser Screen -->
-          <div id="ytSetupScreenContainer" style="margin-bottom:16px; border-radius:12px; overflow:hidden; background:#0a0a0f; border:2px solid rgba(99,102,241,0.3); position:relative; min-height:200px;">
-            <!-- Loading animation -->
-            <div id="ytSetupScreenLoading" style="position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:12px; z-index:2; background:#0a0a0f;">
-              <div class="yt-setup-spinner"></div>
-              <span style="font-size:0.82rem; color:var(--text-muted);">Connecting to remote browser...</span>
+          <!-- VNC Browser iframe (noVNC) -->
+          <div id="ytSetupScreenContainer" style="margin-bottom:16px; border-radius:12px; overflow:hidden; background:#000; border:2px solid rgba(99,102,241,0.3);">
+            <!-- VNC deps missing warning (hidden by default) -->
+            <div id="ytSetupVncMissing" style="display:none; padding:24px; text-align:center;">
+              <p style="font-size:0.95rem; color:#f87171; font-weight:600; margin-bottom:8px;">VNC dependencies missing</p>
+              <p style="font-size:0.78rem; color:var(--text-secondary); margin-bottom:12px;">Run this command on your server to install:</p>
+              <code style="display:block; font-size:0.75rem; color:#818cf8; padding:12px; border-radius:6px; background:rgba(0,0,0,0.5); word-break:break-all;">sudo apt install -y xvfb x11vnc novnc websockify openbox</code>
+              <p style="font-size:0.72rem; color:var(--text-muted); margin-top:12px;">Then restart your server with: <code style="color:#818cf8;">pm2 restart youtube-pipeline</code></p>
             </div>
-            <!-- Screen wrapper -->
-            <div style="position:relative; width:100%;" onclick="focusYtSetupKeyboard()">
-              <img id="ytSetupScreenImg"
-                   style="width:100%; height:auto; display:block; cursor:crosshair;"
-                   alt="Remote browser loading..."
-                   src="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='1024' height='700' viewBox='0 0 1024 700'><rect width='1024' height='700' fill='%230a0a0f'/><text x='512' y='350' fill='%23333' font-family='sans-serif' font-size='16' text-anchor='middle'>Waiting for browser...</text></svg>">
-              <!-- Keyboard input overlay (invisible, sits on top) -->
-              <textarea id="ytSetupKeyboardSink"
-                        autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"
-                        onkeydown="onYtSetupKeyDown(event)"
-                        oninput="onYtSetupInput(event)"
-                        onkeyup="onYtSetupKeyUp(event)"
-                        onfocus="onYtSetupScreenFocus()"
-                        onblur="onYtSetupScreenBlur()"
-                        style="position:absolute; inset:0; width:100%; height:100%; opacity:0; cursor:crosshair; z-index:5; border:none; padding:0; margin:0; resize:none; outline:none; background:transparent;"
-                        aria-label="Remote browser keyboard input"></textarea>
-              <!-- Click overlay -->
-              <div id="ytSetupClickOverlay"
-                   style="position:absolute; inset:0; cursor:crosshair; z-index:3;"
-                   onmousedown="event.preventDefault();"
-                   onclick="handleYtSetupClick(event)"></div>
-            </div>
+            <!-- noVNC iframe -->
+            <iframe id="ytSetupVncFrame"
+              style="width:100%; height:680px; border:none; display:none;"
+              allowfullscreen></iframe>
           </div>
 
-          <!-- Keyboard focus indicator -->
-          <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:16px;">
-            <span style="font-size:0.72rem; color:#64748b; line-height:1.4;">💡 <strong style="color:#94a3b8;">Click on the screen</strong> to focus it, then type directly with your keyboard.</span>
-            <span id="ytSetupFocusIndicator" style="display:none; font-size:0.68rem; color:#4ade80; background:rgba(74,222,128,0.12); border:1px solid rgba(74,222,128,0.3); border-radius:4px; padding:2px 8px; font-weight:500;">⌨️ Keyboard Active</span>
-          </div>
+          <p style="font-size:0.72rem; color:#64748b; margin-bottom:16px;">💡 <strong style="color:#94a3b8;">Click inside the browser</strong> to interact. Type, click, and scroll — it's a real remote desktop.</p>
 
           <!-- Bottom action buttons -->
           <div style="display:flex; align-items:center; gap:10px; padding-top:12px; border-top:1px solid rgba(255,255,255,0.06);">

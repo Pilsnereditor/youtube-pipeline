@@ -1,5 +1,6 @@
 import express from 'express';
 import http from 'http';
+import net from 'net';
 import { WebSocketServer } from 'ws';
 import path from 'path';
 import fs from 'fs';
@@ -75,6 +76,17 @@ app.use(sessionMiddleware);
 
 // Import client router
 import clientRouter from './routes/client.js';
+
+// Serve noVNC static files (before auth — the iframe is already behind auth)
+const novncDir = '/usr/share/novnc';
+try {
+  if (fs.existsSync(novncDir)) {
+    app.use('/novnc', express.static(novncDir));
+    console.log('[Server] Serving noVNC from', novncDir);
+  }
+} catch (e) {
+  console.warn('[Server] noVNC directory not found:', novncDir);
+}
 
 // Authentication middleware
 app.use((req, res, next) => {
@@ -161,7 +173,29 @@ wss.on('connection', (ws, request) => {
 
 // Upgrade HTTP connection to WS
 server.on('upgrade', (request, socket, head) => {
-  const res = {
+  // Proxy /websockify to the local websockify (VNC) server
+  if (request.url && request.url.startsWith('/websockify')) {
+    const target = net.createConnection({ host: '127.0.0.1', port: 6080 }, () => {
+      // Reconstruct the HTTP upgrade request and forward to websockify
+      let httpReq = `GET ${request.url} HTTP/${request.httpVersion}\r\n`;
+      for (let i = 0; i < request.rawHeaders.length; i += 2) {
+        httpReq += `${request.rawHeaders[i]}: ${request.rawHeaders[i + 1]}\r\n`;
+      }
+      httpReq += '\r\n';
+      target.write(httpReq);
+      if (head && head.length > 0) target.write(head);
+      socket.pipe(target).pipe(socket);
+    });
+    target.on('error', (err) => {
+      console.error('[VNC Proxy] Error:', err.message);
+      socket.destroy();
+    });
+    socket.on('error', () => target.destroy());
+    return;
+  }
+
+  // Normal WebSocket upgrade (app WS)
+  const res = { 
     getHeader: () => {},
     setHeader: () => {},
     writeHead: () => {},

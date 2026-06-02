@@ -4485,10 +4485,10 @@ function showVncIframe(wsPort) {
   const missing = document.getElementById('ytSetupVncMissing');
   if (!iframe) return;
 
-  const host = window.location.hostname;
-  const proto = window.location.protocol === 'https:' ? 'https' : 'http';
+  // Use same-origin proxy — noVNC is served at /novnc/ and WebSocket at /websockify
+  const origin = window.location.origin;
   
-  iframe.src = `${proto}://${host}:${wsPort}/vnc_lite.html?autoconnect=true&resize=scale&quality=7&compression=2&reconnect=true&reconnect_delay=2000`;
+  iframe.src = `${origin}/novnc/vnc_lite.html?autoconnect=true&resize=scale&quality=7&compression=2&reconnect=true&reconnect_delay=2000&path=websockify`;
   iframe.style.display = 'block';
   if (missing) missing.style.display = 'none';
 }

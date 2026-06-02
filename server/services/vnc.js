@@ -265,41 +265,61 @@ export async function verifyVncChannels() {
     const channelInfo = await page.evaluate(() => {
       const channels = [];
 
-      // Try multiple selectors for channel name
-      const selectors = [
-        '.channel-name',
-        '.ytcp-account-settings__channel-name',
-        '.ytcpAppHeaderChannelName',
-        '.dashboard-channel-name',
-        '[class*="channel-name"]',
-        'ytcp-account-settings .ytcp-account-settings__channel-name'
-      ];
-
+      // --- Extract channel name ---
       let name = '';
-      for (const sel of selectors) {
+      
+      // Method 1: Account button area (most reliable)
+      const accountSelectors = [
+        'ytcp-account-settings .ytcp-account-settings__channel-name',
+        '.channel-name',
+        '#channel-title',
+        '.ytcpAppHeaderChannelName',
+      ];
+      for (const sel of accountSelectors) {
         const el = document.querySelector(sel);
-        if (el && el.textContent.trim()) {
+        if (el && el.textContent.trim() && el.textContent.trim() !== 'Channel dashboard') {
           name = el.textContent.trim();
           break;
         }
       }
 
-      // Try getting channel name from the page title
+      // Method 2: From page title (e.g., "MyChannel - YouTube Studio")
       if (!name && document.title) {
-        const match = document.title.match(/(.+?)\s*[-–—]\s*YouTube Studio/);
-        if (match) name = match[1].trim();
+        const match = document.title.match(/^(.+?)\s*[-–—]\s*YouTube Studio/);
+        if (match && match[1].trim() !== 'Channel dashboard') {
+          name = match[1].trim();
+        }
       }
 
-      // Get channel ID from URL
+      // Method 3: Find @handle from the page
+      if (!name) {
+        const handleEl = document.querySelector('[class*="handle"], [class*="channel-handle"]');
+        if (handleEl) name = handleEl.textContent.trim();
+      }
+
+      // Method 4: Extract from URL or any visible text
+      if (!name) {
+        const allText = document.body.innerText || '';
+        const handleMatch = allText.match(/@[\w.-]+/);
+        if (handleMatch) name = handleMatch[0];
+      }
+
+      // --- Extract channel ID ---
       const currentUrl = window.location.href;
       const channelIdMatch = currentUrl.match(/channel\/(UC[A-Za-z0-9_-]+)/);
+      
+      // Also try to find it in any link on the page
+      let ytChannelId = channelIdMatch ? channelIdMatch[1] : '';
+      if (!ytChannelId) {
+        const links = document.querySelectorAll('a[href*="channel/UC"]');
+        for (const link of links) {
+          const m = link.href.match(/channel\/(UC[A-Za-z0-9_-]+)/);
+          if (m) { ytChannelId = m[1]; break; }
+        }
+      }
 
       if (name) {
-        channels.push({
-          name,
-          ytChannelId: channelIdMatch ? channelIdMatch[1] : '',
-          url: currentUrl
-        });
+        channels.push({ name, ytChannelId, url: currentUrl });
       }
 
       return { channels, pageTitle: document.title, url: currentUrl };

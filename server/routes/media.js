@@ -194,15 +194,28 @@ async function generateMetadataForVideoAsync(videoId, channelId, userId, videoFi
     const { gameName, videoTitle } = parseGameAndTitle(video.original_filename);
     if (gameName) console.log(`[Metadata Gen] Game detected: "${gameName}" | Title hint: "${videoTitle}"`);
 
-    console.log(`[Metadata Gen] Generating metadata using channel provider settings for video ${videoId}...`);
-    const metadata = await generateVideoMetadata(video.original_filename, niche, userId, videoFilePath || video.filepath);
+    // Use the original filename (without extension) as the title — no AI title generation
+    const filenameTitle = video.original_filename.replace(/\.[^/.]+$/, '').slice(0, 99);
+    
+    // Still generate description and tags via AI
+    let description = '';
+    let tags = '';
+    try {
+      const metadata = await generateVideoMetadata(video.original_filename, niche, userId, videoFilePath || video.filepath);
+      description = metadata.description || '';
+      tags = metadata.tags || '';
+    } catch (metaErr) {
+      console.warn(`[Metadata Gen] AI description/tags failed, using fallback:`, metaErr.message);
+      description = `${niche} - ${filenameTitle}`;
+      tags = `${niche}, video`;
+    }
 
     run(
       `UPDATE videos SET title = @title, description = @description, tags = @tags WHERE id = @videoId`,
-      { videoId, title: metadata.title, description: metadata.description, tags: metadata.tags }
+      { videoId, title: filenameTitle, description, tags }
     );
 
-    console.log(`[Metadata Gen] ✅ Metadata saved for video ${videoId}: "${metadata.title}"`);
+    console.log(`[Metadata Gen] ✅ Metadata saved for video ${videoId}: "${filenameTitle}"`);
 
     // 🎨 Generate full AI thumbnail with gpt-image-1 directly (no video frame extraction)
     try {

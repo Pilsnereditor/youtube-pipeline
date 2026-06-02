@@ -162,24 +162,34 @@ router.post('/yt-setup/verify', async (req, res) => {
     for (const ch of result.channels) {
       if (!ch.name) continue;
       
-      const existing = queryOne(
-        'SELECT id FROM channels WHERE name = @name AND user_id = @userId',
-        { name: ch.name, userId }
-      );
+      // Check for existing channel by youtube_channel_id first, then by name
+      let existing = null;
+      if (ch.ytChannelId) {
+        existing = queryOne(
+          'SELECT id FROM channels WHERE youtube_channel_id = @ytId AND user_id = @userId',
+          { ytId: ch.ytChannelId, userId }
+        );
+      }
+      if (!existing) {
+        existing = queryOne(
+          'SELECT id FROM channels WHERE name = @name AND user_id = @userId',
+          { name: ch.name, userId }
+        );
+      }
       
       let channelId;
       if (existing) {
         run(
-          'UPDATE channels SET upload_mode = @mode WHERE id = @id',
-          { mode: 'browser', id: existing.id }
+          'UPDATE channels SET upload_mode = @mode, youtube_channel_id = @ytId WHERE id = @id',
+          { mode: 'browser', ytId: ch.ytChannelId || null, id: existing.id }
         );
         channelId = existing.id;
         channelsCreated.push({ id: existing.id, name: ch.name, action: 'updated' });
       } else {
         const result2 = run(
-          `INSERT INTO channels (name, user_id, upload_mode, upload_privacy, category) 
-           VALUES (@name, @userId, 'browser', 'private', '22')`,
-          { name: ch.name, userId }
+          `INSERT INTO channels (name, youtube_channel_id, user_id, upload_mode, upload_privacy, category) 
+           VALUES (@name, @ytId, @userId, 'browser', 'private', '22')`,
+          { name: ch.name, ytId: ch.ytChannelId || null, userId }
         );
         channelId = result2.lastInsertRowid;
         channelsCreated.push({ id: channelId, name: ch.name, action: 'created' });

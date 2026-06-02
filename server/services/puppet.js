@@ -3,6 +3,7 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { queryOne } from '../db/database.js';
+import { stopVncSession } from './vnc.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -99,7 +100,8 @@ function getChromePath() {
 }
 
 export function getProfilePath(channelId) {
-  return path.join(PROFILES_DIR, `channel_${channelId}`);
+  // All browser-mode channels share the global VNC login profile
+  return path.join(PROFILES_DIR, 'yt_setup_global');
 }
 
 /**
@@ -147,6 +149,10 @@ async function launchBrowserWithRetry(chromePath, profilePath, headless = false,
  */
 export async function setupBrowserSession(channelId, userId, broadcastFn) {
   await closeBrowserSession(channelId);
+
+  // Auto-close VNC session if running — they share the same profile
+  try { await stopVncSession(); } catch (e) {}
+  await new Promise(r => setTimeout(r, 1000));
 
   const profilePath = getProfilePath(channelId);
   const chromePath = getChromePath();
@@ -414,7 +420,9 @@ function formatPublishTime(dateIso) {
 export async function uploadVideoBrowser(channelId, opts, logFn = console.log) {
   // Auto-close any active login window to release profile lock
   await closeBrowserSession(channelId);
-
+  // Auto-close VNC session if running — they share the same profile
+  try { await stopVncSession(); } catch (e) {}
+  await new Promise(r => setTimeout(r, 1000));
   const profilePath = getProfilePath(channelId);
   const chromePath = getChromePath();
 

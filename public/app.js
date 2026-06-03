@@ -63,8 +63,12 @@ document.addEventListener('DOMContentLoaded', async () => {
 // 1. Data Fetching & Sync
 // ---------------------------------------------------------------------------
 async function loadAllData() {
+  try {
+    await loadChannels();
+  } catch (err) {
+    console.error('Error loading channels in loadAllData:', err);
+  }
   await Promise.all([
-    loadChannels(),
     loadMediaVideos(),
     loadMediaThumbnails(),
     loadScheduledPosts(),
@@ -3277,17 +3281,22 @@ async function renderOAuthStatus() {
     const res = await fetch(`${API_BASE}/auth/status`);
     const { connected } = await res.json();
 
-    if (connected.length === 0) {
+    const hasBrowserChannel = (state.channels || []).some(ch => ch.upload_mode === 'browser' && ch.has_profile);
+    if (connected.length === 0 && !hasBrowserChannel) {
       selectHTML += `<p class="muted">No channels authorized yet.</p>`;
       document.getElementById('dashAuthWarning').classList.remove('hidden');
     } else {
       document.getElementById('dashAuthWarning').classList.add('hidden');
-      selectHTML += connected.map(c => `
-        <div class="conn-item glass-light" style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;border-radius:6px;margin-bottom:8px;">
-          <span>🟢 <strong>${escapeHTML(c.name)}</strong> (ID: ${escapeHTML(c.youtube_channel_id || 'Pending')})</span>
-          <button class="btn-outline-danger btn-xs" onclick="disconnectOAuth(${c.id})">Disconnect</button>
-        </div>
-      `).join('');
+      if (connected.length === 0) {
+        selectHTML += `<p class="muted">OAuth status: No Google OAuth channels authorized (using Browser Session mode).</p>`;
+      } else {
+        selectHTML += connected.map(c => `
+          <div class="conn-item glass-light" style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;border-radius:6px;margin-bottom:8px;">
+            <span>🟢 <strong>${escapeHTML(c.name)}</strong> (ID: ${escapeHTML(c.youtube_channel_id || 'Pending')})</span>
+            <button class="btn-outline-danger btn-xs" onclick="disconnectOAuth(${c.id})">Disconnect</button>
+          </div>
+        `).join('');
+      }
     }
   } catch {
     selectHTML += `<p class="error-text">Failed to fetch authorized channels status.</p>`;

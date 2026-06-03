@@ -696,4 +696,36 @@ router.post('/:id/browser-login-close', async (req, res) => {
   }
 });
 
+router.get('/debug-db', (req, res) => {
+  try {
+    const channels = queryAll('SELECT id, name, youtube_channel_id, profile_name, upload_mode FROM channels');
+    const scheduled = queryAll('SELECT id, channel_id, status, title, error_message, scheduled_at FROM scheduled_posts ORDER BY scheduled_at DESC LIMIT 20');
+    const PROFILES_DIR = path.join(__dirname, '..', '..', 'data', 'profiles');
+    
+    const channelStatus = channels.map(ch => {
+      const profileFolder = ch.profile_name || `channel_${ch.id}`;
+      const profilePath = path.join(PROFILES_DIR, profileFolder);
+      const exists = fs.existsSync(profilePath);
+      const hasCookies = exists && (
+        fs.existsSync(path.join(profilePath, 'Default', 'Cookies')) || 
+        fs.existsSync(path.join(profilePath, 'Cookies'))
+      );
+      return {
+        ...ch,
+        profile_folder: profileFolder,
+        folder_exists: exists ? 1 : 0,
+        has_cookies: hasCookies ? 1 : 0
+      };
+    });
+
+    res.json({
+      success: true,
+      channels: channelStatus,
+      recent_scheduled_posts: scheduled
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 export default router;

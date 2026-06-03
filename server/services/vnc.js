@@ -116,6 +116,12 @@ export async function launchVncSession(profileName = 'yt_setup_global') {
   }
 
   const profilePath = path.join(PROFILES_DIR, profileName);
+  
+  // For new channel logins, start with a completely fresh profile
+  if (profileName === 'yt_setup_new' && fs.existsSync(profilePath)) {
+    console.log('[VNC] Clearing fresh profile for new channel login...');
+    fs.rmSync(profilePath, { recursive: true, force: true });
+  }
   if (!fs.existsSync(profilePath)) fs.mkdirSync(profilePath, { recursive: true });
 
   // Clean Chrome lock files
@@ -269,77 +275,153 @@ export async function verifyVncChannels() {
     // Navigate to YouTube Studio if not already there
     if (!url.includes('studio.youtube.com')) {
       await page.goto('https://studio.youtube.com?hl=en&persist_hl=1', {
-        waitUntil: 'domcontentloaded',
-        timeout: 30000
+        waitUntil: 'networkidle2',
+        timeout: 45000
       });
-      await sleep(3000);
+      await sleep(5000);
     }
 
-    // Extract channel info from the Studio page
-    const channelInfo = await page.evaluate(() => {
-      const channels = [];
+    // --- Extract channel ID from URL (most reliable) ---
+    const currentUrl = page.url();
+    let ytChannelId = '';
+    const cidMatch = currentUrl.match(/channel\/(UC[A-Za-z0-9_-]+)/);
+    if (cidMatch) ytChannelId = cidMatch[1];
 
-      // --- Extract channel name ---
-      let name = '';
-      
-      // Method 1: Account button area (most reliable)
-      const accountSelectors = [
-        'ytcp-account-settings .ytcp-account-settings__channel-name',
-        '.channel-name',
-        '#channel-title',
-        '.ytcpAppHeaderChannelName',
-      ];
-      for (const sel of accountSelectors) {
-        const el = document.querySelector(sel);
-        if (el && el.textContent.trim() && el.textContent.trim() !== 'Channel dashboard') {
-          name = el.textContent.trim();
-          break;
-        }
-      }
-
-      // Method 2: From page title (e.g., "MyChannel - YouTube Studio")
-      if (!name && document.title) {
-        const match = document.title.match(/^(.+?)\s*[-–—]\s*YouTube Studio/);
-        if (match && match[1].trim() !== 'Channel dashboard') {
-          name = match[1].trim();
-        }
-      }
-
-      // Method 3: Find @handle from the page
-      if (!name) {
-        const handleEl = document.querySelector('[class*="handle"], [class*="channel-handle"]');
-        if (handleEl) name = handleEl.textContent.trim();
-      }
-
-      // Method 4: Extract from URL or any visible text
-      if (!name) {
-        const allText = document.body.innerText || '';
-        const handleMatch = allText.match(/@[\w.-]+/);
-        if (handleMatch) name = handleMatch[0];
-      }
-
-      // --- Extract channel ID ---
-      const currentUrl = window.location.href;
-      const channelIdMatch = currentUrl.match(/channel\/(UC[A-Za-z0-9_-]+)/);
-      
-      // Also try to find it in any link on the page
-      let ytChannelId = channelIdMatch ? channelIdMatch[1] : '';
-      if (!ytChannelId) {
+    // If no channel ID in URL, try finding it in page links
+    if (!ytChannelId) {
+      ytChannelId = await page.evaluate(() => {
         const links = document.querySelectorAll('a[href*="channel/UC"]');
         for (const link of links) {
           const m = link.href.match(/channel\/(UC[A-Za-z0-9_-]+)/);
-          if (m) { ytChannelId = m[1]; break; }
+          if (m) return m[1];
         }
+        // Also check meta tags and canonical URLs
+        const canonical = document.querySelector('link[rel="canonical"]');
+        if (canonical) {
+          const m = canonical.href.match(/channel\/(UC[A-Za-z0-9_-]+)/);
+          if (m) return m[1];
+        }
+        return '';
+      });
+    }
+
+    // --- Extract channel name ---
+    // Strategy: Use the YouTube API endpoint that Studio itself uses
+    let channelName = '';
+
+    // Method 1: Try clicking the account avatar to open the account menu
+    try {
+      // Click the avatar button in top-right to open account switcher
+      const avatarBtn = await page.$('button#avatar-btn, img.channel-thumbnail-icon, #avatar-btn img, button[aria-label*="Account"], .ytcp-account-settings img');
+      if (avatarBtn) {
+        await avatarBtn.click();
+        await sleep(1500);
+        
+        // Now look for channel name in the opened menu
+        channelName = await page.evaluate(() => {
+          // The account menu shows channel name prominently
+          const nameSelectors = [
+            '.yt-spec-touch-feedback-shape__fill + div',
+            '#channel-name',
+            '.channel-name',
+            'yt-formatted-string.style-scope.ytd-active-account-header-renderer',
+            '[data-e2e-active-account-name]',
+          ];
+          for (const sel of nameSelectors) {
+            const el = document.querySelector(sel);
+            if (el && el.textContent.trim()) return el.textContent.trim();
+          }
+          return '';
+        });
+        
+        // Close the menu by pressing Escape
+        await page.keyboard.press('Escape');
+        await sleep(500);
       }
+    } catch (e) {
+      console.warn('[VNC Verify] Avatar click method failed:', e.message);
+    }
 
-      if (name) {
-        channels.push({ name, ytChannelId, url: currentUrl });
+    // Method 2: Navigate to channel customization page to get the name
+    if (!channelName) {
+      try {
+        const customUrl = ytChannelId 
+          ? `https://studio.youtube.com/channel/${ytChannelId}/editing/details`
+          : 'https://studio.youtube.com/channel/editing/details';
+        await page.goto(customUrl, { waitUntil: 'networkidle2', timeout: 30000 });
+        await sleep(3000);
+        
+        channelName = await page.evaluate(() => {
+          // On the customization page, the channel name is in an input field
+          const nameInput = document.querySelector('#name-input input, #channel-name-input input, [aria-label="Channel name"] input, #textbox[aria-label*="name"]');
+          if (nameInput && nameInput.value) return nameInput.value.trim();
+          
+          // Or try the text content of the name area
+          const nameArea = document.querySelector('#name-input #textbox, .channel-name-text');
+          if (nameArea && nameArea.textContent.trim()) return nameArea.textContent.trim();
+          
+          return '';
+        });
+
+        // Navigate back to dashboard
+        if (ytChannelId) {
+          await page.goto(`https://studio.youtube.com/channel/${ytChannelId}?hl=en`, { waitUntil: 'domcontentloaded', timeout: 20000 });
+        }
+      } catch (e) {
+        console.warn('[VNC Verify] Customization page method failed:', e.message);
       }
+    }
 
-      return { channels, pageTitle: document.title, url: currentUrl };
-    });
+    // Method 3: Broad DOM search — find text near "Your channel" label
+    if (!channelName) {
+      channelName = await page.evaluate(() => {
+        // Look for all text nodes and find channel-like text
+        const badNames = ['channel dashboard', 'channel content', 'channel analytics', 
+                          'your channel', 'youtube studio', 'dashboard', 'content',
+                          'analytics', 'community', 'subtitles', 'settings'];
+        
+        // Try to find the channel name near the avatar/profile section
+        const allElements = document.querySelectorAll('*');
+        for (const el of allElements) {
+          if (el.children.length > 0) continue; // Only leaf nodes
+          const text = (el.textContent || '').trim();
+          if (text.length >= 2 && text.length <= 60 && !badNames.includes(text.toLowerCase())) {
+            // Check if this element is near a channel avatar or "Your channel" text
+            const parent = el.parentElement;
+            const grandparent = parent ? parent.parentElement : null;
+            const context = (parent?.textContent || '') + (grandparent?.textContent || '');
+            if (context.toLowerCase().includes('your channel') && text.toLowerCase() !== 'your channel') {
+              return text;
+            }
+          }
+        }
+        
+        // Look for @handle
+        const bodyText = document.body.innerText || '';
+        const handleMatch = bodyText.match(/@[\w][\w.-]{1,30}/);
+        if (handleMatch) return handleMatch[0];
+        
+        return '';
+      });
+    }
 
-    return channelInfo;
+    // Method 4: Use channel ID as fallback name
+    if (!channelName && ytChannelId) {
+      channelName = ytChannelId;
+    }
+
+    console.log(`[VNC Verify] Found channel: name="${channelName}", id="${ytChannelId}"`);
+
+    const channels = [];
+    if (channelName || ytChannelId) {
+      channels.push({
+        name: channelName || ytChannelId,
+        ytChannelId: ytChannelId,
+        url: currentUrl
+      });
+    }
+
+    return { channels, pageTitle: await page.title(), url: currentUrl };
   } finally {
     // Disconnect (don't close — Chrome should keep running)
     if (browser) {

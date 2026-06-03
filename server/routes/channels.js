@@ -6,7 +6,7 @@ import { fileURLToPath } from 'url';
 import { queryAll, queryOne, run, insert } from '../db/database.js';
 import { syncChannelWithYouTube } from '../services/youtube.js';
 import { setupBrowserSession, checkBrowserSessionActive, closeBrowserSession } from '../services/puppet.js';
-import { launchVncSession, isVncActive, getVncPort, verifyVncChannels, stopVncSession } from '../services/vnc.js';
+import { launchVncSession, isVncActive, getVncPort, getVncProfileName, getVncProfilePath, verifyVncChannels, stopVncSession } from '../services/vnc.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -130,11 +130,13 @@ router.post('/', (req, res) => {
 
 /**
  * POST /api/channels/yt-setup/launch — Launch VNC session with Chrome for YouTube login
+ * Body: { profileName?: string } — defaults to 'yt_setup_new' for fresh login
  */
 router.post('/yt-setup/launch', async (req, res) => {
   try {
-    const result = await launchVncSession('yt_setup_global');
-    res.json(result);
+    const profileName = req.body.profileName || 'yt_setup_new';
+    const result = await launchVncSession(profileName);
+    res.json({ ...result, profileName });
   } catch (err) {
     console.error('[YT Setup] VNC launch error:', err);
     res.status(500).json({ error: err.message });
@@ -155,6 +157,8 @@ router.post('/yt-setup/verify', async (req, res) => {
   const userId = req.session.userId;
   try {
     const result = await verifyVncChannels();
+    const vncProfilePath = getVncProfilePath();
+    const vncProfileName = getVncProfileName();
     
     // Create or update channels in the database
     const channelsCreated = [];
@@ -180,8 +184,8 @@ router.post('/yt-setup/verify', async (req, res) => {
       let channelId;
       if (existing) {
         run(
-          'UPDATE channels SET upload_mode = @mode, youtube_channel_id = @ytId WHERE id = @id',
-          { mode: 'browser', ytId: ch.ytChannelId || null, id: existing.id }
+          'UPDATE channels SET upload_mode = @mode, youtube_channel_id = @ytId, name = @name WHERE id = @id',
+          { mode: 'browser', ytId: ch.ytChannelId || null, name: ch.name, id: existing.id }
         );
         channelId = existing.id;
         channelsCreated.push({ id: existing.id, name: ch.name, action: 'updated' });
@@ -193,6 +197,29 @@ router.post('/yt-setup/verify', async (req, res) => {
         );
         channelId = result2.lastInsertRowid;
         channelsCreated.push({ id: channelId, name: ch.name, action: 'created' });
+      }
+
+      // Copy the VNC Chrome profile to this channel's own profile directory
+      // So each channel has independent login cookies for uploads
+      const channelProfileDir = path.join(__dirname, '..', '..', 'data', 'profiles', `channel_${channelId}`);
+      if (vncProfilePath && fs.existsSync(vncProfilePath)) {
+        try {
+          // If the VNC profile IS already the channel profile (re-login), skip copy
+          if (vncProfileName !== `channel_${channelId}`) {
+            if (fs.existsSync(channelProfileDir)) {
+              fs.rmSync(channelProfileDir, { recursive: true, force: true });
+            }
+            fs.cpSync(vncProfilePath, channelProfileDir, { recursive: true });
+          }
+          // Remove Chrome lock files from the channel profile
+          for (const lockFile of ['SingletonLock', 'SingletonSocket', 'SingletonCookie']) {
+            const lf = path.join(channelProfileDir, lockFile);
+            try { if (fs.existsSync(lf)) fs.unlinkSync(lf); } catch (e) {}
+          }
+          console.log(`[YT Setup] Profile saved for channel_${channelId} (${ch.name})`);
+        } catch (copyErr) {
+          console.warn(`[YT Setup] Profile copy failed for channel_${channelId}:`, copyErr.message);
+        }
       }
     }
     

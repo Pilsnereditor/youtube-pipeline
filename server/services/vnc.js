@@ -226,6 +226,20 @@ export function getVncPort() {
 }
 
 /**
+ * Get the current VNC session's profile name
+ */
+export function getVncProfileName() {
+  return vncSession ? vncSession.profileName : null;
+}
+
+/**
+ * Get the current VNC session's profile path
+ */
+export function getVncProfilePath() {
+  return vncSession ? vncSession.profilePath : null;
+}
+
+/**
  * Verify channels by connecting to Chrome via CDP and scraping YouTube Studio
  */
 export async function verifyVncChannels() {

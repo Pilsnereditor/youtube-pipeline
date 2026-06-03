@@ -515,6 +515,9 @@
         </div>
         <p class="subtitle" style="margin-bottom:16px;">Log in to your YouTube channels to enable the pipeline</p>
 
+        <!-- Logged-in channels list -->
+        <div id="ytSetupChannelsList" style="margin-bottom:20px;"></div>
+
         <!-- Step indicators -->
         <div id="ytSetupSteps" style="display:flex; align-items:center; gap:0; margin-bottom:20px;">
           <div id="ytStep1Indicator" class="yt-step-indicator active" onclick="goToYtSetupStep(1)">
@@ -530,10 +533,10 @@
         <div id="ytSetupStep1" style="margin-top:0;">
           <h4 style="font-size:0.95rem; color:var(--text-bright); margin-bottom:8px;">Step 1 — Launch Browser</h4>
           <p style="font-size:0.82rem; color:var(--text-secondary); line-height:1.5; margin-bottom:16px;">
-            Click the button below to launch a remote Chrome browser on the server. You will see the browser appear below so you can log in to your YouTube channels.
+            Click below to launch a <strong>fresh</strong> Chrome browser to log in to a <strong>new</strong> YouTube channel. To re-login an existing channel, use the "🔄 Re-login" button above.
           </p>
-          <button id="btnYtSetupLaunch" class="btn-primary" onclick="launchYtSetupBrowser()" style="display:flex; align-items:center; gap:6px; padding:10px 20px; font-size:0.92rem; font-weight:600;">
-            🚀 Launch Chrome Browser
+          <button id="btnYtSetupLaunch" class="btn-primary" onclick="launchYtSetupBrowser('yt_setup_new')" style="display:flex; align-items:center; gap:6px; padding:10px 20px; font-size:0.92rem; font-weight:600;">
+            ➕ Add New Channel
           </button>
           <div id="ytSetupLaunchStatus" style="margin-top:12px; font-size:0.8rem; color:var(--text-muted); display:none;"></div>
         </div>

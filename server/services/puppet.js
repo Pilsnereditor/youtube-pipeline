@@ -100,8 +100,8 @@ function getChromePath() {
 }
 
 export function getProfilePath(channelId) {
-  // All browser-mode channels share the global VNC login profile
-  return path.join(PROFILES_DIR, 'yt_setup_global');
+  // Each channel has its own Chrome profile with its own Google login
+  return path.join(PROFILES_DIR, `channel_${channelId}`);
 }
 
 /**

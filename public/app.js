@@ -4428,9 +4428,49 @@ window.saveVideoDuration = async (videoId, duration) => {
 let ytSetupSessionActive = false;
 
 /**
+ * Render logged-in channels in the YT Login Setup section
+ */
+function renderYtSetupChannels() {
+  const container = document.getElementById('ytSetupChannelsList');
+  if (!container) return;
+
+  // Get browser-mode channels from the cached channels list
+  const browserChannels = (state.channels || []).filter(ch => ch.upload_mode === 'browser');
+  
+  if (browserChannels.length === 0) {
+    container.innerHTML = '';
+    return;
+  }
+
+  container.innerHTML = `
+    <div style="padding:12px 16px; border-radius:10px; background:rgba(16,185,129,0.06); border:1px solid rgba(16,185,129,0.15);">
+      <div style="font-size:0.82rem; color:#10b981; font-weight:600; margin-bottom:10px;">✅ Logged In Channels</div>
+      ${browserChannels.map(ch => `
+        <div style="display:flex; align-items:center; justify-content:space-between; padding:8px 12px; margin-bottom:6px; border-radius:8px; background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.06);">
+          <div style="display:flex; align-items:center; gap:10px;">
+            <span style="font-size:1.1rem;">📺</span>
+            <div>
+              <div style="font-size:0.85rem; color:var(--text-bright); font-weight:500;">${ch.name}</div>
+              <div style="font-size:0.7rem; color:var(--text-muted);">ID: ${ch.youtube_channel_id || 'Unknown'}</div>
+            </div>
+          </div>
+          <button class="btn-secondary btn-sm" onclick="launchYtSetupBrowser('channel_${ch.id}')" 
+            style="padding:5px 12px; font-size:0.75rem; border-radius:6px; display:flex; align-items:center; gap:4px;">
+            🔄 Re-login
+          </button>
+        </div>
+      `).join('')}
+    </div>
+  `;
+}
+
+/**
  * Refresh the YouTube Login Setup section — check if a session is already running
  */
 async function refreshYtLoginSetup() {
+  // Render the list of existing logged-in channels
+  renderYtSetupChannels();
+  
   try {
     const res = await fetch(`${API_BASE}/channels/yt-setup/status`);
     const data = await res.json();
@@ -4495,20 +4535,27 @@ function showVncIframe(wsPort) {
 
 /**
  * Launch the Chrome browser for YouTube login setup (VNC mode)
+ * @param {string} profileName - Profile to use: 'yt_setup_new' for new channel, 'channel_X' for re-login
  */
-async function launchYtSetupBrowser() {
+async function launchYtSetupBrowser(profileName = 'yt_setup_new') {
   const btn = document.getElementById('btnYtSetupLaunch');
   const statusDiv = document.getElementById('ytSetupLaunchStatus');
   
-  btn.disabled = true;
-  btn.innerHTML = '⏳ Launching Chrome + VNC...';
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '⏳ Launching Chrome + VNC...';
+  }
   if (statusDiv) {
     statusDiv.style.display = 'block';
     statusDiv.textContent = 'Starting virtual display and Chrome on the server. This may take 5-10 seconds...';
   }
 
   try {
-    const res = await fetch(`${API_BASE}/channels/yt-setup/launch`, { method: 'POST' });
+    const res = await fetch(`${API_BASE}/channels/yt-setup/launch`, { 
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ profileName })
+    });
     const data = await res.json();
     
     if (data.success && data.mode === 'vnc') {
@@ -4525,7 +4572,8 @@ async function launchYtSetupBrowser() {
         return;
       }
 
-      showToast('Chrome browser launched! Loading remote desktop...', 'success');
+      const isNew = profileName === 'yt_setup_new';
+      showToast(isNew ? 'Fresh Chrome launched! Log in to your new channel.' : 'Chrome launched with existing session.', 'success');
       goToYtSetupStep(2);
       showVncIframe(data.ws_port);
     } else {
@@ -4538,8 +4586,10 @@ async function launchYtSetupBrowser() {
       statusDiv.style.color = '#f87171';
     }
   } finally {
-    btn.disabled = false;
-    btn.innerHTML = '🚀 Launch Chrome Browser';
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = '🚀 Launch Chrome Browser';
+    }
   }
 }
 
@@ -4567,6 +4617,8 @@ async function verifyYtSetupChannels() {
       // Reload channels in the app
       loadChannels();
       loadAllData();
+      // Update the logged-in channels list in Settings
+      setTimeout(() => renderYtSetupChannels(), 1000);
     } else {
       throw new Error(data.error || 'Verification failed');
     }

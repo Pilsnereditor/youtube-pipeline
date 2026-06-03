@@ -139,6 +139,17 @@ export function initDb() {
     console.error('[DB Migration] Error adding proxy columns to channels:', err);
   }
 
+  // Self-healing migration for profile_name column in channels
+  try {
+    const pragma = db.prepare('PRAGMA table_info(channels)').all();
+    if (!pragma.some(c => c.name === 'profile_name')) {
+      db.prepare(`ALTER TABLE channels ADD COLUMN profile_name TEXT DEFAULT NULL`).run();
+      console.log('[DB Migration] Added profile_name column to channels table.');
+    }
+  } catch (err) {
+    console.error('[DB Migration] Error adding profile_name column to channels:', err);
+  }
+
   // Self-healing migration for is_premiere column in scheduled_posts
   try {
     const pragma = db.prepare(`PRAGMA table_info(scheduled_posts)`).all();

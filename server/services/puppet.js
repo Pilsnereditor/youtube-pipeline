@@ -100,7 +100,12 @@ function getChromePath() {
 }
 
 export function getProfilePath(channelId) {
-  // Each channel has its own Chrome profile with its own Google login
+  // Look up profile_name from the database (new profile-based system)
+  const channel = queryOne('SELECT profile_name FROM channels WHERE id = @id', { id: channelId });
+  if (channel && channel.profile_name) {
+    return path.join(PROFILES_DIR, channel.profile_name);
+  }
+  // Fallback: old-style channel_{id} profile
   return path.join(PROFILES_DIR, `channel_${channelId}`);
 }
 

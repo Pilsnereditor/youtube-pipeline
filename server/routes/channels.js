@@ -124,6 +124,90 @@ router.post('/', (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// Chrome Profile Management
+// ---------------------------------------------------------------------------
+
+/**
+ * GET /api/channels/profiles — List all Chrome profiles with login status
+ */
+router.get('/profiles', (req, res) => {
+  const userId = req.session.userId;
+  try {
+    const profilesDir = path.join(__dirname, '..', '..', 'data', 'profiles');
+    if (!fs.existsSync(profilesDir)) fs.mkdirSync(profilesDir, { recursive: true });
+
+    const dirs = fs.readdirSync(profilesDir, { withFileTypes: true })
+      .filter(d => d.isDirectory() && d.name.startsWith('profile_'))
+      .map(d => {
+        const profilePath = path.join(profilesDir, d.name);
+        const hasCookies = fs.existsSync(path.join(profilePath, 'Default', 'Cookies'))
+          || fs.existsSync(path.join(profilePath, 'Cookies'));
+        const hasData = fs.readdirSync(profilePath).length > 0;
+        // Extract label from folder name: profile_MyName -> MyName
+        const label = d.name.replace(/^profile_/, '');
+        // Find linked channel
+        const channel = queryOne(
+          'SELECT id, name, youtube_channel_id FROM channels WHERE profile_name = @pname AND user_id = @userId',
+          { pname: d.name, userId }
+        );
+        return {
+          name: d.name,
+          label,
+          has_cookies: hasCookies,
+          has_data: hasData,
+          channel: channel || null
+        };
+      });
+
+    res.json({ profiles: dirs });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * POST /api/channels/profiles/create — Create a new named Chrome profile
+ */
+router.post('/profiles/create', (req, res) => {
+  const { name } = req.body;
+  if (!name || !name.trim()) return res.status(400).json({ error: 'Profile name is required' });
+
+  const safeName = name.trim().replace(/[^a-zA-Z0-9_-]/g, '_');
+  const profileDir = path.join(__dirname, '..', '..', 'data', 'profiles', `profile_${safeName}`);
+
+  if (fs.existsSync(profileDir)) {
+    return res.status(409).json({ error: `Profile "${safeName}" already exists` });
+  }
+
+  fs.mkdirSync(profileDir, { recursive: true });
+  res.json({ success: true, name: `profile_${safeName}` });
+});
+
+/**
+ * POST /api/channels/profiles/delete — Delete a Chrome profile
+ */
+router.post('/profiles/delete', (req, res) => {
+  const { name } = req.body;
+  const userId = req.session.userId;
+  if (!name) return res.status(400).json({ error: 'Profile name is required' });
+
+  const profileDir = path.join(__dirname, '..', '..', 'data', 'profiles', name);
+  if (!fs.existsSync(profileDir)) {
+    return res.status(404).json({ error: 'Profile not found' });
+  }
+
+  try {
+    fs.rmSync(profileDir, { recursive: true, force: true });
+    // Unlink any channels using this profile
+    run('UPDATE channels SET profile_name = NULL WHERE profile_name = @pname AND user_id = @userId',
+      { pname: name, userId });
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // YouTube Setup Wizard (Settings page — VNC-based remote browser)
 // These routes MUST be defined before /:id routes to avoid Express param matching
 // ---------------------------------------------------------------------------
@@ -155,10 +239,10 @@ router.get('/yt-setup/status', (req, res) => {
  */
 router.post('/yt-setup/verify', async (req, res) => {
   const userId = req.session.userId;
+  const profileName = req.body && req.body.profileName ? req.body.profileName : getVncProfileName();
+  
   try {
     const result = await verifyVncChannels();
-    const vncProfilePath = getVncProfilePath();
-    const vncProfileName = getVncProfileName();
     
     // Create or update channels in the database
     const channelsCreated = [];
@@ -184,43 +268,30 @@ router.post('/yt-setup/verify', async (req, res) => {
       let channelId;
       if (existing) {
         run(
-          'UPDATE channels SET upload_mode = @mode, youtube_channel_id = @ytId, name = @name WHERE id = @id',
-          { mode: 'browser', ytId: ch.ytChannelId || null, name: ch.name, id: existing.id }
+          'UPDATE channels SET upload_mode = @mode, youtube_channel_id = @ytId, name = @name, profile_name = @profile WHERE id = @id',
+          { mode: 'browser', ytId: ch.ytChannelId || null, name: ch.name, profile: profileName, id: existing.id }
         );
         channelId = existing.id;
         channelsCreated.push({ id: existing.id, name: ch.name, action: 'updated' });
       } else {
         const result2 = run(
-          `INSERT INTO channels (name, youtube_channel_id, user_id, upload_mode, upload_privacy, category) 
-           VALUES (@name, @ytId, @userId, 'browser', 'private', '22')`,
-          { name: ch.name, ytId: ch.ytChannelId || null, userId }
+          `INSERT INTO channels (name, youtube_channel_id, user_id, upload_mode, upload_privacy, category, profile_name) 
+           VALUES (@name, @ytId, @userId, 'browser', 'private', '22', @profile)`,
+          { name: ch.name, ytId: ch.ytChannelId || null, userId, profile: profileName }
         );
         channelId = result2.lastInsertRowid;
         channelsCreated.push({ id: channelId, name: ch.name, action: 'created' });
       }
 
-      // Copy the VNC Chrome profile to this channel's own profile directory
-      // So each channel has independent login cookies for uploads
-      const channelProfileDir = path.join(__dirname, '..', '..', 'data', 'profiles', `channel_${channelId}`);
-      if (vncProfilePath && fs.existsSync(vncProfilePath)) {
-        try {
-          // If the VNC profile IS already the channel profile (re-login), skip copy
-          if (vncProfileName !== `channel_${channelId}`) {
-            if (fs.existsSync(channelProfileDir)) {
-              fs.rmSync(channelProfileDir, { recursive: true, force: true });
-            }
-            fs.cpSync(vncProfilePath, channelProfileDir, { recursive: true });
-          }
-          // Remove Chrome lock files from the channel profile
-          for (const lockFile of ['SingletonLock', 'SingletonSocket', 'SingletonCookie']) {
-            const lf = path.join(channelProfileDir, lockFile);
-            try { if (fs.existsSync(lf)) fs.unlinkSync(lf); } catch (e) {}
-          }
-          console.log(`[YT Setup] Profile saved for channel_${channelId} (${ch.name})`);
-        } catch (copyErr) {
-          console.warn(`[YT Setup] Profile copy failed for channel_${channelId}:`, copyErr.message);
+      // Remove Chrome lock files from the profile directory 
+      const profileDir = path.join(__dirname, '..', '..', 'data', 'profiles', profileName);
+      if (fs.existsSync(profileDir)) {
+        for (const lockFile of ['SingletonLock', 'SingletonSocket', 'SingletonCookie']) {
+          const lf = path.join(profileDir, lockFile);
+          try { if (fs.existsSync(lf)) fs.unlinkSync(lf); } catch (e) {}
         }
       }
+      console.log(`[YT Setup] Channel "${ch.name}" linked to profile "${profileName}"`);
     }
     
     res.json({ success: true, channels: channelsCreated });

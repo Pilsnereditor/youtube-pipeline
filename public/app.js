@@ -355,6 +355,8 @@ function switchTab(tabId) {
     renderUpcomingQueueTab();
   } else if (tabId === 'users') {
     loadUsers();
+  } else if (tabId === 'settings') {
+    loadYtProfiles();
   }
 }
 
@@ -4422,54 +4424,192 @@ window.saveVideoDuration = async (videoId, duration) => {
 };
 
 // ---------------------------------------------------------------------------
-// 15. YouTube Login Setup Wizard (Settings Tab) — VNC-based
+// 15. YouTube Login Setup Wizard (Settings Tab) — Profile-based
 // ---------------------------------------------------------------------------
 
 let ytSetupSessionActive = false;
+let _activeProfileName = null; // The profile currently being logged in
 
 /**
- * Render logged-in channels in the YT Login Setup section
+ * Load and render Chrome profiles from the server
  */
-function renderYtSetupChannels() {
-  const container = document.getElementById('ytSetupChannelsList');
+async function loadYtProfiles() {
+  const container = document.getElementById('ytSetupProfilesList');
   if (!container) return;
 
-  // Get browser-mode channels from the cached channels list
-  const browserChannels = (state.channels || []).filter(ch => ch.upload_mode === 'browser');
-  
-  if (browserChannels.length === 0) {
-    container.innerHTML = '';
-    return;
-  }
+  try {
+    const res = await fetch(`${API_BASE}/channels/profiles`);
+    const data = await res.json();
+    const profiles = data.profiles || [];
 
-  container.innerHTML = `
-    <div style="padding:12px 16px; border-radius:10px; background:rgba(16,185,129,0.06); border:1px solid rgba(16,185,129,0.15);">
-      <div style="font-size:0.82rem; color:#10b981; font-weight:600; margin-bottom:10px;">✅ Logged In Channels</div>
-      ${browserChannels.map(ch => `
-        <div style="display:flex; align-items:center; justify-content:space-between; padding:8px 12px; margin-bottom:6px; border-radius:8px; background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.06);">
-          <div style="display:flex; align-items:center; gap:10px;">
-            <span style="font-size:1.1rem;">📺</span>
-            <div>
-              <div style="font-size:0.85rem; color:var(--text-bright); font-weight:500;">${ch.name}</div>
-              <div style="font-size:0.7rem; color:var(--text-muted);">ID: ${ch.youtube_channel_id || 'Unknown'}</div>
+    if (profiles.length === 0) {
+      container.innerHTML = `
+        <div style="padding:16px; text-align:center; border-radius:10px; background:rgba(99,102,241,0.04); border:1px solid rgba(99,102,241,0.1);">
+          <p style="font-size:0.85rem; color:var(--text-muted); margin-bottom:4px;">No profiles yet</p>
+          <p style="font-size:0.75rem; color:var(--text-muted);">Create one below to get started</p>
+        </div>`;
+      return;
+    }
+
+    container.innerHTML = profiles.map(p => {
+      const isLoggedIn = p.has_cookies;
+      const hasData = p.has_data && !p.has_cookies;
+      const channelName = p.channel ? p.channel.name : null;
+
+      const statusBadge = isLoggedIn
+        ? `<span style="font-size:0.7rem; padding:2px 8px; border-radius:4px; background:rgba(34,197,94,0.2); color:#4ade80; font-weight:600;">✅ Logged in${channelName ? ` — ${channelName}` : ''}</span>`
+        : hasData
+          ? `<span style="font-size:0.7rem; padding:2px 8px; border-radius:4px; background:rgba(251,191,36,0.15); color:#fbbf24; font-weight:600;">⚡ Has data</span>`
+          : `<span style="font-size:0.7rem; padding:2px 8px; border-radius:4px; background:rgba(239,68,68,0.1); color:#f87171; font-weight:600;">⚠️ Not logged in</span>`;
+
+      return `
+        <div style="display:flex; align-items:center; justify-content:space-between; padding:10px 14px; margin-bottom:6px; border-radius:10px; background:rgba(255,255,255,0.03); border:1px solid ${isLoggedIn ? 'rgba(34,197,94,0.15)' : 'rgba(255,255,255,0.06)'};">
+          <div style="display:flex; align-items:center; gap:10px; min-width:0;">
+            <div style="width:8px; height:8px; border-radius:50%; flex-shrink:0; background:${isLoggedIn ? '#22c55e' : hasData ? '#f59e0b' : '#475569'};"></div>
+            <div style="min-width:0;">
+              <div style="font-size:0.88rem; color:var(--text-bright); font-weight:600;">${p.label}</div>
+              <div style="font-size:0.7rem; color:var(--text-muted);">${statusBadge}</div>
             </div>
           </div>
-          <button class="btn-secondary btn-sm" onclick="launchYtSetupBrowser('channel_${ch.id}')" 
-            style="padding:5px 12px; font-size:0.75rem; border-radius:6px; display:flex; align-items:center; gap:4px;">
-            🔄 Re-login
-          </button>
-        </div>
-      `).join('')}
-    </div>
-  `;
+          <div style="display:flex; align-items:center; gap:6px; flex-shrink:0;">
+            <button class="btn-primary" onclick="loginProfile('${p.name}', '${p.label}')" 
+              style="padding:6px 14px; font-size:0.78rem; border-radius:6px;">
+              ${isLoggedIn ? '🔄 Re-login' : '🔑 Login'}
+            </button>
+            <button onclick="deleteYtProfile('${p.name}', '${p.label}')" 
+              style="padding:6px 8px; font-size:0.85rem; border-radius:6px; background:none; border:none; color:#64748b; cursor:pointer;"
+              title="Delete profile">🗑️</button>
+          </div>
+        </div>`;
+    }).join('');
+  } catch (err) {
+    container.innerHTML = `<p style="font-size:0.82rem; color:#f87171;">Failed to load profiles: ${err.message}</p>`;
+  }
 }
 
 /**
- * Refresh the YouTube Login Setup section — check if a session is already running
+ * Create a new named Chrome profile
+ */
+async function createYtProfile() {
+  const input = document.getElementById('newProfileNameInput');
+  const name = input.value.trim();
+  if (!name) { showToast('Enter a profile name', 'error'); return; }
+
+  try {
+    const res = await fetch(`${API_BASE}/channels/profiles/create`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name })
+    });
+    const data = await res.json();
+    if (data.success) {
+      showToast(`Created profile "${name}"`, 'success');
+      input.value = '';
+      await loadYtProfiles();
+    } else {
+      showToast(data.error || 'Failed to create profile', 'error');
+    }
+  } catch (err) {
+    showToast('Error: ' + err.message, 'error');
+  }
+}
+
+/**
+ * Delete a Chrome profile
+ */
+async function deleteYtProfile(fullName, label) {
+  if (!confirm(`Delete profile "${label}"?\n\nThis will permanently remove the Chrome profile folder and all saved cookies/login data.`)) return;
+
+  try {
+    const res = await fetch(`${API_BASE}/channels/profiles/delete`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: fullName })
+    });
+    const data = await res.json();
+    if (data.success) {
+      showToast(`Deleted profile "${label}"`, 'success');
+      await loadYtProfiles();
+    } else {
+      showToast(data.error || 'Delete failed', 'error');
+    }
+  } catch (err) {
+    showToast('Error: ' + err.message, 'error');
+  }
+}
+
+/**
+ * Launch Chrome with a specific profile for login
+ */
+async function loginProfile(profileName, label) {
+  _activeProfileName = profileName;
+  
+  // Switch to step 2
+  document.getElementById('ytSetupStep1').style.display = 'none';
+  document.getElementById('ytSetupStep2').style.display = 'block';
+  document.getElementById('ytSetupActiveProfileLabel').textContent = label;
+  document.getElementById('ytSetupLoginStatusText').textContent = 'Launching Chrome, please wait...';
+
+  // Hide guide until VNC is ready
+  const guide = document.getElementById('ytSetupLoginGuide');
+  if (guide) guide.style.display = 'none';
+
+  try {
+    const res = await fetch(`${API_BASE}/channels/yt-setup/launch`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ profileName })
+    });
+    const data = await res.json();
+
+    if (data.success && data.mode === 'vnc') {
+      ytSetupSessionActive = true;
+
+      if (!data.vnc_available) {
+        const missing = document.getElementById('ytSetupVncMissing');
+        if (missing) missing.style.display = 'block';
+        const iframe = document.getElementById('ytSetupVncFrame');
+        if (iframe) iframe.style.display = 'none';
+        document.getElementById('ytSetupLoginStatusText').textContent = 'VNC dependencies missing — see instructions above';
+        return;
+      }
+
+      document.getElementById('ytSetupLoginStatusText').textContent = 'Chrome is running — follow the steps below, then click Verify Channels';
+      if (guide) guide.style.display = 'block';
+      showVncIframe(data.ws_port);
+      showToast('Chrome launched! Log in to your Google account.', 'success');
+    } else {
+      throw new Error(data.error || 'Failed to launch browser');
+    }
+  } catch (err) {
+    document.getElementById('ytSetupLoginStatusText').textContent = '❌ ' + err.message;
+    showToast('Failed to launch: ' + err.message, 'error');
+  }
+}
+
+/**
+ * Go back to the profiles list (step 1)
+ */
+async function goBackToProfiles() {
+  document.getElementById('ytSetupStep1').style.display = 'block';
+  document.getElementById('ytSetupStep2').style.display = 'none';
+  
+  // Close VNC if active
+  try { await fetch(`${API_BASE}/channels/yt-setup/close`, { method: 'POST' }); } catch {}
+  
+  const iframe = document.getElementById('ytSetupVncFrame');
+  if (iframe) { iframe.src = ''; iframe.style.display = 'none'; }
+  
+  ytSetupSessionActive = false;
+  _activeProfileName = null;
+  await loadYtProfiles();
+}
+
+/**
+ * Refresh the YouTube Login Setup section
  */
 async function refreshYtLoginSetup() {
-  // Render the list of existing logged-in channels
-  renderYtSetupChannels();
+  await loadYtProfiles();
   
   try {
     const res = await fetch(`${API_BASE}/channels/yt-setup/status`);
@@ -4477,43 +4617,16 @@ async function refreshYtLoginSetup() {
     
     if (data.active) {
       ytSetupSessionActive = true;
-      goToYtSetupStep(2);
-      // Reconnect iframe if session is already running
+      document.getElementById('ytSetupStep1').style.display = 'none';
+      document.getElementById('ytSetupStep2').style.display = 'block';
       showVncIframe(data.ws_port || 6080);
-      showToast('Active browser session found.', 'info');
     } else {
       ytSetupSessionActive = false;
-      goToYtSetupStep(1);
+      document.getElementById('ytSetupStep1').style.display = 'block';
+      document.getElementById('ytSetupStep2').style.display = 'none';
     }
   } catch (err) {
     console.error('Failed to refresh YT setup status:', err);
-  }
-}
-
-/**
- * Navigate between step 1 and step 2
- */
-function goToYtSetupStep(step) {
-  const step1 = document.getElementById('ytSetupStep1');
-  const step2 = document.getElementById('ytSetupStep2');
-  const ind1 = document.getElementById('ytStep1Indicator');
-  const ind2 = document.getElementById('ytStep2Indicator');
-  const line = document.getElementById('ytStepLine');
-  
-  if (!step1 || !step2) return;
-
-  if (step === 1) {
-    step1.style.display = 'block';
-    step2.style.display = 'none';
-    ind1.className = 'yt-step-indicator active';
-    ind2.className = 'yt-step-indicator';
-    line.className = 'yt-step-line';
-  } else {
-    step1.style.display = 'none';
-    step2.style.display = 'block';
-    ind1.className = 'yt-step-indicator complete';
-    ind2.className = 'yt-step-indicator active';
-    line.className = 'yt-step-line active';
   }
 }
 
@@ -4525,72 +4638,10 @@ function showVncIframe(wsPort) {
   const missing = document.getElementById('ytSetupVncMissing');
   if (!iframe) return;
 
-  // Use same-origin proxy — noVNC is served at /novnc/ and WebSocket at /websockify
   const origin = window.location.origin;
-  
   iframe.src = `${origin}/novnc/vnc_lite.html?autoconnect=true&resize=scale&quality=7&compression=2&reconnect=true&reconnect_delay=2000&path=websockify`;
   iframe.style.display = 'block';
   if (missing) missing.style.display = 'none';
-}
-
-/**
- * Launch the Chrome browser for YouTube login setup (VNC mode)
- * @param {string} profileName - Profile to use: 'yt_setup_new' for new channel, 'channel_X' for re-login
- */
-async function launchYtSetupBrowser(profileName = 'yt_setup_new') {
-  const btn = document.getElementById('btnYtSetupLaunch');
-  const statusDiv = document.getElementById('ytSetupLaunchStatus');
-  
-  if (btn) {
-    btn.disabled = true;
-    btn.innerHTML = '⏳ Launching Chrome + VNC...';
-  }
-  if (statusDiv) {
-    statusDiv.style.display = 'block';
-    statusDiv.textContent = 'Starting virtual display and Chrome on the server. This may take 5-10 seconds...';
-  }
-
-  try {
-    const res = await fetch(`${API_BASE}/channels/yt-setup/launch`, { 
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ profileName })
-    });
-    const data = await res.json();
-    
-    if (data.success && data.mode === 'vnc') {
-      ytSetupSessionActive = true;
-      
-      if (!data.vnc_available) {
-        // Show missing deps warning
-        const missing = document.getElementById('ytSetupVncMissing');
-        if (missing) missing.style.display = 'block';
-        const iframe = document.getElementById('ytSetupVncFrame');
-        if (iframe) iframe.style.display = 'none';
-        showToast('VNC dependencies missing — see instructions on screen', 'error');
-        goToYtSetupStep(2);
-        return;
-      }
-
-      const isNew = profileName === 'yt_setup_new';
-      showToast(isNew ? 'Fresh Chrome launched! Log in to your new channel.' : 'Chrome launched with existing session.', 'success');
-      goToYtSetupStep(2);
-      showVncIframe(data.ws_port);
-    } else {
-      throw new Error(data.error || 'Failed to launch browser');
-    }
-  } catch (err) {
-    showToast('Failed to launch browser: ' + err.message, 'error');
-    if (statusDiv) {
-      statusDiv.textContent = '❌ ' + err.message;
-      statusDiv.style.color = '#f87171';
-    }
-  } finally {
-    if (btn) {
-      btn.disabled = false;
-      btn.innerHTML = '🚀 Launch Chrome Browser';
-    }
-  }
 }
 
 /**
@@ -4605,7 +4656,11 @@ async function verifyYtSetupChannels() {
   if (status) status.textContent = 'Connecting to Chrome and scanning YouTube Studio...';
 
   try {
-    const res = await fetch(`${API_BASE}/channels/yt-setup/verify`, { method: 'POST' });
+    const res = await fetch(`${API_BASE}/channels/yt-setup/verify`, { 
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ profileName: _activeProfileName })
+    });
     const data = await res.json();
     
     if (data.success) {
@@ -4617,8 +4672,6 @@ async function verifyYtSetupChannels() {
       // Reload channels in the app
       loadChannels();
       loadAllData();
-      // Update the logged-in channels list in Settings
-      setTimeout(() => renderYtSetupChannels(), 1000);
     } else {
       throw new Error(data.error || 'Verification failed');
     }
@@ -4650,16 +4703,18 @@ async function saveAndCloseYtSetup() {
     if (data.success) {
       showToast('Browser session saved and closed.', 'success');
       ytSetupSessionActive = false;
+      _activeProfileName = null;
       
-      // Reset to step 1
-      goToYtSetupStep(1);
+      // Go back to step 1
+      document.getElementById('ytSetupStep1').style.display = 'block';
+      document.getElementById('ytSetupStep2').style.display = 'none';
       
-      // Hide the VNC iframe
+      // Hide VNC iframe
       const iframe = document.getElementById('ytSetupVncFrame');
-      if (iframe) {
-        iframe.src = '';
-        iframe.style.display = 'none';
-      }
+      if (iframe) { iframe.src = ''; iframe.style.display = 'none'; }
+
+      // Reload profiles to show updated status
+      await loadYtProfiles();
     } else {
       throw new Error(data.error || 'Failed to close session');
     }

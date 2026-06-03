@@ -513,46 +513,46 @@
           <h3 style="margin:0;">🔐 YouTube Login Setup</h3>
           <button class="btn-secondary btn-sm" onclick="refreshYtLoginSetup()" style="display:flex; align-items:center; gap:4px; padding:6px 12px; font-size:0.8rem; border-radius:6px;">🔄 Refresh</button>
         </div>
-        <p class="subtitle" style="margin-bottom:16px;">Log in to your YouTube channels to enable the pipeline</p>
+        <p class="subtitle" style="margin-bottom:16px;">A Chrome profile stores your YouTube login cookies. Create one per Google account.</p>
 
-        <!-- Logged-in channels list -->
-        <div id="ytSetupChannelsList" style="margin-bottom:20px;"></div>
-
-        <!-- Step indicators -->
-        <div id="ytSetupSteps" style="display:flex; align-items:center; gap:0; margin-bottom:20px;">
-          <div id="ytStep1Indicator" class="yt-step-indicator active" onclick="goToYtSetupStep(1)">
-            <span class="yt-step-num">1</span>
-          </div>
-          <div class="yt-step-line" id="ytStepLine"></div>
-          <div id="ytStep2Indicator" class="yt-step-indicator" onclick="goToYtSetupStep(2)">
-            <span class="yt-step-num">2</span>
-          </div>
-        </div>
-
-        <!-- Step 1: Launch Browser -->
+        <!-- Step 1: Profile Management -->
         <div id="ytSetupStep1" style="margin-top:0;">
-          <h4 style="font-size:0.95rem; color:var(--text-bright); margin-bottom:8px;">Step 1 — Launch Browser</h4>
-          <p style="font-size:0.82rem; color:var(--text-secondary); line-height:1.5; margin-bottom:16px;">
-            Click below to launch a <strong>fresh</strong> Chrome browser to log in to a <strong>new</strong> YouTube channel. To re-login an existing channel, use the "🔄 Re-login" button above.
-          </p>
-          <button id="btnYtSetupLaunch" class="btn-primary" onclick="launchYtSetupBrowser('yt_setup_new')" style="display:flex; align-items:center; gap:6px; padding:10px 20px; font-size:0.92rem; font-weight:600;">
-            ➕ Add New Channel
-          </button>
-          <div id="ytSetupLaunchStatus" style="margin-top:12px; font-size:0.8rem; color:var(--text-muted); display:none;"></div>
+          <!-- Profiles List -->
+          <div id="ytSetupProfilesList" style="margin-bottom:16px;">
+            <p style="font-size:0.82rem; color:var(--text-muted);">Loading profiles...</p>
+          </div>
+
+          <!-- Create New Profile -->
+          <div style="display:flex; gap:8px; align-items:center;">
+            <input type="text" id="newProfileNameInput" placeholder="New profile name, e.g. MyAccount" 
+              style="flex:1; padding:10px 14px; background:rgba(15,15,35,0.8); border:1px solid rgba(99,102,241,0.2); border-radius:8px; color:#e2e8f0; font-size:0.85rem; outline:none;"
+              onkeydown="if(event.key==='Enter')createYtProfile()">
+            <button class="btn-secondary" onclick="createYtProfile()" style="padding:10px 16px; font-size:0.85rem; font-weight:600; white-space:nowrap; border-radius:8px;">
+              ➕ Create
+            </button>
+          </div>
         </div>
 
-        <!-- Step 2: Login & Verify -->
+        <!-- Step 2: Login & Verify (hidden by default) -->
         <div id="ytSetupStep2" style="display:none; margin-top:0;">
-          <h4 style="font-size:0.95rem; color:var(--text-bright); margin-bottom:6px;">Step 2 — Log into YouTube</h4>
-          <p style="font-size:0.82rem; color:var(--text-secondary); line-height:1.5; margin-bottom:12px;">
-            Chrome is running — log in to YouTube in the browser below, then click <strong style="color:#4ade80;">Verify Channels</strong>.
-          </p>
+          <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px;">
+            <h4 style="font-size:0.95rem; color:var(--text-bright); margin:0;">
+              Logging in: <span id="ytSetupActiveProfileLabel" style="color:#818cf8;"></span>
+            </h4>
+            <button class="btn-secondary btn-sm" onclick="goBackToProfiles()" style="padding:5px 12px; font-size:0.75rem; border-radius:6px;">← Back to Profiles</button>
+          </div>
+
+          <!-- Status bar -->
+          <div style="display:flex; align-items:center; gap:10px; margin-bottom:12px; padding:10px 14px; border-radius:8px; background:rgba(99,102,241,0.08); border:1px solid rgba(99,102,241,0.2);">
+            <div style="width:14px; height:14px; border:2px solid rgba(165,180,252,0.3); border-top-color:#a5b4fc; border-radius:50%; animation:spin 0.8s linear infinite; flex-shrink:0;"></div>
+            <span id="ytSetupLoginStatusText" style="font-size:0.82rem; color:var(--text-secondary);">Launching Chrome...</span>
+          </div>
 
           <!-- Instructions checklist -->
-          <div style="margin-bottom:16px; padding:12px 16px; border-radius:10px; background:rgba(99,102,241,0.06); border:1px solid rgba(99,102,241,0.15);">
+          <div id="ytSetupLoginGuide" style="display:none; margin-bottom:16px; padding:12px 16px; border-radius:10px; background:rgba(99,102,241,0.06); border:1px solid rgba(99,102,241,0.15);">
             <div style="display:flex; align-items:flex-start; gap:8px; margin-bottom:8px;">
               <span style="color:#f59e0b; font-size:0.85rem; margin-top:1px;">⚠️</span>
-              <span style="font-size:0.78rem; color:#f59e0b; line-height:1.4;">If Chrome asks to use your existing profile, click <strong>"Don't sign in"</strong> / <strong>"Cancel"</strong>. This uses a separate Chrome profile.</span>
+              <span style="font-size:0.78rem; color:#f59e0b; line-height:1.4;">If Chrome asks to use your existing profile, click <strong>"Don't sign in"</strong> / <strong>"Cancel"</strong>.</span>
             </div>
             <div style="display:flex; align-items:flex-start; gap:8px; margin-bottom:8px;">
               <span style="color:#10b981; font-size:0.85rem; margin-top:1px;">✅</span>
@@ -574,17 +574,12 @@
 
           <!-- VNC Browser iframe (noVNC) -->
           <div id="ytSetupScreenContainer" style="margin-bottom:16px; border-radius:12px; overflow:hidden; background:#000; border:2px solid rgba(99,102,241,0.3);">
-            <!-- VNC deps missing warning (hidden by default) -->
             <div id="ytSetupVncMissing" style="display:none; padding:24px; text-align:center;">
               <p style="font-size:0.95rem; color:#f87171; font-weight:600; margin-bottom:8px;">VNC dependencies missing</p>
               <p style="font-size:0.78rem; color:var(--text-secondary); margin-bottom:12px;">Run this command on your server to install:</p>
               <code style="display:block; font-size:0.75rem; color:#818cf8; padding:12px; border-radius:6px; background:rgba(0,0,0,0.5); word-break:break-all;">sudo apt install -y xvfb x11vnc novnc websockify openbox</code>
-              <p style="font-size:0.72rem; color:var(--text-muted); margin-top:12px;">Then restart your server with: <code style="color:#818cf8;">pm2 restart youtube-pipeline</code></p>
             </div>
-            <!-- noVNC iframe -->
-            <iframe id="ytSetupVncFrame"
-              style="width:100%; height:680px; border:none; display:none;"
-              allowfullscreen></iframe>
+            <iframe id="ytSetupVncFrame" style="width:100%; height:680px; border:none; display:none;" allowfullscreen></iframe>
           </div>
 
           <p style="font-size:0.72rem; color:#64748b; margin-bottom:16px;">💡 <strong style="color:#94a3b8;">Click inside the browser</strong> to interact. Type, click, and scroll — it's a real remote desktop.</p>

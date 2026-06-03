@@ -197,7 +197,7 @@ export async function processPost(post) {
     );
 
     // --- Mark scheduled post as complete and record YouTube Video ID ---
-    run(`UPDATE scheduled_posts SET status = 'complete', youtube_video_id = @videoId WHERE id = @id`, {
+    run(`UPDATE scheduled_posts SET status = 'complete', youtube_video_id = @videoId, error_message = NULL WHERE id = @id`, {
       videoId,
       id: post.id
     });

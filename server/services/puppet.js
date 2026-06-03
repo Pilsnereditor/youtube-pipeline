@@ -77,6 +77,20 @@ export function resolveChannelProxy(channel) {
 }
 
 /**
+ * Get the platform-appropriate User Agent to match the VNC / native browser
+ */
+function getUserAgent() {
+  if (process.platform === 'win32') {
+    return 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+  } else if (process.platform === 'darwin') {
+    return 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+  } else {
+    // Linux VPS
+    return 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+  }
+}
+
+/**
  * Find the system's Google Chrome executable path
  */
 function getChromePath() {
@@ -120,7 +134,9 @@ async function launchBrowserWithRetry(chromePath, profilePath, headless = false,
         '--no-sandbox',
         '--disable-setuid-sandbox',
         '--disable-blink-features=AutomationControlled',
-        '--lang=en-US'
+        '--lang=en-US',
+        '--password-store=basic',
+        '--use-mock-keychain'
       ];
       if (proxyUrl) {
         args.push(`--proxy-server=${proxyUrl}`);
@@ -199,7 +215,7 @@ export async function setupBrowserSession(channelId, userId, broadcastFn) {
 
   const [page] = await browser.pages();
   await page.setExtraHTTPHeaders({ 'Accept-Language': 'en-US,en;q=0.9' });
-  await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+  await page.setUserAgent(getUserAgent());
   await page.setViewport({ width: 1024, height: 700 });
 
   if (proxyConfig && (proxyConfig.username || proxyConfig.password)) {
@@ -472,7 +488,7 @@ export async function uploadVideoBrowser(channelId, opts, logFn = console.log) {
     await page.setExtraHTTPHeaders({
       'Accept-Language': 'en-US,en;q=0.9'
     });
-    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+    await page.setUserAgent(getUserAgent());
     await page.setViewport({ width: 1280, height: 800 });
 
     logFn('[Puppet] Navigating to YouTube Studio...');
@@ -997,7 +1013,7 @@ export async function rescheduleVideoBrowser(channelId, youtubeVideoId, schedule
     await page.setExtraHTTPHeaders({
       'Accept-Language': 'en-US,en;q=0.9'
     });
-    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+    await page.setUserAgent(getUserAgent());
     await page.setViewport({ width: 1280, height: 800 });
 
     logFn('[Puppet] Navigating to YouTube Studio video edit page...');

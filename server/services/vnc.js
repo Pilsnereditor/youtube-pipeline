@@ -169,6 +169,8 @@ export async function launchVncSession(profileName = 'yt_setup_global') {
     '--no-sandbox',
     '--disable-setuid-sandbox',
     '--disable-gpu',
+    '--password-store=basic',
+    '--use-mock-keychain',
     'https://studio.youtube.com?hl=en&persist_hl=1'
   ], {
     detached: true, stdio: 'ignore', env

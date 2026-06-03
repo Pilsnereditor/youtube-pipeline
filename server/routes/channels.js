@@ -75,7 +75,9 @@ router.get('/', (req, res) => {
 
     const PROFILES_DIR = path.join(__dirname, '..', '..', 'data', 'profiles');
     for (const ch of channels) {
-      const profilePath = path.join(PROFILES_DIR, `channel_${ch.id}`);
+      // Use profile_name (new system) with fallback to channel_{id} (legacy)
+      const profileFolder = ch.profile_name || `channel_${ch.id}`;
+      const profilePath = path.join(PROFILES_DIR, profileFolder);
       ch.has_profile = fs.existsSync(profilePath) ? 1 : 0;
     }
 

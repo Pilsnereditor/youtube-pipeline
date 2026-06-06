@@ -17,6 +17,7 @@ import puppeteer from 'puppeteer-core';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
+import { queryOne } from '../db/database.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -155,7 +156,38 @@ export async function launchVncSession(profileName = 'yt_setup_global') {
 
   console.log('[VNC] Launching Chrome...');
   const chromePath = findChrome();
-  const chrome = spawn(chromePath, [
+  
+  // Resolve proxy
+  let proxyArg = null;
+  try {
+    let activeProxyPoolId = null;
+    
+    // Check if there is a temp proxy pool ID setting for this profile
+    const setting = queryOne("SELECT value FROM settings WHERE key = @key", { key: `proxy_for_profile_${profileName}` });
+    if (setting && setting.value) {
+      activeProxyPoolId = Number(setting.value);
+    }
+    
+    // If not found in settings, check if there's an existing channel linked to this profile
+    if (!activeProxyPoolId) {
+      const channel = queryOne('SELECT * FROM channels WHERE profile_name = @profileName LIMIT 1', { profileName });
+      if (channel && channel.proxy_pool_id) {
+        activeProxyPoolId = channel.proxy_pool_id;
+      }
+    }
+    
+    if (activeProxyPoolId) {
+      const proxy = queryOne('SELECT * FROM proxy_pool WHERE id = @id', { id: activeProxyPoolId });
+      if (proxy) {
+        proxyArg = `--proxy-server=${proxy.protocol}://${proxy.host}:${proxy.port}`;
+        console.log(`[VNC] Using proxy ${proxy.protocol}://${proxy.host}:${proxy.port} for setup profile "${profileName}"`);
+      }
+    }
+  } catch (err) {
+    console.error('[VNC] Error resolving proxy for VNC setup session:', err);
+  }
+
+  const chromeArgs = [
     `--user-data-dir=${profilePath}`,
     `--remote-debugging-port=${CDP_PORT}`,
     '--no-first-run',
@@ -170,9 +202,22 @@ export async function launchVncSession(profileName = 'yt_setup_global') {
     '--disable-setuid-sandbox',
     '--disable-gpu',
     '--password-store=basic',
-    '--use-mock-keychain',
-    'https://studio.youtube.com?hl=en&persist_hl=1'
-  ], {
+    '--use-mock-keychain'
+  ];
+
+  if (proxyArg) {
+    chromeArgs.push(proxyArg);
+  }
+
+  // WebRTC leak prevention
+  chromeArgs.push('--enforce-webrtc-ip-permission-check');
+  chromeArgs.push('--disable-webrtc-hw-decoding');
+  chromeArgs.push('--disable-webrtc-hw-encoding');
+  chromeArgs.push('--webrtc-ip-handling-policy=disable_non_proxied_udp');
+
+  chromeArgs.push('https://studio.youtube.com?hl=en&persist_hl=1');
+
+  const chrome = spawn(chromePath, chromeArgs, {
     detached: true, stdio: 'ignore', env
   });
   chrome.unref();

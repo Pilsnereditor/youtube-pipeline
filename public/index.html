@@ -525,8 +525,11 @@
           <!-- Create New Profile -->
           <div style="display:flex; gap:8px; align-items:center;">
             <input type="text" id="newProfileNameInput" placeholder="New profile name, e.g. MyAccount" 
-              style="flex:1; padding:10px 14px; background:rgba(15,15,35,0.8); border:1px solid rgba(99,102,241,0.2); border-radius:8px; color:#e2e8f0; font-size:0.85rem; outline:none;"
+              style="flex:2; padding:10px 14px; background:rgba(15,15,35,0.8); border:1px solid rgba(99,102,241,0.2); border-radius:8px; color:#e2e8f0; font-size:0.85rem; outline:none;"
               onkeydown="if(event.key==='Enter')createYtProfile()">
+            <select id="newProfileProxyPoolId" class="form-input" style="flex:1.5; margin-bottom:0; padding:10px; font-size:0.82rem; height:auto; background:rgba(15,15,35,0.8); border:1px solid rgba(99,102,241,0.2); border-radius:8px; color:#e2e8f0;">
+              <option value="">No Proxy (Direct Server IP)</option>
+            </select>
             <button class="btn-secondary" onclick="createYtProfile()" style="padding:10px 16px; font-size:0.85rem; font-weight:600; white-space:nowrap; border-radius:8px;">
               ➕ Create
             </button>

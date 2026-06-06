@@ -172,7 +172,7 @@ router.get('/profiles', (req, res) => {
  * POST /api/channels/profiles/create — Create a new named Chrome profile
  */
 router.post('/profiles/create', (req, res) => {
-  const { name } = req.body;
+  const { name, proxy_pool_id } = req.body;
   if (!name || !name.trim()) return res.status(400).json({ error: 'Profile name is required' });
 
   const safeName = name.trim().replace(/[^a-zA-Z0-9_-]/g, '_');
@@ -183,6 +183,19 @@ router.post('/profiles/create', (req, res) => {
   }
 
   fs.mkdirSync(profileDir, { recursive: true });
+
+  // Save proxy pool ID setting for this profile
+  if (proxy_pool_id) {
+    try {
+      run(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES (@key, @value)",
+        { key: `proxy_for_profile_profile_${safeName}`, value: String(proxy_pool_id) }
+      );
+    } catch (err) {
+      console.error('[DB] Error saving proxy setting for profile:', err);
+    }
+  }
+
   res.json({ success: true, name: `profile_${safeName}` });
 });
 
@@ -204,6 +217,14 @@ router.post('/profiles/delete', (req, res) => {
     // Unlink any channels using this profile
     run('UPDATE channels SET profile_name = NULL WHERE profile_name = @pname AND user_id = @userId',
       { pname: name, userId });
+    
+    // Delete proxy setting for this profile
+    try {
+      run("DELETE FROM settings WHERE key = @key", { key: `proxy_for_profile_${name}` });
+    } catch (err) {
+      console.error('[DB] Error deleting proxy setting for profile:', err);
+    }
+
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -268,19 +289,30 @@ router.post('/yt-setup/verify', async (req, res) => {
         );
       }
       
+      // Retrieve the proxy pool ID associated with this profile
+      let vncProxyPoolId = null;
+      try {
+        const setting = queryOne("SELECT value FROM settings WHERE key = @key", { key: `proxy_for_profile_${profileName}` });
+        if (setting && setting.value) {
+          vncProxyPoolId = Number(setting.value);
+        }
+      } catch (err) {
+        console.error('[DB] Error reading proxy setting for profile:', err);
+      }
+
       let channelId;
       if (existing) {
         run(
-          'UPDATE channels SET upload_mode = @mode, youtube_channel_id = @ytId, name = @name, profile_name = @profile WHERE id = @id',
-          { mode: 'browser', ytId: ch.ytChannelId || null, name: ch.name, profile: profileName, id: existing.id }
+          'UPDATE channels SET upload_mode = @mode, youtube_channel_id = @ytId, name = @name, profile_name = @profile, proxy_pool_id = COALESCE(proxy_pool_id, @proxyPoolId) WHERE id = @id',
+          { mode: 'browser', ytId: ch.ytChannelId || null, name: ch.name, profile: profileName, proxyPoolId: vncProxyPoolId, id: existing.id }
         );
         channelId = existing.id;
         channelsCreated.push({ id: existing.id, name: ch.name, action: 'updated' });
       } else {
         const result2 = run(
-          `INSERT INTO channels (name, youtube_channel_id, user_id, upload_mode, upload_privacy, category, profile_name) 
-           VALUES (@name, @ytId, @userId, 'browser', 'private', '22', @profile)`,
-          { name: ch.name, ytId: ch.ytChannelId || null, userId, profile: profileName }
+          `INSERT INTO channels (name, youtube_channel_id, user_id, upload_mode, upload_privacy, category, profile_name, proxy_pool_id) 
+           VALUES (@name, @ytId, @userId, 'browser', 'private', '22', @profile, @proxyPoolId)`,
+          { name: ch.name, ytId: ch.ytChannelId || null, userId, profile: profileName, proxyPoolId: vncProxyPoolId }
         );
         channelId = result2.lastInsertRowid;
         channelsCreated.push({ id: channelId, name: ch.name, action: 'created' });

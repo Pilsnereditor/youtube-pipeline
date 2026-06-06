@@ -4560,16 +4560,20 @@ async function createYtProfile() {
   const name = input.value.trim();
   if (!name) { showToast('Enter a profile name', 'error'); return; }
 
+  const proxySelect = document.getElementById('newProfileProxyPoolId');
+  const proxy_pool_id = proxySelect ? proxySelect.value : '';
+
   try {
     const res = await fetch(`${API_BASE}/channels/profiles/create`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name })
+      body: JSON.stringify({ name, proxy_pool_id: proxy_pool_id ? Number(proxy_pool_id) : null })
     });
     const data = await res.json();
     if (data.success) {
       showToast(`Created profile "${name}"`, 'success');
       input.value = '';
+      if (proxySelect) proxySelect.value = '';
       await loadYtProfiles();
     } else {
       showToast(data.error || 'Failed to create profile', 'error');
@@ -4938,6 +4942,21 @@ function populateProxyDropdowns() {
       newDropdown.appendChild(opt);
     });
     if (currentVal) newDropdown.value = currentVal;
+  }
+
+  // Also populate the setup profile proxy dropdown if it exists
+  const setupDropdown = document.getElementById('newProfileProxyPoolId');
+  if (setupDropdown) {
+    const currentVal = setupDropdown.value;
+    setupDropdown.innerHTML = '<option value="">No Proxy (Direct Server IP)</option>';
+    proxyPoolData.forEach(p => {
+      const flag = getCountryFlag(p.country_code);
+      const opt = document.createElement('option');
+      opt.value = p.id;
+      opt.textContent = `${flag} ${p.host}:${p.port} — ${p.city || p.country_code} (${p.assigned_channels}/${p.max_channels})`;
+      setupDropdown.appendChild(opt);
+    });
+    if (currentVal) setupDropdown.value = currentVal;
   }
 }
 

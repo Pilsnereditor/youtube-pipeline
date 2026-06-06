@@ -2221,6 +2221,59 @@ function setupDropHandlers(zone, onDropCallback) {
   });
 }
 
+function updateUploadProgress(fileName, loaded, total) {
+  let progressContainer = document.getElementById('upload-progress-container');
+  if (!progressContainer) {
+    progressContainer = document.createElement('div');
+    progressContainer.id = 'upload-progress-container';
+    progressContainer.style.position = 'fixed';
+    progressContainer.style.bottom = '24px';
+    progressContainer.style.right = '24px';
+    progressContainer.style.width = '320px';
+    progressContainer.style.padding = '16px';
+    progressContainer.style.borderRadius = '12px';
+    progressContainer.style.background = 'rgba(15, 15, 25, 0.85)';
+    progressContainer.style.backdropFilter = 'blur(16px)';
+    progressContainer.style.webkitBackdropFilter = 'blur(16px)';
+    progressContainer.style.border = '1px solid rgba(99, 102, 241, 0.35)';
+    progressContainer.style.boxShadow = '0 8px 32px 0 rgba(0, 0, 0, 0.5)';
+    progressContainer.style.zIndex = '99999';
+    progressContainer.style.color = '#fff';
+    progressContainer.style.fontFamily = 'system-ui, -apple-system, sans-serif';
+    progressContainer.style.transition = 'all 0.3s ease';
+    document.body.appendChild(progressContainer);
+  }
+
+  const percent = Math.round((loaded / total) * 100);
+  const loadedMB = (loaded / (1024 * 1024)).toFixed(1);
+  const totalMB = (total / (1024 * 1024)).toFixed(1);
+
+  progressContainer.innerHTML = `
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+      <span style="font-size: 0.85rem; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 220px;" title="${escapeHTML(fileName)}">Uploading: ${escapeHTML(fileName)}</span>
+      <span style="font-size: 0.85rem; font-weight: 700; color: #818cf8;">${percent}%</span>
+    </div>
+    <div style="width: 100%; height: 6px; background: rgba(255,255,255,0.08); border-radius: 3px; overflow: hidden; margin-bottom: 8px;">
+      <div style="width: ${percent}%; height: 100%; background: linear-gradient(90deg, #6366f1, #818cf8); border-radius: 3px; transition: width 0.1s ease;"></div>
+    </div>
+    <div style="display: flex; justify-content: space-between; align-items: center; font-size: 0.75rem; color: #9ca3af;">
+      <span>${loadedMB} MB / ${totalMB} MB</span>
+      <span style="font-style: italic;">Keep this tab open</span>
+    </div>
+  `;
+}
+
+function removeUploadProgress() {
+  const progressContainer = document.getElementById('upload-progress-container');
+  if (progressContainer) {
+    progressContainer.style.opacity = '0';
+    progressContainer.style.transform = 'translateY(10px)';
+    setTimeout(() => {
+      progressContainer.remove();
+    }, 300);
+  }
+}
+
 async function handleFilesUpload(files, type) {
   if (files.length === 0) return;
 
@@ -2256,22 +2309,47 @@ async function handleFilesUpload(files, type) {
     formData.append(fieldName, files[i]);
   }
 
-  showToast(`Uploading ${files.length} file(s)...`, 'info');
+  const displayNames = Array.from(files).map(f => f.name).join(', ');
 
-  try {
-    const res = await fetch(url, {
-      method: 'POST',
-      body: formData
-    });
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', url, true);
 
-    if (!res.ok) throw new Error(await res.text());
+    // Track upload progress
+    xhr.upload.onprogress = (event) => {
+      if (event.lengthComputable) {
+        updateUploadProgress(displayNames, event.loaded, event.total);
+      }
+    };
 
-    showToast('Upload completed successfully!', 'success');
-    if (type === 'videos') loadMediaVideos();
-    else loadMediaThumbnails();
-  } catch (err) {
-    showToast('Upload failed: ' + err.message, 'error');
-  }
+    xhr.onload = () => {
+      removeUploadProgress();
+      if (xhr.status >= 200 && xhr.status < 300) {
+        showToast('Upload completed successfully!', 'success');
+        if (type === 'videos') loadMediaVideos();
+        else loadMediaThumbnails();
+        resolve();
+      } else {
+        const errorText = xhr.responseText || 'Upload failed with status ' + xhr.status;
+        showToast('Upload failed: ' + errorText, 'error');
+        reject(new Error(errorText));
+      }
+    };
+
+    xhr.onerror = () => {
+      removeUploadProgress();
+      showToast('Upload failed due to connection error.', 'error');
+      reject(new Error('Connection error'));
+    };
+
+    xhr.onabort = () => {
+      removeUploadProgress();
+      showToast('Upload was cancelled.', 'warning');
+      reject(new Error('Upload aborted'));
+    };
+
+    xhr.send(formData);
+  });
 }
 
 async function handleChannelThumbnailUpload(files) {

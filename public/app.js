@@ -18,6 +18,8 @@ let state = {
   scheduleFilterChannelId: ''
 };
 
+let activeUploads = {};
+
 // Config
 const API_BASE = '/api';
 
@@ -2221,58 +2223,58 @@ function setupDropHandlers(zone, onDropCallback) {
   });
 }
 
-function updateUploadProgress(fileName, loaded, total) {
-  let progressContainer = document.getElementById('upload-progress-container');
-  if (!progressContainer) {
-    progressContainer = document.createElement('div');
-    progressContainer.id = 'upload-progress-container';
-    progressContainer.style.position = 'fixed';
-    progressContainer.style.bottom = '24px';
-    progressContainer.style.right = '24px';
-    progressContainer.style.width = '320px';
-    progressContainer.style.padding = '16px';
-    progressContainer.style.borderRadius = '12px';
-    progressContainer.style.background = 'rgba(15, 15, 25, 0.85)';
-    progressContainer.style.backdropFilter = 'blur(16px)';
-    progressContainer.style.webkitBackdropFilter = 'blur(16px)';
-    progressContainer.style.border = '1px solid rgba(99, 102, 241, 0.35)';
-    progressContainer.style.boxShadow = '0 8px 32px 0 rgba(0, 0, 0, 0.5)';
-    progressContainer.style.zIndex = '99999';
-    progressContainer.style.color = '#fff';
-    progressContainer.style.fontFamily = 'system-ui, -apple-system, sans-serif';
-    progressContainer.style.transition = 'all 0.3s ease';
-    document.body.appendChild(progressContainer);
+function renderOngoingUploads() {
+  const container = document.getElementById('ongoingUploadsContainer');
+  const section = document.getElementById('ongoingUploadsSection');
+  if (!container || !section) return;
+
+  const uploadIds = Object.keys(activeUploads);
+  if (uploadIds.length === 0) {
+    section.style.display = 'none';
+    container.innerHTML = '';
+    return;
   }
 
-  const percent = Math.round((loaded / total) * 100);
-  const loadedMB = (loaded / (1024 * 1024)).toFixed(1);
-  const totalMB = (total / (1024 * 1024)).toFixed(1);
+  section.style.display = 'block';
 
-  progressContainer.innerHTML = `
-    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-      <span style="font-size: 0.85rem; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 220px;" title="${escapeHTML(fileName)}">Uploading: ${escapeHTML(fileName)}</span>
-      <span style="font-size: 0.85rem; font-weight: 700; color: #818cf8;">${percent}%</span>
-    </div>
-    <div style="width: 100%; height: 6px; background: rgba(255,255,255,0.08); border-radius: 3px; overflow: hidden; margin-bottom: 8px;">
-      <div style="width: ${percent}%; height: 100%; background: linear-gradient(90deg, #6366f1, #818cf8); border-radius: 3px; transition: width 0.1s ease;"></div>
-    </div>
-    <div style="display: flex; justify-content: space-between; align-items: center; font-size: 0.75rem; color: #9ca3af;">
-      <span>${loadedMB} MB / ${totalMB} MB</span>
-      <span style="font-style: italic;">Keep this tab open</span>
-    </div>
-  `;
+  container.innerHTML = uploadIds.map(id => {
+    const upload = activeUploads[id];
+    const percent = upload.percent || 0;
+    const loadedMB = (upload.loaded / (1024 * 1024)).toFixed(1);
+    const totalMB = (upload.total / (1024 * 1024)).toFixed(1);
+
+    return `
+      <div class="glass-light" style="padding: 14px; border-radius: 10px; border: 1px solid rgba(255, 255, 255, 0.05); background: rgba(255, 255, 255, 0.01); display: flex; flex-direction: column; gap: 8px;">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <span style="font-size: 0.85rem; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 70%;" title="${escapeHTML(upload.fileName)}">
+            Uploading: <strong>${escapeHTML(upload.fileName)}</strong>
+          </span>
+          <div style="display: flex; align-items: center; gap: 10px;">
+            <span style="font-size: 0.85rem; font-weight: 700; color: #818cf8;">${percent}%</span>
+            <button class="btn-outline-danger btn-xs" onclick="cancelUpload('${id}')" style="padding: 2px 8px; font-size: 0.75rem; border-radius: 4px; height: 22px; display: inline-flex; align-items: center; gap: 4px; border: 1px solid rgba(239, 68, 68, 0.4); background: rgba(239, 68, 68, 0.08); color: #f87171; cursor: pointer; transition: all 0.2s;">
+              🗑️ Cancel
+            </button>
+          </div>
+        </div>
+        <div style="width: 100%; height: 6px; background: rgba(255,255,255,0.08); border-radius: 3px; overflow: hidden;">
+          <div style="width: ${percent}%; height: 100%; background: linear-gradient(90deg, #6366f1, #818cf8); border-radius: 3px; transition: width 0.1s ease;"></div>
+        </div>
+        <div style="display: flex; justify-content: space-between; align-items: center; font-size: 0.75rem; color: #9ca3af;">
+          <span>${loadedMB} MB / ${totalMB} MB</span>
+          <span style="font-style: italic;">Keep this tab open</span>
+        </div>
+      </div>
+    `;
+  }).join('');
 }
 
-function removeUploadProgress() {
-  const progressContainer = document.getElementById('upload-progress-container');
-  if (progressContainer) {
-    progressContainer.style.opacity = '0';
-    progressContainer.style.transform = 'translateY(10px)';
-    setTimeout(() => {
-      progressContainer.remove();
-    }, 300);
+window.cancelUpload = function(uploadId) {
+  const upload = activeUploads[uploadId];
+  if (upload && upload.xhr) {
+    console.log(`[Upload] User cancelled upload: ${upload.fileName}`);
+    upload.xhr.abort();
   }
-}
+};
 
 async function handleFilesUpload(files, type) {
   if (files.length === 0) return;
@@ -2310,20 +2312,39 @@ async function handleFilesUpload(files, type) {
   }
 
   const displayNames = Array.from(files).map(f => f.name).join(', ');
+  const uploadId = 'upload-' + Date.now() + '-' + Math.round(Math.random() * 1e5);
 
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
+    
+    // Store in activeUploads before starting
+    activeUploads[uploadId] = {
+      xhr: xhr,
+      fileName: displayNames,
+      loaded: 0,
+      total: files[0]?.size || 0,
+      percent: 0
+    };
+    renderOngoingUploads();
+
     xhr.open('POST', url, true);
 
     // Track upload progress
     xhr.upload.onprogress = (event) => {
       if (event.lengthComputable) {
-        updateUploadProgress(displayNames, event.loaded, event.total);
+        if (activeUploads[uploadId]) {
+          activeUploads[uploadId].loaded = event.loaded;
+          activeUploads[uploadId].total = event.total;
+          activeUploads[uploadId].percent = Math.round((event.loaded / event.total) * 100);
+          renderOngoingUploads();
+        }
       }
     };
 
     xhr.onload = () => {
-      removeUploadProgress();
+      delete activeUploads[uploadId];
+      renderOngoingUploads();
+      
       if (xhr.status >= 200 && xhr.status < 300) {
         showToast('Upload completed successfully!', 'success');
         if (type === 'videos') loadMediaVideos();
@@ -2337,13 +2358,15 @@ async function handleFilesUpload(files, type) {
     };
 
     xhr.onerror = () => {
-      removeUploadProgress();
+      delete activeUploads[uploadId];
+      renderOngoingUploads();
       showToast('Upload failed due to connection error.', 'error');
       reject(new Error('Connection error'));
     };
 
     xhr.onabort = () => {
-      removeUploadProgress();
+      delete activeUploads[uploadId];
+      renderOngoingUploads();
       showToast('Upload was cancelled.', 'warning');
       reject(new Error('Upload aborted'));
     };

@@ -4782,6 +4782,9 @@ async function saveAndCloseYtSetup() {
       await loadYtProfiles();
     } else {
       throw new Error(data.error || 'Failed to close session');
+    }
+  } catch (err) {
+    showToast('Error: ' + err.message, 'error');
   } finally {
     btn.disabled = false;
     btn.innerHTML = '💾 Save & Close Browser';

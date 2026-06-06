@@ -160,6 +160,9 @@ export async function launchVncSession(profileName = 'yt_setup_global') {
   // Resolve proxy
   let proxyArg = null;
   let activeProxyPoolId = null;
+  let needsAuth = false;
+  let proxyUser = '';
+  let proxyPass = '';
   try {
     
     // Check if there is a temp proxy pool ID setting for this profile
@@ -181,6 +184,11 @@ export async function launchVncSession(profileName = 'yt_setup_global') {
       if (proxy) {
         proxyArg = `--proxy-server=${proxy.protocol}://${proxy.host}:${proxy.port}`;
         console.log(`[VNC] Using proxy ${proxy.protocol}://${proxy.host}:${proxy.port} for setup profile "${profileName}"`);
+        if (proxy.username) {
+          needsAuth = true;
+          proxyUser = proxy.username;
+          proxyPass = proxy.password || '';
+        }
       }
     }
   } catch (err) {
@@ -215,7 +223,12 @@ export async function launchVncSession(profileName = 'yt_setup_global') {
   chromeArgs.push('--disable-webrtc-hw-encoding');
   chromeArgs.push('--webrtc-ip-handling-policy=disable_non_proxied_udp');
 
-  chromeArgs.push('https://studio.youtube.com?hl=en&persist_hl=1');
+  if (needsAuth) {
+    chromeArgs.push('about:blank');
+    console.log('[VNC] Proxy needs authentication. Starting Chrome on about:blank to configure auth first...');
+  } else {
+    chromeArgs.push('https://studio.youtube.com?hl=en&persist_hl=1');
+  }
 
   const chrome = spawn(chromePath, chromeArgs, {
     detached: true, stdio: 'ignore', env
@@ -253,41 +266,49 @@ export async function launchVncSession(profileName = 'yt_setup_global') {
 
   // Automate proxy authentication if proxy has username/password
   let cdpBrowser = null;
-  if (activeProxyPoolId) {
+  if (needsAuth) {
     try {
-      const proxy = queryOne('SELECT * FROM proxy_pool WHERE id = @id', { id: activeProxyPoolId });
-      if (proxy && proxy.username) {
-        console.log('[VNC] Connecting via CDP to authenticate proxy credentials...');
-        // Wait to ensure CDP port is active
-        await sleep(1500);
-        cdpBrowser = await puppeteer.connect({
-          browserURL: `http://127.0.0.1:${CDP_PORT}`,
-          defaultViewport: null
-        });
-        const pages = await cdpBrowser.pages();
-        if (pages.length > 0) {
-          const page = pages[0];
-          await page.authenticate({
-            username: proxy.username,
-            password: proxy.password || ''
-          });
-          console.log('[VNC] Proxy credentials applied to default tab.');
-        }
+      console.log('[VNC] Connecting via CDP to authenticate proxy credentials...');
+      // Wait to ensure CDP port is active
+      await sleep(1500);
+      cdpBrowser = await puppeteer.connect({
+        browserURL: `http://127.0.0.1:${CDP_PORT}`,
+        defaultViewport: null
+      });
 
-        // Listen for new targets (tabs/windows)
-        cdpBrowser.on('targetcreated', async (target) => {
-          if (target.type() === 'page') {
-            const p = await target.page();
-            if (p) {
-              try {
-                await p.authenticate({
-                  username: proxy.username,
-                  password: proxy.password || ''
-                });
-                console.log('[VNC] Proxy credentials applied to new target tab.');
-              } catch (e) {}
-            }
+      const applyAuth = async (p) => {
+        try {
+          await p.authenticate({
+            username: proxyUser,
+            password: proxyPass
+          });
+          console.log('[VNC] Proxy credentials applied.');
+        } catch (e) {
+          console.error('[VNC] Failed to apply proxy credentials to page:', e);
+        }
+      };
+
+      const pages = await cdpBrowser.pages();
+      for (const p of pages) {
+        await applyAuth(p);
+      }
+
+      // Listen for new targets (tabs/windows)
+      cdpBrowser.on('targetcreated', async (target) => {
+        if (target.type() === 'page') {
+          const p = await target.page();
+          if (p) {
+            await applyAuth(p);
           }
+        }
+      });
+
+      // Now navigate to YouTube Studio after authentication is set up
+      if (pages.length > 0) {
+        const page = pages[0];
+        console.log('[VNC] Navigating page to YouTube Studio after auth setup...');
+        page.goto('https://studio.youtube.com?hl=en&persist_hl=1').catch(err => {
+          console.error('[VNC] Navigation error (expected if loading takes long):', err.message);
         });
       }
     } catch (err) {

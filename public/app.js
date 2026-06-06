@@ -74,7 +74,8 @@ async function loadAllData() {
     loadScheduledPosts(),
     loadSettings(),
     loadSavedComments(),
-    loadSchedulePresets()
+    loadSchedulePresets(),
+    loadProxyPool()
   ]);
   
   updateDashboardStats();
@@ -230,6 +231,9 @@ async function loadSettings() {
     document.getElementById('settingsNordPassword').value = settings.nordvpn_password || '';
     document.getElementById('settingsProtonUsername').value = settings.protonvpn_username || '';
     document.getElementById('settingsProtonPassword').value = settings.protonvpn_password || '';
+    // Load webshare API key if saved
+    const wsKeyEl = document.getElementById('proxyWebshareKey');
+    if (wsKeyEl) wsKeyEl.value = settings.webshare_api_key || '';
     document.getElementById('settingsCategory').value = settings.default_category || '22';
     document.getElementById('settingsComment').value = settings.default_comment || '';
     if (document.getElementById('settingsAutoDelete')) {
@@ -361,6 +365,7 @@ function switchTab(tabId) {
     loadUsers();
   } else if (tabId === 'settings') {
     loadYtProfiles();
+    loadProxyPool();
   }
 }
 
@@ -466,6 +471,9 @@ function renderChannelsList() {
       ? (isConnected ? 'Puppet Mode' : 'Puppet (No Session)')
       : (isConnected ? 'API Connected' : 'API Disconnected');
     const badgeClass = isConnected ? 'badge-live' : 'badge-draft';
+    const proxyBadge = ch.proxy_pool_id 
+      ? '<span class="badge" style="font-size:0.68rem; background:rgba(139,92,246,0.15); color:#a78bfa; border:1px solid rgba(139,92,246,0.3);">🛡️ Proxy</span>'
+      : '';
     return `
       <div class="glass channel-card">
         <div class="channel-card-header">
@@ -474,6 +482,7 @@ function renderChannelsList() {
             <span class="badge ${badgeClass}">
               ${badgeText}
             </span>
+            ${proxyBadge}
           </div>
           <button class="btn-secondary btn-sm" onclick="openEditChannelModal(${ch.id})">Edit / Manage</button>
         </div>
@@ -1245,6 +1254,7 @@ async function createChannel() {
   const comment = document.getElementById('newChannelComment').value;
   const uploadMode = document.getElementById('newChannelUploadMode').value;
   const scheduleAsPremiere = document.getElementById('newChannelScheduleAsPremiere') ? document.getElementById('newChannelScheduleAsPremiere').checked : false;
+  const proxy_pool_id = document.getElementById('newChannelProxyPoolId') ? document.getElementById('newChannelProxyPoolId').value : '';
   
   const select_proxy_type = document.getElementById('newChannelProxyType').value;
   let proxy_type = select_proxy_type;
@@ -1286,7 +1296,8 @@ async function createChannel() {
         proxy_host,
         proxy_port,
         proxy_username,
-        proxy_password
+        proxy_password,
+        proxy_pool_id: proxy_pool_id ? Number(proxy_pool_id) : null
       })
     });
 
@@ -1310,7 +1321,10 @@ async function createChannel() {
     document.getElementById('newChannelProxyPort').value = '';
     document.getElementById('newChannelProxyUsername').value = '';
     document.getElementById('newChannelProxyPassword').value = '';
-    toggleAddChannelProxyFields();
+    if (document.getElementById('newChannelProxyPoolId')) {
+      document.getElementById('newChannelProxyPoolId').value = '';
+    }
+    toggleNewProxyPoolFields();
     
     await loadChannels();
     openEditChannelModal(newChannel.id);
@@ -1348,6 +1362,12 @@ async function openEditChannelModal(channelId) {
   }
   
   // Fill proxy details
+  const proxyPoolId = channel.proxy_pool_id || '';
+  const editDropdown = document.getElementById('editChProxyPoolId');
+  if (editDropdown) {
+    editDropdown.value = proxyPoolId;
+  }
+
   let proxyType = channel.proxy_type || 'none';
   const NORDVPN_KEYS = ['us-atlanta', 'us-chicago', 'us-dallas', 'us-los-angeles', 'us-new-york', 'nl-amsterdam', 'se-stockholm'];
   if (proxyType === 'socks5' && NORDVPN_KEYS.includes(channel.proxy_host)) {
@@ -1369,6 +1389,7 @@ async function openEditChannelModal(channelId) {
     document.getElementById('editChProxyPassword').value = channel.proxy_password || '';
   }
   
+  toggleProxyPoolModalFields();
   toggleEditConnectionSections();
 
   // Load subtab contents
@@ -1413,6 +1434,8 @@ async function saveChannel() {
     proxy_password = document.getElementById('editChProxyPassword').value;
   }
 
+  const proxy_pool_id = document.getElementById('editChProxyPoolId') ? document.getElementById('editChProxyPoolId').value : '';
+
   try {
     const res = await fetch(`${API_BASE}/channels/${state.selectedChannelId}`, {
       method: 'PUT',
@@ -1430,7 +1453,8 @@ async function saveChannel() {
         proxy_host,
         proxy_port,
         proxy_username,
-        proxy_password
+        proxy_password,
+        proxy_pool_id: proxy_pool_id ? Number(proxy_pool_id) : null
       })
     });
 
@@ -1693,6 +1717,38 @@ function toggleEditChannelProxyFields() {
   } else {
     if (locationFields) locationFields.style.display = 'none';
     if (customFields) customFields.style.display = 'flex';
+  }
+}
+
+function toggleProxyPoolModalFields() {
+  const poolSelect = document.getElementById('editChProxyPoolId');
+  const legacyTypeSelect = document.getElementById('editChProxyType');
+  const locationFields = document.getElementById('editChVpnLocationFields');
+  const customFields = document.getElementById('editChProxyFields');
+  
+  if (poolSelect && poolSelect.value) {
+    if (legacyTypeSelect) legacyTypeSelect.disabled = true;
+    if (locationFields) locationFields.style.display = 'none';
+    if (customFields) customFields.style.display = 'none';
+  } else {
+    if (legacyTypeSelect) legacyTypeSelect.disabled = false;
+    toggleEditChannelProxyFields();
+  }
+}
+
+function toggleNewProxyPoolFields() {
+  const poolSelect = document.getElementById('newChannelProxyPoolId');
+  const legacyTypeSelect = document.getElementById('newChannelProxyType');
+  const locationFields = document.getElementById('newChannelVpnLocationFields');
+  const customFields = document.getElementById('newChannelProxyFields');
+  
+  if (poolSelect && poolSelect.value) {
+    if (legacyTypeSelect) legacyTypeSelect.disabled = true;
+    if (locationFields) locationFields.style.display = 'none';
+    if (customFields) customFields.style.display = 'none';
+  } else {
+    if (legacyTypeSelect) legacyTypeSelect.disabled = false;
+    toggleAddChannelProxyFields();
   }
 }
 
@@ -4726,12 +4782,315 @@ async function saveAndCloseYtSetup() {
       await loadYtProfiles();
     } else {
       throw new Error(data.error || 'Failed to close session');
-    }
-  } catch (err) {
-    showToast('Error: ' + err.message, 'error');
   } finally {
     btn.disabled = false;
     btn.innerHTML = '💾 Save & Close Browser';
   }
 }
 
+// ---------------------------------------------------------------------------
+// Proxy Pool Manager
+// ---------------------------------------------------------------------------
+
+let proxyPoolData = [];
+
+async function loadProxyPool() {
+  try {
+    const res = await fetch(`${API_BASE}/proxy-pool`);
+    if (!res.ok) return;
+    proxyPoolData = await res.json();
+    renderProxyPool();
+    renderProxyAssignments();
+    updateProxyPoolStats();
+    populateProxyDropdowns();
+  } catch (err) {
+    console.error('Failed to load proxy pool:', err);
+  }
+}
+
+function updateProxyPoolStats() {
+  const total = proxyPoolData.length;
+  const assigned = proxyPoolData.filter(p => p.assigned_channels > 0).length;
+  const avail = total - assigned;
+  
+  const elTotal = document.getElementById('proxyPoolStatsTotal');
+  const elAssigned = document.getElementById('proxyPoolStatsAssigned');
+  const elAvail = document.getElementById('proxyPoolStatsAvail');
+  
+  if (elTotal) elTotal.textContent = `${total} Proxies`;
+  if (elAssigned) elAssigned.textContent = `${assigned} Assigned`;
+  if (elAvail) elAvail.textContent = `${avail} Available`;
+}
+
+function getCountryFlag(code) {
+  if (!code) return '🌐';
+  const codePoints = code.toUpperCase().split('').map(c => 0x1F1E6 - 65 + c.charCodeAt(0));
+  return String.fromCodePoint(...codePoints);
+}
+
+function renderProxyPool() {
+  const container = document.getElementById('proxyPoolList');
+  if (!container) return;
+  
+  if (proxyPoolData.length === 0) {
+    container.innerHTML = '<p style="font-size:0.82rem; color:var(--text-muted); text-align:center; padding:20px;">No proxies imported yet. Sync from Webshare or paste manually above.</p>';
+    return;
+  }
+  
+  container.innerHTML = proxyPoolData.map(p => {
+    const flag = getCountryFlag(p.country_code);
+    const healthDot = p.is_healthy ? '🟢' : '🔴';
+    const healthText = p.is_healthy ? 'Healthy' : 'Down';
+    const latency = p.last_latency_ms ? `${p.last_latency_ms}ms` : '—';
+    const channelBadges = p.channel_names 
+      ? p.channel_names.split(', ').map(n => `<span style="display:inline-block; padding:2px 8px; border-radius:4px; font-size:0.68rem; background:rgba(99,102,241,0.15); color:#a5b4fc; border:1px solid rgba(99,102,241,0.2); margin:2px 2px;">${escapeHTML(n)}</span>`).join('')
+      : '<span style="font-size:0.72rem; color:var(--text-muted);">No channels</span>';
+    
+    return `
+      <div style="display:flex; align-items:center; gap:12px; padding:12px 16px; border-radius:10px; background:rgba(255,255,255,0.02); border:var(--border-glass); transition:all 0.2s;" onmouseover="this.style.background='rgba(255,255,255,0.04)'" onmouseout="this.style.background='rgba(255,255,255,0.02)'">
+        <div style="font-size:1.2rem; flex-shrink:0;">${healthDot}</div>
+        <div style="flex:1; min-width:0;">
+          <div style="display:flex; align-items:center; gap:8px; margin-bottom:4px;">
+            <span style="font-family:'JetBrains Mono',monospace; font-size:0.82rem; color:var(--text-bright); font-weight:500;">${escapeHTML(p.host)}:${p.port}</span>
+            <span style="font-size:0.72rem; color:var(--text-secondary);">${flag} ${p.country_code || ''} ${p.city ? '— ' + escapeHTML(p.city) : ''}</span>
+          </div>
+          <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+            ${channelBadges}
+          </div>
+        </div>
+        <div style="display:flex; flex-direction:column; align-items:flex-end; gap:4px; flex-shrink:0;">
+          <span style="font-size:0.72rem; color:${p.is_healthy ? '#4ade80' : '#f87171'};">${healthText} · ${latency}</span>
+          <span style="font-size:0.68rem; color:var(--text-muted);">${p.assigned_channels}/${p.max_channels} slots</span>
+        </div>
+        <div style="display:flex; gap:6px; flex-shrink:0;">
+          <button class="btn-secondary btn-sm" onclick="testSingleProxy(${p.id})" style="padding:4px 10px; font-size:0.72rem; border-radius:6px;" title="Test connectivity">🏓</button>
+          <button class="btn-secondary btn-sm" onclick="deleteProxy(${p.id})" style="padding:4px 10px; font-size:0.72rem; border-radius:6px; color:#f87171;" title="Delete">🗑️</button>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+function renderProxyAssignments() {
+  const container = document.getElementById('proxyAssignmentsList');
+  if (!container) return;
+  
+  if (state.channels.length === 0) {
+    container.innerHTML = '<p style="font-size:0.82rem; color:var(--text-muted); text-align:center; padding:12px;">No channels created yet.</p>';
+    return;
+  }
+  
+  container.innerHTML = state.channels.map(ch => {
+    const assignedProxy = proxyPoolData.find(p => p.id === ch.proxy_pool_id);
+    const proxyOptions = proxyPoolData.map(p => {
+      const flag = getCountryFlag(p.country_code);
+      const selected = ch.proxy_pool_id === p.id ? 'selected' : '';
+      return `<option value="${p.id}" ${selected}>${flag} ${p.host}:${p.port} — ${p.city || p.country_code || 'Unknown'} (${p.assigned_channels}/${p.max_channels})</option>`;
+    }).join('');
+    
+    const statusBadge = assignedProxy
+      ? `<span class="badge badge-live" style="font-size:0.7rem;">🛡️ ${assignedProxy.host}</span>`
+      : '<span class="badge badge-draft" style="font-size:0.7rem;">⚠️ No Proxy</span>';
+    
+    return `
+      <div style="display:flex; align-items:center; gap:12px; padding:10px 14px; border-radius:8px; background:rgba(255,255,255,0.02); border:var(--border-glass);">
+        <span style="font-size:0.85rem; flex-shrink:0;">📺</span>
+        <span style="font-size:0.82rem; color:var(--text-bright); font-weight:500; min-width:120px;">${escapeHTML(ch.name)}</span>
+        ${statusBadge}
+        <select class="form-input" style="flex:1; margin-bottom:0; padding:6px 10px; font-size:0.78rem; height:auto;" onchange="assignProxyToChannel(${ch.id}, this.value)">
+          <option value="">None (Direct VPS Connection)</option>
+          ${proxyOptions}
+        </select>
+      </div>
+    `;
+  }).join('');
+}
+
+function populateProxyDropdowns() {
+  // Also populate the edit channel modal proxy dropdown if it exists
+  const editDropdown = document.getElementById('editChProxyPoolId');
+  if (editDropdown) {
+    const currentVal = editDropdown.value;
+    editDropdown.innerHTML = '<option value="">None (Use legacy proxy or direct)</option>';
+    proxyPoolData.forEach(p => {
+      const flag = getCountryFlag(p.country_code);
+      const opt = document.createElement('option');
+      opt.value = p.id;
+      opt.textContent = `${flag} ${p.host}:${p.port} — ${p.city || p.country_code} (${p.assigned_channels}/${p.max_channels})`;
+      editDropdown.appendChild(opt);
+    });
+    if (currentVal) editDropdown.value = currentVal;
+  }
+
+  // Also populate the new channel modal proxy dropdown if it exists
+  const newDropdown = document.getElementById('newChannelProxyPoolId');
+  if (newDropdown) {
+    const currentVal = newDropdown.value;
+    newDropdown.innerHTML = '<option value="">None (Use legacy proxy or direct)</option>';
+    proxyPoolData.forEach(p => {
+      const flag = getCountryFlag(p.country_code);
+      const opt = document.createElement('option');
+      opt.value = p.id;
+      opt.textContent = `${flag} ${p.host}:${p.port} — ${p.city || p.country_code} (${p.assigned_channels}/${p.max_channels})`;
+      newDropdown.appendChild(opt);
+    });
+    if (currentVal) newDropdown.value = currentVal;
+  }
+}
+
+async function syncWebshareProxies() {
+  const apiKey = document.getElementById('proxyWebshareKey').value.trim();
+  if (!apiKey) {
+    showToast('Please enter your Webshare API key.', 'error');
+    return;
+  }
+  
+  const statusEl = document.getElementById('proxyWebshareStatus');
+  statusEl.style.display = 'block';
+  statusEl.style.background = 'rgba(99,102,241,0.1)';
+  statusEl.style.color = '#a5b4fc';
+  statusEl.textContent = '⏳ Syncing proxies from Webshare...';
+  
+  try {
+    const res = await fetch(`${API_BASE}/proxy-pool/sync-webshare`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ api_key: apiKey })
+    });
+    
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Sync failed');
+    
+    statusEl.style.background = 'rgba(16,185,129,0.1)';
+    statusEl.style.color = '#4ade80';
+    statusEl.textContent = `✅ Synced! ${data.imported} new, ${data.updated} updated. Total: ${data.total} proxies.`;
+    
+    if (data.proxies) {
+      proxyPoolData = data.proxies;
+      renderProxyPool();
+      renderProxyAssignments();
+      updateProxyPoolStats();
+      populateProxyDropdowns();
+    } else {
+      loadProxyPool();
+    }
+    
+    showToast(`Webshare sync complete! ${data.total} proxies.`, 'success');
+  } catch (err) {
+    statusEl.style.background = 'rgba(248,113,113,0.1)';
+    statusEl.style.color = '#f87171';
+    statusEl.textContent = `❌ Error: ${err.message}`;
+    showToast('Webshare sync failed: ' + err.message, 'error');
+  }
+}
+
+async function importProxiesManual() {
+  const text = document.getElementById('proxyManualInput').value.trim();
+  const protocol = document.getElementById('proxyManualProtocol').value;
+  
+  if (!text) {
+    showToast('Please paste proxy list first.', 'error');
+    return;
+  }
+  
+  try {
+    const res = await fetch(`${API_BASE}/proxy-pool/bulk`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ proxies_text: text, protocol })
+    });
+    
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error);
+    
+    showToast(`Imported ${data.imported} proxies.${data.errors.length ? ' ' + data.errors.length + ' errors.' : ''}`, data.errors.length ? 'warning' : 'success');
+    document.getElementById('proxyManualInput').value = '';
+    loadProxyPool();
+  } catch (err) {
+    showToast('Import failed: ' + err.message, 'error');
+  }
+}
+
+async function testSingleProxy(proxyId) {
+  showToast('Testing proxy...', 'warning');
+  try {
+    const res = await fetch(`${API_BASE}/proxy-pool/${proxyId}/test`, { method: 'POST' });
+    const data = await res.json();
+    
+    if (data.healthy) {
+      showToast(`Proxy is healthy! Latency: ${data.latency_ms}ms`, 'success');
+    } else {
+      showToast(`Proxy is DOWN: ${data.error}`, 'error');
+    }
+    loadProxyPool();
+  } catch (err) {
+    showToast('Test failed: ' + err.message, 'error');
+  }
+}
+
+async function testAllProxies() {
+  showToast('Testing all proxies... This may take a moment.', 'warning');
+  try {
+    const res = await fetch(`${API_BASE}/proxy-pool/test-all`, { method: 'POST' });
+    const data = await res.json();
+    
+    const healthy = data.results.filter(r => r.healthy).length;
+    const total = data.results.length;
+    showToast(`Test complete: ${healthy}/${total} proxies healthy.`, healthy === total ? 'success' : 'warning');
+    loadProxyPool();
+  } catch (err) {
+    showToast('Test failed: ' + err.message, 'error');
+  }
+}
+
+async function autoAssignProxies() {
+  try {
+    const res = await fetch(`${API_BASE}/proxy-pool/auto-assign`, { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error);
+    
+    showToast(data.message, 'success');
+    loadProxyPool();
+    loadChannels();
+  } catch (err) {
+    showToast('Auto-assign failed: ' + err.message, 'error');
+  }
+}
+
+async function assignProxyToChannel(channelId, proxyId) {
+  try {
+    const endpoint = proxyId ? 'assign' : 'unassign';
+    const body = proxyId 
+      ? { channel_id: channelId, proxy_id: Number(proxyId) }
+      : { channel_id: channelId };
+    
+    const res = await fetch(`${API_BASE}/proxy-pool/${endpoint}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error);
+    
+    showToast('Proxy assignment updated!', 'success');
+    loadProxyPool();
+    loadChannels();
+  } catch (err) {
+    showToast('Assignment failed: ' + err.message, 'error');
+  }
+}
+
+async function deleteProxy(proxyId) {
+  if (!confirm('Delete this proxy? Any assigned channels will be unlinked.')) return;
+  try {
+    const res = await fetch(`${API_BASE}/proxy-pool/${proxyId}`, { method: 'DELETE' });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error);
+    
+    showToast('Proxy deleted.', 'success');
+    loadProxyPool();
+  } catch (err) {
+    showToast('Delete failed: ' + err.message, 'error');
+  }
+}

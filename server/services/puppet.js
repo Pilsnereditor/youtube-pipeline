@@ -32,6 +32,31 @@ const NORDVPN_SERVERS = {
  * Returns { proxyUrl, username, password } or null if no proxy configured.
  */
 export function resolveChannelProxy(channel) {
+  // NEW: Check centralized proxy pool first (takes priority)
+  if (channel.proxy_pool_id) {
+    const proxy = queryOne('SELECT * FROM proxy_pool WHERE id = @id', { id: channel.proxy_pool_id });
+    if (!proxy) {
+      throw new Error(`PROXY_SAFETY_BLOCK: Proxy pool entry #${channel.proxy_pool_id} not found for channel "${channel.name}". Upload blocked to protect channel safety.`);
+    }
+    if (!proxy.is_healthy) {
+      throw new Error(`PROXY_SAFETY_BLOCK: Proxy ${proxy.host}:${proxy.port} is unhealthy for channel "${channel.name}". Upload blocked to protect channel safety.`);
+    }
+    
+    // Bypass VPS-only proxies when running locally on Windows
+    if (process.platform === 'win32') {
+      console.log(`[Proxy] Local Windows environment detected. Bypassing proxy pool "${proxy.host}" for channel "${channel.name}" to use direct connection.`);
+      return null;
+    }
+    
+    console.log(`[Proxy] Using pool proxy ${proxy.host}:${proxy.port} (${proxy.city || proxy.country_code}) for channel "${channel.name}"`);
+    return {
+      proxyUrl: `${proxy.protocol}://${proxy.host}:${proxy.port}`,
+      username: proxy.username || '',
+      password: proxy.password || ''
+    };
+  }
+
+  // LEGACY: Fall back to per-channel proxy fields
   if (!channel || !channel.proxy_type || channel.proxy_type === 'none') {
     return null;
   }
@@ -136,7 +161,12 @@ async function launchBrowserWithRetry(chromePath, profilePath, headless = false,
         '--disable-blink-features=AutomationControlled',
         '--lang=en-US',
         '--password-store=basic',
-        '--use-mock-keychain'
+        '--use-mock-keychain',
+        // WebRTC leak prevention — blocks real VPS IP from leaking alongside proxy
+        '--enforce-webrtc-ip-permission-check',
+        '--disable-webrtc-hw-decoding',
+        '--disable-webrtc-hw-encoding',
+        '--webrtc-ip-handling-policy=disable_non_proxied_udp'
       ];
       if (proxyUrl) {
         args.push(`--proxy-server=${proxyUrl}`);

@@ -17,6 +17,27 @@ CREATE TABLE IF NOT EXISTS user_settings (
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS proxy_pool (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER DEFAULT 1,
+    label TEXT DEFAULT '',
+    host TEXT NOT NULL,
+    port INTEGER NOT NULL,
+    username TEXT DEFAULT '',
+    password TEXT DEFAULT '',
+    protocol TEXT DEFAULT 'http' CHECK(protocol IN ('http', 'https', 'socks5')),
+    country_code TEXT DEFAULT '',
+    city TEXT DEFAULT '',
+    provider TEXT DEFAULT 'manual',
+    external_id TEXT DEFAULT '',
+    last_tested_at TEXT,
+    last_latency_ms INTEGER,
+    is_healthy INTEGER DEFAULT 1,
+    max_channels INTEGER DEFAULT 3,
+    created_at TEXT DEFAULT (datetime('now')),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS channels (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER DEFAULT 1,

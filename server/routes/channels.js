@@ -90,14 +90,14 @@ router.get('/', (req, res) => {
 /** POST /api/channels — create a new channel for the current user */
 router.post('/', (req, res) => {
   const userId = req.session.userId;
-  const { name, niche, description, schedule_time, schedule_days, upload_privacy, category, comment_template, upload_mode, schedule_as_premiere, proxy_type, proxy_host, proxy_port, proxy_username, proxy_password } = req.body;
+  const { name, niche, description, schedule_time, schedule_days, upload_privacy, category, comment_template, upload_mode, schedule_as_premiere, proxy_type, proxy_host, proxy_port, proxy_username, proxy_password, proxy_pool_id } = req.body;
   if (!name) return res.status(400).json({ error: 'name is required.' });
 
   try {
     const id = Number(
       insert(
-        `INSERT INTO channels (user_id, name, niche, description, schedule_time, schedule_days, upload_privacy, category, comment_template, upload_mode, schedule_as_premiere, proxy_type, proxy_host, proxy_port, proxy_username, proxy_password)
-         VALUES (@userId, @name, @niche, @description, @scheduleTime, @scheduleDays, @uploadPrivacy, @category, @commentTemplate, @uploadMode, @scheduleAsPremiere, @proxyType, @proxyHost, @proxyPort, @proxyUsername, @proxyPassword)`,
+        `INSERT INTO channels (user_id, name, niche, description, schedule_time, schedule_days, upload_privacy, category, comment_template, upload_mode, schedule_as_premiere, proxy_type, proxy_host, proxy_port, proxy_username, proxy_password, proxy_pool_id)
+         VALUES (@userId, @name, @niche, @description, @scheduleTime, @scheduleDays, @uploadPrivacy, @category, @commentTemplate, @uploadMode, @scheduleAsPremiere, @proxyType, @proxyHost, @proxyPort, @proxyUsername, @proxyPassword, @proxyPoolId)`,
         {
           userId,
           name,
@@ -114,7 +114,8 @@ router.post('/', (req, res) => {
           proxyHost: proxy_host || '',
           proxyPort: Number(proxy_port) || 0,
           proxyUsername: proxy_username || '',
-          proxyPassword: proxy_password || ''
+          proxyPassword: proxy_password || '',
+          proxyPoolId: proxy_pool_id ? Number(proxy_pool_id) : null
         },
       ),
     );
@@ -321,7 +322,7 @@ router.put('/:id', (req, res) => {
   const existing = verifyChannel(id, userId);
   if (!existing) return res.status(404).json({ error: 'Channel not found.' });
 
-  const { name, niche, description, schedule_time, schedule_days, upload_privacy, category, comment_template, upload_mode, schedule_as_premiere, proxy_type, proxy_host, proxy_port, proxy_username, proxy_password } = req.body;
+  const { name, niche, description, schedule_time, schedule_days, upload_privacy, category, comment_template, upload_mode, schedule_as_premiere, proxy_type, proxy_host, proxy_port, proxy_username, proxy_password, proxy_pool_id } = req.body;
 
   try {
     run(
@@ -340,7 +341,8 @@ router.put('/:id', (req, res) => {
          proxy_host = @proxyHost,
          proxy_port = @proxyPort,
          proxy_username = @proxyUsername,
-         proxy_password = @proxyPassword
+         proxy_password = @proxyPassword,
+         proxy_pool_id = @proxyPoolId
        WHERE id = @id AND user_id = @userId`,
       {
         name: name ?? existing.name,
@@ -358,6 +360,7 @@ router.put('/:id', (req, res) => {
         proxyPort: proxy_port !== undefined ? Number(proxy_port) : existing.proxy_port,
         proxyUsername: proxy_username ?? existing.proxy_username,
         proxyPassword: proxy_password ?? existing.proxy_password,
+        proxyPoolId: proxy_pool_id !== undefined ? (proxy_pool_id ? Number(proxy_pool_id) : null) : existing.proxy_pool_id,
         id,
         userId,
       },

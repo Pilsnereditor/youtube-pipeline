@@ -718,6 +718,78 @@
         </div>
       </div>
 
+      <!-- Proxy Pool Manager -->
+      <div class="glass settings-section" id="proxyPoolSection">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+          <h3 style="margin:0;">🛡️ Proxy Pool Manager</h3>
+          <div style="display:flex; gap:8px; align-items:center;">
+            <span id="proxyPoolStatsTotal" class="badge badge-live" style="font-size:0.72rem;">0 Proxies</span>
+            <span id="proxyPoolStatsAssigned" class="badge" style="font-size:0.72rem; background:rgba(59,130,246,0.15); color:#60a5fa; border:1px solid rgba(59,130,246,0.3);">0 Assigned</span>
+            <span id="proxyPoolStatsAvail" class="badge" style="font-size:0.72rem; background:rgba(234,179,8,0.15); color:#eab308; border:1px solid rgba(234,179,8,0.3);">0 Available</span>
+          </div>
+        </div>
+        <p class="subtitle" style="margin-bottom:16px;">Manage dedicated proxies and assign them to YouTube channels for maximum safety. Each channel uploads through its own IP address.</p>
+
+        <!-- Import Section -->
+        <div style="margin-bottom:20px; padding:15px; border:var(--border-glass); border-radius:12px; background:rgba(255,255,255,0.02);">
+          <h4 style="margin-top:0; color:#a78bfa; font-size:0.92rem; margin-bottom:12px;">📥 Import Proxies</h4>
+          
+          <!-- Webshare Sync -->
+          <div style="display:flex; gap:10px; align-items:flex-end; margin-bottom:12px;">
+            <div class="form-group" style="flex:1; margin-bottom:0;">
+              <label style="font-size:0.78rem;">Webshare API Key</label>
+              <input type="password" id="proxyWebshareKey" class="form-input" placeholder="Enter your Webshare API key" style="margin-bottom:0;">
+            </div>
+            <button class="btn-primary" onclick="syncWebshareProxies()" style="padding:10px 16px; font-size:0.82rem; font-weight:600; white-space:nowrap; border-radius:8px; display:flex; align-items:center; gap:6px;">
+              🔄 Sync from Webshare
+            </button>
+          </div>
+          <div id="proxyWebshareStatus" style="display:none; margin-bottom:12px; padding:8px 12px; border-radius:8px; font-size:0.78rem;"></div>
+
+          <!-- Divider -->
+          <div style="display:flex; align-items:center; gap:12px; margin:16px 0;">
+            <div style="flex:1; height:1px; background:rgba(255,255,255,0.06);"></div>
+            <span style="font-size:0.72rem; color:var(--text-muted); text-transform:uppercase; letter-spacing:1px;">or paste manually</span>
+            <div style="flex:1; height:1px; background:rgba(255,255,255,0.06);"></div>
+          </div>
+
+          <!-- Manual Import -->
+          <div class="form-group" style="margin-bottom:8px;">
+            <label style="font-size:0.78rem;">Paste Proxies <span style="color:var(--text-muted);">(IP:Port:Username:Password — one per line)</span></label>
+            <textarea id="proxyManualInput" class="form-input" rows="3" placeholder="185.232.171.42:7842:username:password&#10;91.234.56.78:8080:user:pass" style="font-family:'JetBrains Mono',monospace; font-size:0.78rem;"></textarea>
+          </div>
+          <div style="display:flex; gap:8px; align-items:center;">
+            <select id="proxyManualProtocol" class="form-input" style="width:140px; margin-bottom:0; padding:8px 10px; font-size:0.82rem;">
+              <option value="http">HTTP</option>
+              <option value="socks5">SOCKS5</option>
+            </select>
+            <button class="btn-secondary" onclick="importProxiesManual()" style="padding:8px 16px; font-size:0.82rem; font-weight:600; border-radius:8px;">➕ Import</button>
+          </div>
+        </div>
+
+        <!-- Proxy Pool List -->
+        <div style="margin-bottom:16px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+            <h4 style="margin:0; color:var(--text-bright); font-size:0.92rem;">📋 Proxy Pool</h4>
+            <div style="display:flex; gap:8px;">
+              <button class="btn-secondary btn-sm" onclick="testAllProxies()" style="padding:6px 12px; font-size:0.78rem; border-radius:6px; display:flex; align-items:center; gap:4px;">🏓 Test All</button>
+              <button class="btn-primary btn-sm" onclick="autoAssignProxies()" style="padding:6px 12px; font-size:0.78rem; border-radius:6px; background:linear-gradient(135deg, #8b5cf6, #6d28d9); display:flex; align-items:center; gap:4px;">⚡ Auto-Assign Channels</button>
+            </div>
+          </div>
+          <div id="proxyPoolList" style="display:flex; flex-direction:column; gap:8px;">
+            <p style="font-size:0.82rem; color:var(--text-muted); text-align:center; padding:20px;">No proxies imported yet. Sync from Webshare or paste manually above.</p>
+          </div>
+        </div>
+
+        <!-- Channel Assignments -->
+        <div>
+          <h4 style="margin:0 0 12px; color:var(--text-bright); font-size:0.92rem;">🔗 Channel ↔ Proxy Assignments</h4>
+          <div id="proxyAssignmentsList" style="display:flex; flex-direction:column; gap:6px;">
+            <p style="font-size:0.82rem; color:var(--text-muted); text-align:center; padding:12px;">Loading assignments...</p>
+          </div>
+        </div>
+      </div>
+
       <!-- Upload Defaults -->
       <div class="glass settings-section">
         <h3>⚙️ Upload Defaults</h3>
@@ -907,6 +979,12 @@
         <div class="form-group" style="margin-top: 15px; padding: 15px; border: var(--border-glass); border-radius: 12px; background: rgba(255, 255, 255, 0.02);">
           <h4 style="font-size:0.9rem; margin-top: 0; margin-bottom:10px; color:var(--text-accent); display:flex; align-items:center; gap:6px;">🌐 VPN / Proxy Setup</h4>
           <div class="form-group" style="margin-bottom:10px;">
+            <label style="font-size:0.78rem;">Centralized Proxy Pool (Recommended)</label>
+            <select id="newChannelProxyPoolId" class="form-input" style="margin-bottom:10px;" onchange="toggleNewProxyPoolFields()">
+              <option value="">None (Use legacy proxy or direct)</option>
+            </select>
+          </div>
+          <div class="form-group" style="margin-bottom:10px;">
             <label style="font-size:0.78rem;">VPN or Proxy Connection</label>
             <select id="newChannelProxyType" class="form-input" onchange="toggleAddChannelProxyFields()">
               <option value="none">None (Direct Connection)</option>
@@ -1024,6 +1102,12 @@
           <!-- VPN / Proxy Configuration -->
           <div class="form-group" style="margin-top: 15px; padding: 15px; border: var(--border-glass); border-radius: 12px; background: rgba(255, 255, 255, 0.02);">
             <h4 style="font-size:0.9rem; margin-top: 0; margin-bottom:10px; color:var(--text-accent); display:flex; align-items:center; gap:6px;">🌐 VPN / Proxy Setup</h4>
+            <div class="form-group" style="margin-bottom:10px;">
+              <label style="font-size:0.78rem;">Centralized Proxy Pool (Recommended)</label>
+              <select id="editChProxyPoolId" class="form-input" style="margin-bottom:10px;" onchange="toggleProxyPoolModalFields()">
+                <option value="">None (Use legacy proxy or direct)</option>
+              </select>
+            </div>
             <div class="form-group" style="margin-bottom:10px;">
               <label style="font-size:0.78rem;">VPN or Proxy Connection</label>
               <select id="editChProxyType" class="form-input" onchange="toggleEditChannelProxyFields()">

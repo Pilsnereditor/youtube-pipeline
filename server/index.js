@@ -22,6 +22,7 @@ import settingsRouter from './routes/settings.js';
 import aiRouter from './routes/ai.js';
 import commentsRouter from './routes/comments.js';
 import schedulePresetsRouter from './routes/schedulePresets.js';
+import proxyPoolRouter from './routes/proxyPool.js';
 import { createPipelineRouter } from './routes/pipeline.js';
 
 // Resolve directory names
@@ -243,6 +244,7 @@ app.use('/api/ai', aiRouter);
 app.use('/api/comments', commentsRouter);
 app.use('/api/schedule-presets', schedulePresetsRouter);
 app.use('/api/pipeline', pipelineRouter);
+app.use('/api/proxy-pool', proxyPoolRouter);
 
 // Serve index.html for all other routes (SPA fallback)
 app.get('*', (req, res) => {

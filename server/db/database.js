@@ -223,6 +223,24 @@ export function initDb() {
     console.error('[DB Migration] Error seeding weekly_cleanup_published setting:', err);
   }
 
+  // Self-healing migration for proxy_pool_id column in channels
+  try {
+    const pragma = db.prepare('PRAGMA table_info(channels)').all();
+    if (!pragma.some(c => c.name === 'proxy_pool_id')) {
+      db.prepare(`ALTER TABLE channels ADD COLUMN proxy_pool_id INTEGER DEFAULT NULL`).run();
+      console.log('[DB Migration] Added proxy_pool_id column to channels table.');
+    }
+  } catch (err) {
+    console.error('[DB Migration] Error adding proxy_pool_id column to channels:', err);
+  }
+
+  // Seed webshare_api_key setting
+  try {
+    db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('webshare_api_key', '')").run();
+  } catch (err) {
+    console.error('[DB Migration] Error seeding webshare_api_key:', err);
+  }
+
   console.log('[DB] Database initialized at', DB_PATH);
   return db;
 }

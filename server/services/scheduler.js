@@ -129,7 +129,7 @@ export async function processPost(post) {
         title: post.title,
         description: post.description || '',
         tags,
-        privacy: channel.upload_privacy,
+        privacy: post.privacy || channel.upload_privacy || 'private',
         category: channel.category,
         scheduledAt: post.scheduled_at,
         thumbnailPath: thumbnailPath || null,
@@ -142,7 +142,7 @@ export async function processPost(post) {
         title: post.title,
         description: post.description || '',
         tags,
-        privacy: channel.upload_privacy,
+        privacy: post.privacy || channel.upload_privacy || 'private',
         category: channel.category,
         scheduledAt: post.scheduled_at,
       });
@@ -228,11 +228,11 @@ export async function processPost(post) {
 /**
  * Add a new scheduled post to the database.
  */
-export function schedulePost({ userId, channelId, title, description, tags, thumbnailId, videoId, videoPath, scheduledAt, customComment, isPremiere }) {
+export function schedulePost({ userId, channelId, title, description, tags, thumbnailId, videoId, videoPath, scheduledAt, customComment, isPremiere, privacy }) {
   const tagsStr = Array.isArray(tags) ? JSON.stringify(tags) : tags || '';
   const id = run(
-    `INSERT INTO scheduled_posts (user_id, channel_id, title, description, tags, thumbnail_id, video_id, video_path, scheduled_at, custom_comment, is_premiere)
-     VALUES (@userId, @channelId, @title, @description, @tags, @thumbnailId, @videoId, @videoPath, @scheduledAt, @customComment, @isPremiere)`,
+    `INSERT INTO scheduled_posts (user_id, channel_id, title, description, tags, thumbnail_id, video_id, video_path, scheduled_at, custom_comment, is_premiere, privacy)
+     VALUES (@userId, @channelId, @title, @description, @tags, @thumbnailId, @videoId, @videoPath, @scheduledAt, @customComment, @isPremiere, @privacy)`,
     {
       userId,
       channelId,
@@ -245,6 +245,7 @@ export function schedulePost({ userId, channelId, title, description, tags, thum
       scheduledAt,
       customComment: customComment || '',
       isPremiere: isPremiere ? 1 : 0,
+      privacy: privacy || null,
     },
   ).lastInsertRowid;
 

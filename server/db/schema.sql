@@ -138,6 +138,7 @@ CREATE TABLE IF NOT EXISTS scheduled_posts (
     scheduled_at TEXT NOT NULL,
     custom_comment TEXT DEFAULT '',
     is_premiere INTEGER DEFAULT 0,
+    privacy TEXT DEFAULT NULL,
     status TEXT DEFAULT 'pending' CHECK(status IN ('pending', 'processing', 'complete', 'error', 'cancelled')),
     retry_count INTEGER DEFAULT 0,
     next_retry_at TEXT DEFAULT NULL,

@@ -4220,6 +4220,35 @@ async function deleteSelectedPreset() {
   }
 }
 
+async function createNewCommentTemplateFromDashboard() {
+  const title = prompt('Enter a name/title for this comment template (e.g., Subscribe, Support):');
+  if (!title) return;
+
+  const text = prompt('Enter the comment text (you can use placeholders like {title} or {videoId}):');
+  if (text === null) return;
+
+  try {
+    const res = await fetch(`${API_BASE}/comments`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title, text })
+    });
+
+    if (!res.ok) throw new Error(await res.text());
+
+    showToast('Comment template saved successfully!', 'success');
+    await loadSavedComments();
+    
+    const newTemplate = state.savedComments.find(c => c.title === title);
+    if (newTemplate) {
+      document.getElementById('dashCommentSelect').value = newTemplate.id;
+      updateDashboardCommentPreview();
+    }
+  } catch (err) {
+    showToast('Failed to save comment template: ' + err.message, 'error');
+  }
+}
+
 // ---------------------------------------------------------------------------
 // 14. Dashboard Pipeline & Scheduling Control
 // ---------------------------------------------------------------------------

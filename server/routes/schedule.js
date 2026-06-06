@@ -103,7 +103,7 @@ router.get('/calendar', (req, res) => {
  */
 router.post('/', (req, res) => {
   const userId = req.session.userId;
-  const { channelId, title, description, tags, thumbnailId, videoId, videoPath, scheduledAt, customComment, isPremiere } = req.body;
+  const { channelId, title, description, tags, thumbnailId, videoId, videoPath, scheduledAt, customComment, isPremiere, privacy } = req.body;
 
   if (!channelId || !title || !scheduledAt) {
     return res.status(400).json({ error: 'channelId, title, and scheduledAt are required.' });
@@ -154,6 +154,7 @@ router.post('/', (req, res) => {
       scheduledAt,
       customComment,
       isPremiere: resolvedIsPremiere,
+      privacy
     });
     const post = queryOne('SELECT * FROM scheduled_posts WHERE id = @id AND user_id = @userId', { id, userId });
     
@@ -184,7 +185,7 @@ router.put('/:id', async (req, res) => {
     return res.status(400).json({ error: 'Only pending, failed, or future completed posts can be updated.' });
   }
 
-  const { title, description, tags, thumbnailId, videoId, videoPath, scheduledAt, customComment, isPremiere } = req.body;
+  const { title, description, tags, thumbnailId, videoId, videoPath, scheduledAt, customComment, isPremiere, privacy } = req.body;
 
   try {
     const tagsStr = tags != null ? (Array.isArray(tags) ? JSON.stringify(tags) : tags) : existing.tags;
@@ -257,6 +258,7 @@ router.put('/:id', async (req, res) => {
          scheduled_at = @scheduledAt,
          custom_comment = @customComment,
          is_premiere = @isPremiere,
+         privacy = @privacy,
          status = @status,
          retry_count = 0,
          next_retry_at = NULL,
@@ -272,6 +274,7 @@ router.put('/:id', async (req, res) => {
         scheduledAt: scheduledAt ?? existing.scheduled_at,
         customComment: customComment ?? existing.custom_comment,
         isPremiere: resolvedIsPremiere,
+        privacy: privacy ?? existing.privacy,
         status: newStatus,
         id,
         userId,
@@ -595,8 +598,8 @@ router.post('/bulk', async (req, res) => {
 
           // Insert scheduled post
           const info = run(
-            `INSERT INTO scheduled_posts (user_id, channel_id, title, description, tags, thumbnail_id, video_id, video_path, scheduled_at, custom_comment, is_premiere, status)
-             VALUES (@userId, @channelId, @title, @description, @tags, @thumbnailId, @videoId, @videoPath, @scheduledAt, @customComment, @isPremiere, 'pending')`,
+            `INSERT INTO scheduled_posts (user_id, channel_id, title, description, tags, thumbnail_id, video_id, video_path, scheduled_at, custom_comment, is_premiere, status, privacy)
+             VALUES (@userId, @channelId, @title, @description, @tags, @thumbnailId, @videoId, @videoPath, @scheduledAt, @customComment, @isPremiere, 'pending', @privacy)`,
             {
               userId,
               channelId,
@@ -609,6 +612,7 @@ router.post('/bulk', async (req, res) => {
               scheduledAt,
               customComment: commentId ? bulkCustomComment : (channel.comment_template || ''),
               isPremiere: postIsPremiere,
+              privacy: publishNow ? 'public' : (channel.upload_privacy || 'public'),
             }
           );
 

@@ -50,6 +50,10 @@ initDb();
 
 const app = express();
 const server = http.createServer(app);
+server.timeout = 3600000;
+server.headersTimeout = 3600000;
+server.requestTimeout = 3600000;
+server.keepAliveTimeout = 3600000;
 const wss = new WebSocketServer({ noServer: true });
 
 // Setup middleware

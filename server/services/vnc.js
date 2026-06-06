@@ -251,7 +251,51 @@ export async function launchVncSession(profileName = 'yt_setup_global') {
   websockify.unref();
   await sleep(1000);
 
-  vncSession = { xvfb, openbox, chrome, x11vnc, websockify, profilePath, profileName };
+  // Automate proxy authentication if proxy has username/password
+  let cdpBrowser = null;
+  if (activeProxyPoolId) {
+    try {
+      const proxy = queryOne('SELECT * FROM proxy_pool WHERE id = @id', { id: activeProxyPoolId });
+      if (proxy && proxy.username) {
+        console.log('[VNC] Connecting via CDP to authenticate proxy credentials...');
+        // Wait to ensure CDP port is active
+        await sleep(1500);
+        cdpBrowser = await puppeteer.connect({
+          browserURL: `http://127.0.0.1:${CDP_PORT}`,
+          defaultViewport: null
+        });
+        const pages = await cdpBrowser.pages();
+        if (pages.length > 0) {
+          const page = pages[0];
+          await page.authenticate({
+            username: proxy.username,
+            password: proxy.password || ''
+          });
+          console.log('[VNC] Proxy credentials applied to default tab.');
+        }
+
+        // Listen for new targets (tabs/windows)
+        cdpBrowser.on('targetcreated', async (target) => {
+          if (target.type() === 'page') {
+            const p = await target.page();
+            if (p) {
+              try {
+                await p.authenticate({
+                  username: proxy.username,
+                  password: proxy.password || ''
+                });
+                console.log('[VNC] Proxy credentials applied to new target tab.');
+              } catch (e) {}
+            }
+          }
+        });
+      }
+    } catch (err) {
+      console.warn('[VNC] Failed to automate proxy credentials via CDP:', err.message);
+    }
+  }
+
+  vncSession = { xvfb, openbox, chrome, x11vnc, websockify, profilePath, profileName, cdpBrowser };
 
   console.log(`[VNC] Session ready. noVNC available at port ${WS_PORT}`);
 
@@ -483,6 +527,9 @@ export async function verifyVncChannels() {
 export async function stopVncSession() {
   if (vncSession) {
     console.log('[VNC] Stopping VNC session...');
+    if (vncSession.cdpBrowser) {
+      try { vncSession.cdpBrowser.disconnect(); } catch {}
+    }
     killProc(vncSession.websockify);
     killProc(vncSession.x11vnc);
     killProc(vncSession.chrome);

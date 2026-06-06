@@ -75,7 +75,7 @@ async function checkPendingComments() {
      LEFT JOIN channels c ON c.id = sp.channel_id
      WHERE sp.status = 'complete' 
        AND sp.comment_status = 'pending' 
-       AND sp.scheduled_at <= @now
+       AND (sp.scheduled_at <= @now OR sp.is_premiere = 1)
        AND sp.youtube_video_id IS NOT NULL`,
     { now }
   );
@@ -88,7 +88,7 @@ async function checkPendingComments() {
     }
 
     try {
-      console.log(`[Scheduler] Video ${post.youtube_video_id} is now scheduled to be public. Posting comment...`);
+      console.log(`[Scheduler] Video ${post.youtube_video_id} is public or a Premiere. Posting comment...`);
       const commentText = rawCommentTemplate
         .replace(/\{title\}/gi, post.title)
         .replace(/\{videoId\}/gi, post.youtube_video_id);

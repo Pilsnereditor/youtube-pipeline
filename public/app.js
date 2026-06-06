@@ -157,19 +157,23 @@ async function loadMediaVideos() {
     const allCount = state.videos.length;
     const publishedCount = state.videos.filter(vid => vid.is_published).length;
     const unpublishedCount = allCount - publishedCount;
+    const uploadingCount = Object.keys(activeUploads).length;
 
     const badgeAll = document.getElementById('badge-all-count');
     const badgePub = document.getElementById('badge-published-count');
     const badgeUnpub = document.getElementById('badge-unpublished-count');
+    const badgeUploading = document.getElementById('badge-uploading-count');
 
     if (badgeAll) badgeAll.textContent = allCount;
     if (badgePub) badgePub.textContent = publishedCount;
     if (badgeUnpub) badgeUnpub.textContent = unpublishedCount;
+    if (badgeUploading) badgeUploading.textContent = uploadingCount;
 
     // Display appropriate count depending on active filter
     let displayedCount = allCount;
     if (state.videoFilter === 'published') displayedCount = publishedCount;
     else if (state.videoFilter === 'unpublished') displayedCount = unpublishedCount;
+    else if (state.videoFilter === 'uploading') displayedCount = uploadingCount;
 
     document.getElementById('mediaVideoCount').textContent = `${displayedCount} videos`;
     renderVideosGrid();
@@ -567,7 +571,58 @@ function renderVideosGrid() {
     filteredVideos = state.videos.filter(vid => !vid.is_published);
   }
 
-  if (filteredVideos.length === 0) {
+  // 1. Build Ongoing Uploads HTML
+  let uploadsHTML = '';
+  const uploadIds = Object.keys(activeUploads);
+  if (uploadIds.length > 0 && (state.videoFilter === 'all' || state.videoFilter === 'uploading')) {
+    uploadsHTML = uploadIds.map(id => {
+      const upload = activeUploads[id];
+      const percent = upload.percent || 0;
+      const loadedMB = (upload.loaded / (1024 * 1024)).toFixed(1);
+      const totalMB = (upload.total / (1024 * 1024)).toFixed(1);
+      return `
+        <div class="media-row-card glass-light" style="display: flex; gap: 20px; padding: 16px; border-radius: 12px; background: rgba(139, 92, 246, 0.02); border: 1px solid rgba(139, 92, 246, 0.2); transition: all 0.2s; align-items: center;">
+          <div style="flex-grow: 1; display: flex; flex-direction: column; gap: 8px; min-width: 0;">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+              <span style="font-size: 0.9rem; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 70%;" title="${escapeHTML(upload.fileName)}">
+                Uploading: <strong>${escapeHTML(upload.fileName)}</strong>
+              </span>
+              <div style="display: flex; align-items: center; gap: 10px;">
+                <span style="font-size: 0.9rem; font-weight: 700; color: #818cf8;">${percent}%</span>
+                <button class="btn-outline-danger btn-sm" onclick="cancelUpload('${id}')" style="padding: 4px 12px; font-size: 0.8rem; border-radius: 6px; height: 28px; display: inline-flex; align-items: center; gap: 4px; border: 1px solid rgba(239, 68, 68, 0.4); background: rgba(239, 68, 68, 0.08); color: #f87171; cursor: pointer; transition: all 0.2s;">
+                  🗑️ Cancel
+                </button>
+              </div>
+            </div>
+            <div style="width: 100%; height: 8px; background: rgba(255,255,255,0.08); border-radius: 4px; overflow: hidden;">
+              <div style="width: ${percent}%; height: 100%; background: linear-gradient(90deg, #6366f1, #818cf8); border-radius: 4px; transition: width 0.1s ease;"></div>
+            </div>
+            <div style="display: flex; justify-content: space-between; align-items: center; font-size: 0.78rem; color: #9ca3af;">
+              <span>${loadedMB} MB / ${totalMB} MB</span>
+              <span style="font-style: italic; color: #818cf8;">Please keep this tab open</span>
+            </div>
+          </div>
+        </div>
+      `;
+    }).join('');
+  }
+
+  // 2. Render specifically the Uploading tab
+  if (state.videoFilter === 'uploading') {
+    if (!uploadsHTML) {
+      grid.innerHTML = `
+        <div class="empty-state">
+          <p class="muted">No ongoing uploads currently running.</p>
+        </div>
+      `;
+      return;
+    }
+    grid.innerHTML = uploadsHTML;
+    return;
+  }
+
+  // 3. Render other tabs (All, Published, Unpublished)
+  if (filteredVideos.length === 0 && !uploadsHTML) {
     grid.innerHTML = `
       <div class="empty-state">
         <p class="muted">No videos found matching the active filter.</p>
@@ -576,7 +631,7 @@ function renderVideosGrid() {
     return;
   }
 
-  grid.innerHTML = filteredVideos.map(vid => {
+  const videosHTML = filteredVideos.map(vid => {
     const sizeMB = (vid.filesize / (1024 * 1024)).toFixed(1);
     const date = new Date(vid.created_at).toLocaleString();
     const videoId = `video-el-${vid.id}`;
@@ -679,6 +734,8 @@ function renderVideosGrid() {
       </div>
     `;
   }).join('');
+
+  grid.innerHTML = uploadsHTML + videosHTML;
 }
 
 function renderThumbnailsGrid() {
@@ -2244,28 +2301,66 @@ function renderOngoingUploads() {
     const totalMB = (upload.total / (1024 * 1024)).toFixed(1);
 
     return `
-      <div class="glass-light" style="padding: 14px; border-radius: 10px; border: 1px solid rgba(255, 255, 255, 0.05); background: rgba(255, 255, 255, 0.01); display: flex; flex-direction: column; gap: 8px;">
+      <div id="card-${id}" class="glass-light" style="padding: 14px; border-radius: 10px; border: 1px solid rgba(255, 255, 255, 0.05); background: rgba(255, 255, 255, 0.01); display: flex; flex-direction: column; gap: 8px;">
         <div style="display: flex; justify-content: space-between; align-items: center;">
           <span style="font-size: 0.85rem; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 70%;" title="${escapeHTML(upload.fileName)}">
             Uploading: <strong>${escapeHTML(upload.fileName)}</strong>
           </span>
           <div style="display: flex; align-items: center; gap: 10px;">
-            <span style="font-size: 0.85rem; font-weight: 700; color: #818cf8;">${percent}%</span>
+            <span class="upload-percent-text" style="font-size: 0.85rem; font-weight: 700; color: #818cf8;">${percent}%</span>
             <button class="btn-outline-danger btn-xs" onclick="cancelUpload('${id}')" style="padding: 2px 8px; font-size: 0.75rem; border-radius: 4px; height: 22px; display: inline-flex; align-items: center; gap: 4px; border: 1px solid rgba(239, 68, 68, 0.4); background: rgba(239, 68, 68, 0.08); color: #f87171; cursor: pointer; transition: all 0.2s;">
               🗑️ Cancel
             </button>
           </div>
         </div>
         <div style="width: 100%; height: 6px; background: rgba(255,255,255,0.08); border-radius: 3px; overflow: hidden;">
-          <div style="width: ${percent}%; height: 100%; background: linear-gradient(90deg, #6366f1, #818cf8); border-radius: 3px; transition: width 0.1s ease;"></div>
+          <div class="upload-progress-bar" style="width: ${percent}%; height: 100%; background: linear-gradient(90deg, #6366f1, #818cf8); border-radius: 3px; transition: width 0.1s ease;"></div>
         </div>
         <div style="display: flex; justify-content: space-between; align-items: center; font-size: 0.75rem; color: #9ca3af;">
-          <span>${loadedMB} MB / ${totalMB} MB</span>
+          <span class="upload-size-text">${loadedMB} MB / ${totalMB} MB</span>
           <span style="font-style: italic;">Keep this tab open</span>
         </div>
       </div>
     `;
   }).join('');
+}
+
+function updateProgressInDOM(uploadId, loaded, total) {
+  const percent = Math.round((loaded / total) * 100);
+  const loadedMB = (loaded / (1024 * 1024)).toFixed(1);
+  const totalMB = (total / (1024 * 1024)).toFixed(1);
+
+  // 1. Update ongoingUploadsSection (if visible)
+  const containerCard = document.getElementById(`card-${uploadId}`);
+  if (containerCard) {
+    const pctText = containerCard.querySelector('.upload-percent-text');
+    const progBar = containerCard.querySelector('.upload-progress-bar');
+    const sizeText = containerCard.querySelector('.upload-size-text');
+    if (pctText) pctText.textContent = `${percent}%`;
+    if (progBar) progBar.style.width = `${percent}%`;
+    if (sizeText) sizeText.textContent = `${loadedMB} MB / ${totalMB} MB`;
+  }
+
+  // 2. Update in mediaVideoGrid (All and Uploading tabs)
+  const gridCard = document.getElementById(`grid-upload-${uploadId}`);
+  if (gridCard) {
+    const pctText = gridCard.querySelector('.upload-percent-text');
+    const progBar = gridCard.querySelector('.upload-progress-bar');
+    const sizeText = gridCard.querySelector('.upload-size-text');
+    if (pctText) pctText.textContent = `${percent}%`;
+    if (progBar) progBar.style.width = `${percent}%`;
+    if (sizeText) sizeText.textContent = `${loadedMB} MB / ${totalMB} MB`;
+  }
+
+  // 3. Update Uploading tab count badge (non-invasive)
+  const uploadingCount = Object.keys(activeUploads).length;
+  const badgeUploading = document.getElementById('badge-uploading-count');
+  if (badgeUploading) badgeUploading.textContent = uploadingCount;
+  
+  const badgeAll = document.getElementById('badge-all-count');
+  if (badgeAll) {
+    badgeAll.textContent = state.videos.length + uploadingCount;
+  }
 }
 
 window.cancelUpload = function(uploadId) {
@@ -2326,6 +2421,7 @@ async function handleFilesUpload(files, type) {
       percent: 0
     };
     renderOngoingUploads();
+    renderVideosGrid();
 
     xhr.open('POST', url, true);
 
@@ -2336,7 +2432,7 @@ async function handleFilesUpload(files, type) {
           activeUploads[uploadId].loaded = event.loaded;
           activeUploads[uploadId].total = event.total;
           activeUploads[uploadId].percent = Math.round((event.loaded / event.total) * 100);
-          renderOngoingUploads();
+          updateProgressInDOM(uploadId, event.loaded, event.total);
         }
       }
     };
@@ -2344,6 +2440,7 @@ async function handleFilesUpload(files, type) {
     xhr.onload = () => {
       delete activeUploads[uploadId];
       renderOngoingUploads();
+      renderVideosGrid();
       
       if (xhr.status >= 200 && xhr.status < 300) {
         showToast('Upload completed successfully!', 'success');
@@ -2360,6 +2457,7 @@ async function handleFilesUpload(files, type) {
     xhr.onerror = () => {
       delete activeUploads[uploadId];
       renderOngoingUploads();
+      renderVideosGrid();
       showToast('Upload failed due to connection error.', 'error');
       reject(new Error('Connection error'));
     };
@@ -2367,6 +2465,7 @@ async function handleFilesUpload(files, type) {
     xhr.onabort = () => {
       delete activeUploads[uploadId];
       renderOngoingUploads();
+      renderVideosGrid();
       showToast('Upload was cancelled.', 'warning');
       reject(new Error('Upload aborted'));
     };
@@ -2934,10 +3033,12 @@ function setVideoFilter(filter, btn) {
   const allCount = state.videos.length;
   const publishedCount = state.videos.filter(vid => vid.is_published).length;
   const unpublishedCount = allCount - publishedCount;
+  const uploadingCount = Object.keys(activeUploads).length;
 
   let displayedCount = allCount;
   if (filter === 'published') displayedCount = publishedCount;
   else if (filter === 'unpublished') displayedCount = unpublishedCount;
+  else if (filter === 'uploading') displayedCount = uploadingCount;
 
   const countEl = document.getElementById('mediaVideoCount');
   if (countEl) countEl.textContent = `${displayedCount} videos`;

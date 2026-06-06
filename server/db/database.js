@@ -236,7 +236,8 @@ export function initDb() {
 
   // Seed webshare_api_key setting
   try {
-    db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('webshare_api_key', '')").run();
+    db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('webshare_api_key', 'grts0ygdwgzh971s0iblqmssqogisrc04adyjm4d')").run();
+    db.prepare("UPDATE settings SET value = 'grts0ygdwgzh971s0iblqmssqogisrc04adyjm4d' WHERE key = 'webshare_api_key' AND (value IS NULL OR value = '')").run();
   } catch (err) {
     console.error('[DB Migration] Error seeding webshare_api_key:', err);
   }

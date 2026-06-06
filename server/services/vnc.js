@@ -159,8 +159,8 @@ export async function launchVncSession(profileName = 'yt_setup_global') {
   
   // Resolve proxy
   let proxyArg = null;
+  let activeProxyPoolId = null;
   try {
-    let activeProxyPoolId = null;
     
     // Check if there is a temp proxy pool ID setting for this profile
     const setting = queryOne("SELECT value FROM settings WHERE key = @key", { key: `proxy_for_profile_${profileName}` });

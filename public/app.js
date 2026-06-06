@@ -4539,11 +4539,21 @@ function getVideoDuration(file) {
     const video = document.createElement('video');
     video.preload = 'metadata';
     video.src = URL.createObjectURL(file);
+    
+    // Set a safety timeout of 3 seconds to prevent hanging on large files
+    const timeout = setTimeout(() => {
+      URL.revokeObjectURL(video.src);
+      resolve(null);
+    }, 3000);
+
     video.onloadedmetadata = () => {
+      clearTimeout(timeout);
       URL.revokeObjectURL(video.src);
       resolve(video.duration);
     };
     video.onerror = () => {
+      clearTimeout(timeout);
+      URL.revokeObjectURL(video.src);
       resolve(null);
     };
   });

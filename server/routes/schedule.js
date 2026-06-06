@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { queryAll, queryOne, run, getDb } from '../db/database.js';
 import { schedulePost, cancelPost, getUpcoming, processPost, reclaimPostAssets } from '../services/scheduler.js';
-import { syncChannelWithYouTube, updateVideoSchedule } from '../services/youtube.js';
+import { syncChannelWithYouTube, updateVideoSchedule, updateOrAddComment } from '../services/youtube.js';
 import { rescheduleVideoBrowser } from '../services/puppet.js';
 
 const router = Router();
@@ -242,6 +242,34 @@ router.put('/:id', async (req, res) => {
       }
     }
 
+    let commentStatus = existing.comment_status || 'none';
+    const hasCommentChanged = customComment !== undefined && customComment !== existing.custom_comment;
+    
+    if (existing.status === 'complete' && existing.youtube_video_id && hasCommentChanged) {
+      const targetComment = customComment || '';
+      if (targetComment.trim()) {
+        commentStatus = 'pending';
+        try {
+          await updateOrAddComment(existing.channel_id, existing.youtube_video_id, targetComment);
+          commentStatus = 'posted';
+        } catch (err) {
+          console.warn(`[Scheduler] Could not update comment on YouTube immediately (will retry once public):`, err.message);
+        }
+      } else {
+        // Comment was cleared/deleted
+        try {
+          await updateOrAddComment(existing.channel_id, existing.youtube_video_id, '');
+          commentStatus = 'none';
+        } catch (err) {
+          console.warn(`[Scheduler] Could not delete comment from YouTube immediately:`, err.message);
+          commentStatus = 'pending'; // Retry deleting/syncing comment later
+        }
+      }
+    } else if (hasCommentChanged) {
+      // If the post hasn't been uploaded yet, just update comment_status for when it gets uploaded
+      commentStatus = (customComment && customComment.trim()) ? 'pending' : 'none';
+    }
+
     let newStatus = existing.status;
     if (existing.status === 'error') {
       newStatus = 'pending';
@@ -259,6 +287,7 @@ router.put('/:id', async (req, res) => {
          custom_comment = @customComment,
          is_premiere = @isPremiere,
          privacy = @privacy,
+         comment_status = @commentStatus,
          status = @status,
          retry_count = 0,
          next_retry_at = NULL,
@@ -275,6 +304,7 @@ router.put('/:id', async (req, res) => {
         customComment: customComment ?? existing.custom_comment,
         isPremiere: resolvedIsPremiere,
         privacy: privacy ?? existing.privacy,
+        commentStatus,
         status: newStatus,
         id,
         userId,
@@ -596,10 +626,13 @@ router.post('/bulk', async (req, res) => {
             scheduledAt = `${dateStr}T${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:00`;
           }
 
+          const finalCustomComment = commentId ? bulkCustomComment : (channel.comment_template || '');
+          const commentStatus = finalCustomComment.trim() ? 'pending' : 'none';
+
           // Insert scheduled post
           const info = run(
-            `INSERT INTO scheduled_posts (user_id, channel_id, title, description, tags, thumbnail_id, video_id, video_path, scheduled_at, custom_comment, is_premiere, status, privacy)
-             VALUES (@userId, @channelId, @title, @description, @tags, @thumbnailId, @videoId, @videoPath, @scheduledAt, @customComment, @isPremiere, 'pending', @privacy)`,
+            `INSERT INTO scheduled_posts (user_id, channel_id, title, description, tags, thumbnail_id, video_id, video_path, scheduled_at, custom_comment, is_premiere, status, privacy, comment_status)
+             VALUES (@userId, @channelId, @title, @description, @tags, @thumbnailId, @videoId, @videoPath, @scheduledAt, @customComment, @isPremiere, 'pending', @privacy, @commentStatus)`,
             {
               userId,
               channelId,
@@ -610,9 +643,10 @@ router.post('/bulk', async (req, res) => {
               videoId: video.id,
               videoPath: video.filepath,
               scheduledAt,
-              customComment: commentId ? bulkCustomComment : (channel.comment_template || ''),
+              customComment: finalCustomComment,
               isPremiere: postIsPremiere,
               privacy: publishNow ? 'public' : (channel.upload_privacy || 'public'),
+              commentStatus
             }
           );
 

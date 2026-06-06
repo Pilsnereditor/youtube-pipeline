@@ -20,6 +20,7 @@ export function init(broadcast) {
   cronTask = cron.schedule('* * * * *', async () => {
     try {
       await checkDuePosts();
+      await checkPendingComments();
     } catch (err) {
       console.error('[Scheduler] Error checking due posts:', err);
     }
@@ -36,7 +37,7 @@ export function init(broadcast) {
     }
   });
 
-  console.log('[Scheduler] Started — checking every minute for due posts and weekly on Thursdays for cleanup.');
+  console.log('[Scheduler] Started — checking every minute for due posts/comments and weekly on Thursdays for cleanup.');
 }
 
 /**
@@ -57,6 +58,46 @@ async function checkDuePosts() {
 
   for (const post of duePosts) {
     await processPost(post);
+  }
+}
+
+/**
+ * Check for completed scheduled posts with pending comments that are now due (public).
+ */
+async function checkPendingComments() {
+  const localDate = new Date();
+  const tzOffset = localDate.getTimezoneOffset() * 60000;
+  const now = new Date(localDate.getTime() - tzOffset).toISOString().slice(0, 19);
+
+  const pendingPosts = queryAll(
+    `SELECT sp.*, c.comment_template 
+     FROM scheduled_posts sp
+     LEFT JOIN channels c ON c.id = sp.channel_id
+     WHERE sp.status = 'complete' 
+       AND sp.comment_status = 'pending' 
+       AND sp.scheduled_at <= @now
+       AND sp.youtube_video_id IS NOT NULL`,
+    { now }
+  );
+
+  for (const post of pendingPosts) {
+    const rawCommentTemplate = post.custom_comment || post.comment_template || '';
+    if (!rawCommentTemplate.trim()) {
+      run(`UPDATE scheduled_posts SET comment_status = 'none' WHERE id = @id`, { id: post.id });
+      continue;
+    }
+
+    try {
+      console.log(`[Scheduler] Video ${post.youtube_video_id} is now scheduled to be public. Posting comment...`);
+      const commentText = rawCommentTemplate
+        .replace(/\{title\}/gi, post.title)
+        .replace(/\{videoId\}/gi, post.youtube_video_id);
+      await addComment(post.channel_id, post.youtube_video_id, commentText);
+      run(`UPDATE scheduled_posts SET comment_status = 'posted' WHERE id = @id`, { id: post.id });
+      console.log(`[Scheduler] Successfully posted pending comment on video ${post.youtube_video_id}`);
+    } catch (err) {
+      console.error(`[Scheduler] Failed to post pending comment on video ${post.youtube_video_id}:`, err.message);
+    }
   }
 }
 
@@ -171,15 +212,18 @@ export async function processPost(post) {
 
     // --- Pinned Comment ---
     const rawCommentTemplate = post.custom_comment || channel.comment_template || '';
-    if (rawCommentTemplate) {
+    let commentStatus = 'none';
+    if (rawCommentTemplate && rawCommentTemplate.trim()) {
+      commentStatus = 'pending';
       try {
         const commentText = rawCommentTemplate
           .replace(/\{title\}/gi, post.title)
           .replace(/\{videoId\}/gi, videoId);
         await addComment(post.channel_id, videoId, commentText);
+        commentStatus = 'posted';
         notify(`Comment posted on video ${videoId}`);
       } catch (err) {
-        notify(`Comment error on ${videoId}: ${err.message}`);
+        notify(`Comment error on ${videoId} (will retry when video goes public): ${err.message}`);
       }
     }
 
@@ -196,9 +240,10 @@ export async function processPost(post) {
       },
     );
 
-    // --- Mark scheduled post as complete and record YouTube Video ID ---
-    run(`UPDATE scheduled_posts SET status = 'complete', youtube_video_id = @videoId, error_message = NULL WHERE id = @id`, {
+    // --- Mark scheduled post as complete and record YouTube Video ID & Comment Status ---
+    run(`UPDATE scheduled_posts SET status = 'complete', youtube_video_id = @videoId, comment_status = @commentStatus, error_message = NULL WHERE id = @id`, {
       videoId,
+      commentStatus,
       id: post.id
     });
     notify(`Scheduled post ${post.id} completed successfully.`);
@@ -230,9 +275,15 @@ export async function processPost(post) {
  */
 export function schedulePost({ userId, channelId, title, description, tags, thumbnailId, videoId, videoPath, scheduledAt, customComment, isPremiere, privacy }) {
   const tagsStr = Array.isArray(tags) ? JSON.stringify(tags) : tags || '';
+  
+  // Resolve comment status
+  const channel = queryOne('SELECT comment_template FROM channels WHERE id = @channelId', { channelId });
+  const finalComment = customComment || (channel ? channel.comment_template : '');
+  const commentStatus = (finalComment && finalComment.trim()) ? 'pending' : 'none';
+
   const id = run(
-    `INSERT INTO scheduled_posts (user_id, channel_id, title, description, tags, thumbnail_id, video_id, video_path, scheduled_at, custom_comment, is_premiere, privacy)
-     VALUES (@userId, @channelId, @title, @description, @tags, @thumbnailId, @videoId, @videoPath, @scheduledAt, @customComment, @isPremiere, @privacy)`,
+    `INSERT INTO scheduled_posts (user_id, channel_id, title, description, tags, thumbnail_id, video_id, video_path, scheduled_at, custom_comment, is_premiere, privacy, comment_status)
+     VALUES (@userId, @channelId, @title, @description, @tags, @thumbnailId, @videoId, @videoPath, @scheduledAt, @customComment, @isPremiere, @privacy, @commentStatus)`,
     {
       userId,
       channelId,
@@ -246,6 +297,7 @@ export function schedulePost({ userId, channelId, title, description, tags, thum
       customComment: customComment || '',
       isPremiere: isPremiere ? 1 : 0,
       privacy: privacy || null,
+      commentStatus
     },
   ).lastInsertRowid;
 

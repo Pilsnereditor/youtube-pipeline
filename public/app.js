@@ -3066,6 +3066,7 @@ function openEditScheduledPostModal(postId) {
   document.getElementById('viewSchedTitle').value = post.title || '';
   document.getElementById('viewSchedDesc').value = post.description || '';
   document.getElementById('viewSchedTags').value = post.tags || '';
+  document.getElementById('viewSchedComment').value = post.custom_comment || '';
 
   // Setup thumbnail preview
   const viewSchedThumbGroup = document.getElementById('viewSchedThumbGroup');
@@ -3174,6 +3175,7 @@ async function saveSchedPostChanges() {
   const title = document.getElementById('viewSchedTitle').value.trim();
   const description = document.getElementById('viewSchedDesc').value.trim();
   const tags = document.getElementById('viewSchedTags').value.trim();
+  const customComment = document.getElementById('viewSchedComment').value.trim();
   const date = document.getElementById('viewSchedDate').value;
   const time = document.getElementById('viewSchedTime').value;
   const isPremiere = document.getElementById('viewSchedIsPremiere') ? document.getElementById('viewSchedIsPremiere').checked : false;
@@ -3195,7 +3197,8 @@ async function saveSchedPostChanges() {
         description,
         tags,
         scheduledAt,
-        isPremiere
+        isPremiere,
+        customComment
       })
     });
 

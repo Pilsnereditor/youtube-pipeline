@@ -367,3 +367,72 @@ export async function updateVideoSchedule(channelId, videoId, scheduledAt) {
   });
 }
 
+/**
+ * Update or add a top-level comment on a video, deleting any old comments from the owner first.
+ */
+export async function updateOrAddComment(channelId, videoId, text) {
+  const auth = await getAuthenticatedClient(channelId);
+  const yt = google.youtube({ version: 'v3', auth });
+
+  const channel = queryOne('SELECT youtube_channel_id FROM channels WHERE id = @channelId', { channelId });
+  const ownerChannelId = channel ? channel.youtube_channel_id : null;
+
+  let existingCommentId = null;
+
+  try {
+    const listRes = await yt.commentThreads.list({
+      part: ['snippet'],
+      videoId,
+      maxResults: 100,
+    });
+
+    if (listRes.data.items) {
+      for (const thread of listRes.data.items) {
+        const topComment = thread.snippet.topLevelComment;
+        const authorId = topComment.snippet.authorChannelId?.value;
+        if (authorId && authorId === ownerChannelId) {
+          existingCommentId = topComment.id;
+          break;
+        }
+      }
+    }
+  } catch (err) {
+    console.warn(`[YouTube API] Could not list comments for video ${videoId} (likely private/scheduled): ${err.message}`);
+    throw err;
+  }
+
+  // Delete existing comment if found
+  if (existingCommentId) {
+    try {
+      await yt.comments.delete({ id: existingCommentId });
+      console.log(`[YouTube API] Deleted existing comment ${existingCommentId} on video ${videoId}`);
+    } catch (err) {
+      console.error(`[YouTube API] Failed to delete comment ${existingCommentId}:`, err.message);
+      throw err;
+    }
+  }
+
+  // Insert new comment if text is provided
+  if (text && text.trim()) {
+    try {
+      await yt.commentThreads.insert({
+        part: ['snippet'],
+        requestBody: {
+          snippet: {
+            videoId,
+            topLevelComment: {
+              snippet: {
+                textOriginal: text,
+              },
+            },
+          },
+        },
+      });
+      console.log(`[YouTube API] Posted new comment on video ${videoId}`);
+    } catch (err) {
+      console.error(`[YouTube API] Failed to insert new comment on video ${videoId}:`, err.message);
+      throw err;
+    }
+  }
+}
+

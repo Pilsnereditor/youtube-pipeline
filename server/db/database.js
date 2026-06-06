@@ -192,6 +192,18 @@ export function initDb() {
     console.error(`[DB Migration] Error adding privacy column:`, err);
   }
 
+  // Self-healing migration for comment_status column in scheduled_posts
+  try {
+    const pragma = db.prepare(`PRAGMA table_info(scheduled_posts)`).all();
+    const hasCommentStatus = pragma.some(col => col.name === 'comment_status');
+    if (!hasCommentStatus) {
+      db.prepare(`ALTER TABLE scheduled_posts ADD COLUMN comment_status TEXT DEFAULT 'none'`).run();
+      console.log(`[DB Migration] Added comment_status column to scheduled_posts table.`);
+    }
+  } catch (err) {
+    console.error(`[DB Migration] Error adding comment_status column:`, err);
+  }
+
   // Self-healing migration for pipeline_runs constraints
   try {
     const schemaInfo = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='pipeline_runs'").get();

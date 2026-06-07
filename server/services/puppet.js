@@ -1281,11 +1281,18 @@ export async function postCommentBrowser(channelId, videoId, text) {
       throw new Error('Not logged in or session expired. Please set up your browser session in the channel settings first.');
     }
 
-    // Scroll down to load comments
+    // Scroll down to load comments robustly
     console.log('[Puppet Comment] Scrolling to trigger comment section...');
-    await page.evaluate(() => window.scrollBy(0, 600));
+    await page.evaluate(() => {
+      const el = document.querySelector('#comments') || document.querySelector('ytd-comments');
+      if (el) {
+        el.scrollIntoView({ block: 'center' });
+      } else {
+        window.scrollBy(0, 800);
+      }
+    });
     await new Promise(r => setTimeout(r, 3000));
-    await page.evaluate(() => window.scrollBy(0, 200));
+    await page.evaluate(() => window.scrollBy(0, 100));
     await new Promise(r => setTimeout(r, 2000));
 
     // Check if comments are disabled on video
@@ -1359,16 +1366,26 @@ export async function postCommentBrowser(channelId, videoId, text) {
     // 2. Insert new comment if provided
     if (text && text.trim()) {
       console.log('[Puppet Comment] Locating comment box placeholder...');
-      const placeholder = await page.waitForSelector('#simplebox-placeholder, #placeholder-area, ytd-comment-simplebox-renderer', { timeout: 15000 }).catch(() => null);
+      const placeholder = await page.waitForSelector('#simplebox-placeholder, #placeholder-area', { timeout: 15000 }).catch(() => null);
       if (!placeholder) {
-        throw new Error('Comment box placeholder not found. Logging out or commenting disabled?');
+        // Fallback to container if specific placeholders not found
+        const container = await page.waitForSelector('ytd-comment-simplebox-renderer', { timeout: 5000 }).catch(() => null);
+        if (!container) {
+          throw new Error('Comment box placeholder not found. Logging out or commenting disabled?');
+        }
+        console.log('[Puppet Comment] Specific placeholder not found, clicking container...');
+        await page.evaluate(el => el.click(), container);
+        await container.click().catch(() => null);
+      } else {
+        console.log('[Puppet Comment] Clicking placeholder...');
+        await page.evaluate(el => el.click(), placeholder);
+        await placeholder.click().catch(() => null);
       }
+      await new Promise(r => setTimeout(r, 1500));
 
-      await placeholder.click();
-      await new Promise(r => setTimeout(r, 1000));
-
-      const editor = await page.waitForSelector('#contenteditable-root', { timeout: 5000 });
-      await editor.click();
+      const editor = await page.waitForSelector('#contenteditable-root', { timeout: 8000 });
+      await page.evaluate(el => el.click(), editor);
+      await editor.click().catch(() => null);
       await new Promise(r => setTimeout(r, 500));
 
       console.log('[Puppet Comment] Typing new comment...');

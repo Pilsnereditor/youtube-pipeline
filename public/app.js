@@ -4878,19 +4878,35 @@ async function loginProfile(profileName, label) {
     if (data.success && data.mode === 'vnc') {
       ytSetupSessionActive = true;
 
-      if (!data.vnc_available) {
-        const missing = document.getElementById('ytSetupVncMissing');
-        if (missing) missing.style.display = 'block';
-        const iframe = document.getElementById('ytSetupVncFrame');
-        if (iframe) iframe.style.display = 'none';
-        document.getElementById('ytSetupLoginStatusText').textContent = 'VNC dependencies missing — see instructions above';
-        return;
-      }
+      const localChrome = document.getElementById('ytSetupLocalChrome');
+      const iframe = document.getElementById('ytSetupVncFrame');
+      const missing = document.getElementById('ytSetupVncMissing');
+      const tip = document.getElementById('ytSetupInteractionTip');
 
-      document.getElementById('ytSetupLoginStatusText').textContent = 'Chrome is running — follow the steps below, then click Verify Channels';
-      if (guide) guide.style.display = 'block';
-      showVncIframe(data.ws_port);
-      showToast('Chrome launched! Log in to your Google account.', 'success');
+      if (data.is_local_chrome) {
+        if (localChrome) localChrome.style.display = 'block';
+        if (iframe) iframe.style.display = 'none';
+        if (missing) missing.style.display = 'none';
+        if (tip) tip.style.display = 'none';
+        document.getElementById('ytSetupLoginStatusText').textContent = 'Chrome opened on desktop — log in there, then click Verify Channels';
+        if (guide) guide.style.display = 'block';
+        showToast('Chrome opened on desktop! Please sign in there.', 'success');
+      } else {
+        if (localChrome) localChrome.style.display = 'none';
+        if (tip) tip.style.display = 'block';
+
+        if (!data.vnc_available) {
+          if (missing) missing.style.display = 'block';
+          if (iframe) iframe.style.display = 'none';
+          document.getElementById('ytSetupLoginStatusText').textContent = 'VNC dependencies missing — see instructions above';
+          return;
+        }
+
+        document.getElementById('ytSetupLoginStatusText').textContent = 'Chrome is running — follow the steps below, then click Verify Channels';
+        if (guide) guide.style.display = 'block';
+        showVncIframe(data.ws_port);
+        showToast('Chrome launched! Log in to your Google account.', 'success');
+      }
     } else {
       throw new Error(data.error || 'Failed to launch browser');
     }
@@ -4913,17 +4929,19 @@ async function goBackToProfiles() {
   const iframe = document.getElementById('ytSetupVncFrame');
   if (iframe) { iframe.src = ''; iframe.style.display = 'none'; }
   
+  const localChrome = document.getElementById('ytSetupLocalChrome');
+  if (localChrome) localChrome.style.display = 'none';
+  
   ytSetupSessionActive = false;
   _activeProfileName = null;
   await loadYtProfiles();
 }
 
 /**
- * Refresh the YouTube Login Setup section
+ * Refresh status of active session
  */
-async function refreshYtLoginSetup() {
-  await loadYtProfiles();
-  
+async function refreshYtSetupStatus() {
+  if (!_activeProfileName) return;
   try {
     const res = await fetch(`${API_BASE}/channels/yt-setup/status`);
     const data = await res.json();
@@ -4932,7 +4950,23 @@ async function refreshYtLoginSetup() {
       ytSetupSessionActive = true;
       document.getElementById('ytSetupStep1').style.display = 'none';
       document.getElementById('ytSetupStep2').style.display = 'block';
-      showVncIframe(data.ws_port || 6080);
+      
+      const localChrome = document.getElementById('ytSetupLocalChrome');
+      const iframe = document.getElementById('ytSetupVncFrame');
+      const missing = document.getElementById('ytSetupVncMissing');
+      const tip = document.getElementById('ytSetupInteractionTip');
+
+      if (data.is_local_chrome) {
+        if (localChrome) localChrome.style.display = 'block';
+        if (iframe) iframe.style.display = 'none';
+        if (missing) missing.style.display = 'none';
+        if (tip) tip.style.display = 'none';
+        document.getElementById('ytSetupLoginStatusText').textContent = 'Chrome opened on desktop — log in there, then click Verify Channels';
+      } else {
+        if (localChrome) localChrome.style.display = 'none';
+        if (tip) tip.style.display = 'block';
+        showVncIframe(data.ws_port || 6080);
+      }
     } else {
       ytSetupSessionActive = false;
       document.getElementById('ytSetupStep1').style.display = 'block';

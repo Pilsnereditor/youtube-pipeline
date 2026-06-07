@@ -204,6 +204,18 @@ export function initDb() {
     console.error(`[DB Migration] Error adding comment_status column:`, err);
   }
 
+  // Self-healing migration for comment retry columns in scheduled_posts
+  try {
+    const pragma = db.prepare(`PRAGMA table_info(scheduled_posts)`).all();
+    if (!pragma.some(col => col.name === 'comment_retry_count')) {
+      db.prepare(`ALTER TABLE scheduled_posts ADD COLUMN comment_retry_count INTEGER DEFAULT 0`).run();
+      db.prepare(`ALTER TABLE scheduled_posts ADD COLUMN comment_next_retry_at TEXT DEFAULT NULL`).run();
+      console.log(`[DB Migration] Added comment_retry_count and comment_next_retry_at columns to scheduled_posts.`);
+    }
+  } catch (err) {
+    console.error(`[DB Migration] Error adding comment retry columns:`, err);
+  }
+
   // Self-healing migration for pipeline_runs constraints
   try {
     const schemaInfo = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='pipeline_runs'").get();

@@ -597,10 +597,26 @@
               <p style="font-size:0.78rem; color:var(--text-secondary); margin-bottom:12px;">Run this command on your server to install:</p>
               <code style="display:block; font-size:0.75rem; color:#818cf8; padding:12px; border-radius:6px; background:rgba(0,0,0,0.5); word-break:break-all;">sudo apt install -y xvfb x11vnc novnc websockify openbox</code>
             </div>
+            <div id="ytSetupLocalChrome" style="display:none; padding:32px 24px; text-align:center; background: rgba(16, 185, 129, 0.05);">
+              <div style="font-size: 2.5rem; margin-bottom: 12px;">🖥️</div>
+              <p style="font-size:1.1rem; color:var(--text-bright); font-weight:600; margin-bottom:8px;">Google Chrome Opened on Desktop</p>
+              <p style="font-size:0.85rem; color:var(--text-secondary); margin-bottom:16px; line-height: 1.5; max-width: 500px; margin-left: auto; margin-right: auto;">
+                We detected you are running the server on Windows. A standard Chrome window has been launched directly on your desktop.
+              </p>
+              <div style="padding: 12px; border-radius: 8px; background: rgba(0,0,0,0.3); border: 1px dashed rgba(255,255,255,0.15); display: inline-block; text-align: left; margin-bottom: 16px;">
+                <p style="margin: 0 0 6px 0; font-size: 0.78rem; color: #10b981;"><strong>Instructions:</strong></p>
+                <ol style="margin: 0; padding-left: 20px; font-size: 0.78rem; color: var(--text-secondary); line-height: 1.5;">
+                  <li>Bring the opened Chrome window to focus (it might be flashing in your taskbar).</li>
+                  <li>Log in to your YouTube/Google account in that window.</li>
+                  <li>Verify that YouTube is in English.</li>
+                  <li>Once done, keep the window open and click <strong>Verify Channels</strong> below.</li>
+                </ol>
+              </div>
+            </div>
             <iframe id="ytSetupVncFrame" style="width:100%; height:680px; border:none; display:none;" allowfullscreen></iframe>
           </div>
 
-          <p style="font-size:0.72rem; color:#64748b; margin-bottom:16px;">💡 <strong style="color:#94a3b8;">Click inside the browser</strong> to interact. Type, click, and scroll — it's a real remote desktop.</p>
+          <p id="ytSetupInteractionTip" style="font-size:0.72rem; color:#64748b; margin-bottom:16px;">💡 <strong style="color:#94a3b8;">Click inside the browser</strong> to interact. Type, click, and scroll — it's a real remote desktop.</p>
 
           <!-- Bottom action buttons -->
           <div style="display:flex; align-items:center; gap:10px; padding-top:12px; border-top:1px solid rgba(255,255,255,0.06);">

@@ -1,12 +1,15 @@
 import cron from 'node-cron';
 import { queryAll, queryOne, run, insert } from '../db/database.js';
 import { uploadVideo, setThumbnail, addComment } from './youtube.js';
-import { uploadVideoBrowser } from './puppet.js';
+import { uploadVideoBrowser, postCommentBrowser } from './puppet.js';
 import { runWeeklyCleanup } from './videoCleanup.js';
 
 let broadcastFn = null;
 let cronTask = null;
 let cleanupTask = null;
+
+let isCheckingDuePosts = false;
+let isCheckingPendingComments = false;
 
 /**
  * Initialise the scheduler. Starts a cron job that runs every minute, checking
@@ -19,8 +22,22 @@ export function init(broadcast) {
   // Run every minute
   cronTask = cron.schedule('* * * * *', async () => {
     try {
-      await checkDuePosts();
-      await checkPendingComments();
+      if (!isCheckingDuePosts) {
+        isCheckingDuePosts = true;
+        try {
+          await checkDuePosts();
+        } finally {
+          isCheckingDuePosts = false;
+        }
+      }
+      if (!isCheckingPendingComments) {
+        isCheckingPendingComments = true;
+        try {
+          await checkPendingComments();
+        } finally {
+          isCheckingPendingComments = false;
+        }
+      }
     } catch (err) {
       console.error('[Scheduler] Error checking due posts:', err);
     }
@@ -64,19 +81,20 @@ async function checkDuePosts() {
 /**
  * Check for completed scheduled posts with pending comments that are now due (public).
  */
-async function checkPendingComments() {
+export async function checkPendingComments() {
   const localDate = new Date();
   const tzOffset = localDate.getTimezoneOffset() * 60000;
   const now = new Date(localDate.getTime() - tzOffset).toISOString().slice(0, 19);
 
   const pendingPosts = queryAll(
-    `SELECT sp.*, c.comment_template 
+    `SELECT sp.*, c.comment_template, c.upload_mode 
      FROM scheduled_posts sp
      LEFT JOIN channels c ON c.id = sp.channel_id
      WHERE sp.status = 'complete' 
        AND sp.comment_status = 'pending' 
        AND (sp.scheduled_at <= @now OR sp.is_premiere = 1)
-       AND sp.youtube_video_id IS NOT NULL`,
+       AND sp.youtube_video_id IS NOT NULL
+       AND (sp.comment_next_retry_at IS NULL OR sp.comment_next_retry_at <= @now)`,
     { now }
   );
 
@@ -87,16 +105,57 @@ async function checkPendingComments() {
       continue;
     }
 
+    const commentText = rawCommentTemplate
+      .replace(/\{title\}/gi, post.title)
+      .replace(/\{videoId\}/gi, post.youtube_video_id);
+
     try {
       console.log(`[Scheduler] Video ${post.youtube_video_id} is public or a Premiere. Posting comment...`);
-      const commentText = rawCommentTemplate
-        .replace(/\{title\}/gi, post.title)
-        .replace(/\{videoId\}/gi, post.youtube_video_id);
-      await addComment(post.channel_id, post.youtube_video_id, commentText);
-      run(`UPDATE scheduled_posts SET comment_status = 'posted' WHERE id = @id`, { id: post.id });
+      
+      if (post.upload_mode === 'browser') {
+        await postCommentBrowser(post.channel_id, post.youtube_video_id, commentText);
+      } else {
+        await addComment(post.channel_id, post.youtube_video_id, commentText);
+      }
+
+      run(`UPDATE scheduled_posts SET comment_status = 'posted', comment_retry_count = 0, comment_next_retry_at = NULL WHERE id = @id`, { id: post.id });
       console.log(`[Scheduler] Successfully posted pending comment on video ${post.youtube_video_id}`);
     } catch (err) {
       console.error(`[Scheduler] Failed to post pending comment on video ${post.youtube_video_id}:`, err.message);
+      
+      const nextAttempt = (post.comment_retry_count || 0) + 1;
+      const commentsDisabled = err.message.includes('COMMENTS_DISABLED');
+
+      if (commentsDisabled) {
+        // Stop retrying if comments are turned off on YouTube
+        run(`UPDATE scheduled_posts SET comment_status = 'disabled', comment_retry_count = @nextAttempt, comment_next_retry_at = NULL WHERE id = @id`, { nextAttempt, id: post.id });
+        console.warn(`[Scheduler] Commenting disabled on video ${post.youtube_video_id}. Marked as disabled.`);
+      } else if (nextAttempt <= 3) {
+        // Exponential backoff: 5 mins, 30 mins, 2 hours
+        let backoffMinutes = 5;
+        if (nextAttempt === 2) backoffMinutes = 30;
+        else if (nextAttempt === 3) backoffMinutes = 120;
+
+        const nextRetryDate = new Date(Date.now() - (new Date().getTimezoneOffset() * 60000) + backoffMinutes * 60000);
+        const commentNextRetryAt = nextRetryDate.toISOString().slice(0, 19);
+
+        run(
+          `UPDATE scheduled_posts 
+           SET comment_retry_count = @nextAttempt, comment_next_retry_at = @commentNextRetryAt 
+           WHERE id = @id`,
+          { nextAttempt, commentNextRetryAt, id: post.id }
+        );
+        console.log(`[Scheduler] Comment failed. Scheduled retry #${nextAttempt} at ${commentNextRetryAt}.`);
+      } else {
+        // Max retries reached, stop retrying and mark error
+        run(
+          `UPDATE scheduled_posts 
+           SET comment_status = 'error', comment_next_retry_at = NULL 
+           WHERE id = @id`,
+          { id: post.id }
+        );
+        console.error(`[Scheduler] Max retries reached for comment on video ${post.youtube_video_id}.`);
+      }
     }
   }
 }
@@ -219,7 +278,11 @@ export async function processPost(post) {
         const commentText = rawCommentTemplate
           .replace(/\{title\}/gi, post.title)
           .replace(/\{videoId\}/gi, videoId);
-        await addComment(post.channel_id, videoId, commentText);
+        if (channel.upload_mode === 'browser') {
+          await postCommentBrowser(post.channel_id, videoId, commentText);
+        } else {
+          await addComment(post.channel_id, videoId, commentText);
+        }
         commentStatus = 'posted';
         notify(`Comment posted on video ${videoId}`);
       } catch (err) {

@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { queryAll, queryOne, run, getDb } from '../db/database.js';
 import { schedulePost, cancelPost, getUpcoming, processPost, reclaimPostAssets } from '../services/scheduler.js';
 import { syncChannelWithYouTube, updateVideoSchedule, updateOrAddComment } from '../services/youtube.js';
-import { rescheduleVideoBrowser } from '../services/puppet.js';
+import { rescheduleVideoBrowser, postCommentBrowser } from '../services/puppet.js';
 
 const router = Router();
 
@@ -248,22 +248,43 @@ router.put('/:id', async (req, res) => {
     
     if (existing.status === 'complete' && existing.youtube_video_id && hasCommentChanged) {
       const targetComment = customComment || '';
-      if (targetComment.trim()) {
-        commentStatus = 'pending';
-        try {
-          await updateOrAddComment(existing.channel_id, existing.youtube_video_id, targetComment);
-          commentStatus = 'posted';
-        } catch (err) {
-          console.warn(`[Scheduler] Could not update comment on YouTube immediately (will retry once public):`, err.message);
-        }
+      const channel = queryOne('SELECT upload_mode FROM channels WHERE id = @id', { id: existing.channel_id });
+      
+      if (channel && channel.upload_mode === 'browser') {
+        commentStatus = targetComment.trim() ? 'pending' : 'none';
+        
+        // Run browser commenting asynchronously to prevent Express route blocking
+        (async () => {
+          try {
+            await postCommentBrowser(existing.channel_id, existing.youtube_video_id, targetComment);
+            const finalStatus = targetComment.trim() ? 'posted' : 'none';
+            run(`UPDATE scheduled_posts SET comment_status = @finalStatus WHERE id = @id`, { finalStatus, id });
+          } catch (err) {
+            console.error(`[Scheduler] Background browser comment update failed for video ${existing.youtube_video_id}:`, err);
+            if (targetComment.trim()) {
+              run(`UPDATE scheduled_posts SET comment_status = 'pending' WHERE id = @id`, { id });
+            }
+          }
+        })();
       } else {
-        // Comment was cleared/deleted
-        try {
-          await updateOrAddComment(existing.channel_id, existing.youtube_video_id, '');
-          commentStatus = 'none';
-        } catch (err) {
-          console.warn(`[Scheduler] Could not delete comment from YouTube immediately:`, err.message);
-          commentStatus = 'pending'; // Retry deleting/syncing comment later
+        // API mode can run synchronously
+        if (targetComment.trim()) {
+          commentStatus = 'pending';
+          try {
+            await updateOrAddComment(existing.channel_id, existing.youtube_video_id, targetComment);
+            commentStatus = 'posted';
+          } catch (err) {
+            console.warn(`[Scheduler] Could not update comment on YouTube immediately (will retry once public):`, err.message);
+          }
+        } else {
+          // Comment was cleared/deleted
+          try {
+            await updateOrAddComment(existing.channel_id, existing.youtube_video_id, '');
+            commentStatus = 'none';
+          } catch (err) {
+            console.warn(`[Scheduler] Could not delete comment from YouTube immediately:`, err.message);
+            commentStatus = 'pending'; // Retry deleting/syncing comment later
+          }
         }
       }
     } else if (hasCommentChanged) {

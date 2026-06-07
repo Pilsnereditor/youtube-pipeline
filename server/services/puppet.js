@@ -49,8 +49,9 @@ export function resolveChannelProxy(channel) {
     }
     
     console.log(`[Proxy] Using pool proxy ${proxy.host}:${proxy.port} (${proxy.city || proxy.country_code}) for channel "${channel.name}"`);
+    const protocol = proxy.protocol === 'socks5' ? 'socks5h' : (proxy.protocol || 'http');
     return {
-      proxyUrl: `${proxy.protocol}://${proxy.host}:${proxy.port}`,
+      proxyUrl: `${protocol}://${proxy.host}:${proxy.port}`,
       username: proxy.username || '',
       password: proxy.password || ''
     };
@@ -94,8 +95,9 @@ export function resolveChannelProxy(channel) {
 
   if (!host) return null;
 
+  const resolvedType = type === 'socks5' ? 'socks5h' : type;
   return {
-    proxyUrl: `${type}://${host}:${port}`,
+    proxyUrl: `${resolvedType}://${host}:${port}`,
     username,
     password
   };
@@ -520,6 +522,22 @@ export async function uploadVideoBrowser(channelId, opts, logFn = console.log) {
     });
     await page.setUserAgent(getUserAgent());
     await page.setViewport({ width: 1280, height: 800 });
+
+    // Override webdriver and plugins to bypass Google bot block
+    await page.evaluateOnNewDocument(() => {
+      Object.defineProperty(navigator, 'webdriver', {
+        get: () => false,
+      });
+      Object.defineProperty(navigator, 'plugins', {
+        get: () => [
+          { name: 'PDF Viewer' },
+          { name: 'Chrome PDF Viewer' },
+          { name: 'Chromium PDF Viewer' },
+          { name: 'Microsoft Edge PDF Viewer' },
+          { name: 'WebKit built-in PDF' }
+        ]
+      });
+    });
 
     logFn('[Puppet] Navigating to YouTube Studio...');
     await page.goto('https://studio.youtube.com?hl=en&persist_hl=1', { waitUntil: 'networkidle2', timeout: 60000 });
@@ -1046,6 +1064,22 @@ export async function rescheduleVideoBrowser(channelId, youtubeVideoId, schedule
     await page.setUserAgent(getUserAgent());
     await page.setViewport({ width: 1280, height: 800 });
 
+    // Override webdriver and plugins to bypass Google bot block
+    await page.evaluateOnNewDocument(() => {
+      Object.defineProperty(navigator, 'webdriver', {
+        get: () => false,
+      });
+      Object.defineProperty(navigator, 'plugins', {
+        get: () => [
+          { name: 'PDF Viewer' },
+          { name: 'Chrome PDF Viewer' },
+          { name: 'Chromium PDF Viewer' },
+          { name: 'Microsoft Edge PDF Viewer' },
+          { name: 'WebKit built-in PDF' }
+        ]
+      });
+    });
+
     logFn('[Puppet] Navigating to YouTube Studio video edit page...');
     await page.goto(`https://studio.youtube.com/video/${youtubeVideoId}/edit?hl=en&persist_hl=1`, { waitUntil: 'networkidle2', timeout: 60000 });
 
@@ -1172,6 +1206,251 @@ export async function rescheduleVideoBrowser(channelId, youtubeVideoId, schedule
       await browser.close();
     } catch {}
     throw err;
+  }
+}
+
+/**
+ * Post a comment on a YouTube video using Puppeteer browser session.
+ * Also deletes any previous owner comment if found, and pins the new comment.
+ */
+export async function postCommentBrowser(channelId, videoId, text) {
+  // 1. Force close active session and clean lock files to prevent locking crashes
+  try {
+    await closeBrowserSession(channelId);
+  } catch (e) {}
+  try {
+    await stopVncSession();
+  } catch (e) {}
+  await new Promise(r => setTimeout(r, 1000));
+
+  const profilePath = getProfilePath(channelId);
+  const chromePath = getChromePath();
+
+  // Force clean up browser lock files
+  try {
+    const lockFiles = ['SingletonLock', 'SingletonSocket', 'SingletonCookie'];
+    for (const f of lockFiles) {
+      const p = path.join(profilePath, f);
+      if (fs.existsSync(p)) {
+        fs.unlinkSync(p);
+        console.log(`[Puppet Comment] Removed lock file: ${f} for channel ${channelId}`);
+      }
+    }
+  } catch (e) {
+    console.warn(`[Puppet Comment] Failed to clean lock files: ${e.message}`);
+  }
+
+  const channel = queryOne('SELECT * FROM channels WHERE id = @id', { id: channelId });
+  if (!channel) throw new Error(`Channel ${channelId} not found.`);
+
+  const proxy = resolveChannelProxy(channel);
+  const proxyUrl = proxy ? proxy.proxyUrl : null;
+
+  const runHeadless = process.env.PUPPET_HEADLESS !== 'false';
+  const browser = await launchBrowserWithRetry(chromePath, profilePath, runHeadless, 3, 3000, proxyUrl);
+  try {
+    const page = await browser.newPage();
+    if (proxy && proxy.username) {
+      await page.authenticate({ username: proxy.username, password: proxy.password });
+    }
+
+    // Set User Agent and Accept-Language (Anti-bot fingerprinting)
+    await page.setUserAgent(getUserAgent());
+    await page.setExtraHTTPHeaders({ 'Accept-Language': 'en-US,en;q=0.9' });
+    await page.setViewport({ width: 1280, height: 800 });
+
+    // Inject Webdriver evasion
+    await page.evaluateOnNewDocument(() => {
+      Object.defineProperty(navigator, 'webdriver', { get: () => false });
+      Object.defineProperty(navigator, 'plugins', {
+        get: () => [
+          { name: 'PDF Viewer' },
+          { name: 'Chrome PDF Viewer' },
+          { name: 'Chromium PDF Viewer' }
+        ]
+      });
+    });
+
+    console.log(`[Puppet Comment] Navigating to: https://www.youtube.com/watch?v=${videoId}`);
+    await page.goto(`https://www.youtube.com/watch?v=${videoId}`, { waitUntil: 'networkidle2', timeout: 60000 });
+
+    // Explicitly check for expired session or login page redirects
+    const isLoginPage = page.url().includes('accounts.google.com') || 
+                       await page.$('ytd-button-renderer a[href*="signin"]').catch(() => null);
+    if (isLoginPage) {
+      throw new Error('Not logged in or session expired. Please set up your browser session in the channel settings first.');
+    }
+
+    // Scroll down to load comments
+    console.log('[Puppet Comment] Scrolling to trigger comment section...');
+    await page.evaluate(() => window.scrollBy(0, 600));
+    await new Promise(r => setTimeout(r, 3000));
+    await page.evaluate(() => window.scrollBy(0, 200));
+    await new Promise(r => setTimeout(r, 2000));
+
+    // Check if comments are disabled on video
+    const commentsDisabled = await page.evaluate(() => {
+      const container = document.querySelector('#comments');
+      if (container) {
+        const textContent = container.textContent.toLowerCase();
+        return textContent.includes('comments are turned off') || textContent.includes('yorumlar kapalı');
+      }
+      return false;
+    });
+    if (commentsDisabled) {
+      throw new Error('COMMENTS_DISABLED: Comments are turned off on this video.');
+    }
+
+    // 1. Check for existing owner comment to delete
+    console.log('[Puppet Comment] Checking for existing comment from owner...');
+    const hasOwnerComment = await page.evaluate(() => {
+      const threads = Array.from(document.querySelectorAll('ytd-comment-thread-renderer'));
+      return threads.some(thread => thread.querySelector('ytd-author-comment-badge-renderer, #author-comment-badge'));
+    });
+
+    if (hasOwnerComment) {
+      console.log('[Puppet Comment] Found owner comment, attempting to delete...');
+      try {
+        const menuBtn = await page.evaluateHandle(() => {
+          const threads = Array.from(document.querySelectorAll('ytd-comment-thread-renderer'));
+          const ownerThread = threads.find(t => t.querySelector('ytd-author-comment-badge-renderer, #author-comment-badge'));
+          return ownerThread ? ownerThread.querySelector('#action-menu button, #action-menu yt-icon-button') : null;
+        });
+
+        if (menuBtn && menuBtn.asElement()) {
+          await menuBtn.asElement().click();
+          await new Promise(r => setTimeout(r, 1000));
+
+          const deleted = await page.evaluate(() => {
+            const items = Array.from(document.querySelectorAll('tp-yt-paper-item, paper-item, ytd-menu-navigation-item-renderer, ytd-menu-service-item-renderer'));
+            const deleteItem = items.find(item => {
+              const txt = (item.textContent || '').toLowerCase();
+              return txt.includes('delete') || txt.includes('sil');
+            });
+            if (deleteItem) {
+              deleteItem.click();
+              return true;
+            }
+            return false;
+          });
+
+          if (deleted) {
+            await new Promise(r => setTimeout(r, 1500));
+            await page.evaluate(() => {
+              const dialog = document.querySelector('yt-confirm-dialog-renderer, paper-dialog');
+              if (dialog) {
+                const buttons = Array.from(dialog.querySelectorAll('button, ytd-button-renderer'));
+                const confirmBtn = buttons.find(b => {
+                  const txt = (b.textContent || '').toLowerCase();
+                  return txt.includes('delete') || txt.includes('sil');
+                });
+                if (confirmBtn) confirmBtn.click();
+              }
+            });
+            console.log('[Puppet Comment] Old comment deleted.');
+            await new Promise(r => setTimeout(r, 3000));
+          }
+        }
+      } catch (err) {
+        console.warn(`[Puppet Comment] Failed to delete old comment: ${err.message}`);
+      }
+    }
+
+    // 2. Insert new comment if provided
+    if (text && text.trim()) {
+      console.log('[Puppet Comment] Locating comment box placeholder...');
+      const placeholder = await page.waitForSelector('#simplebox-placeholder, #placeholder-area, ytd-comment-simplebox-renderer', { timeout: 15000 }).catch(() => null);
+      if (!placeholder) {
+        throw new Error('Comment box placeholder not found. Logging out or commenting disabled?');
+      }
+
+      await placeholder.click();
+      await new Promise(r => setTimeout(r, 1000));
+
+      const editor = await page.waitForSelector('#contenteditable-root', { timeout: 5000 });
+      await editor.click();
+      await new Promise(r => setTimeout(r, 500));
+
+      console.log('[Puppet Comment] Typing new comment...');
+      await page.keyboard.type(text, { delay: 20 });
+      await new Promise(r => setTimeout(r, 1000));
+
+      console.log('[Puppet Comment] Submitting new comment...');
+      const clickedSubmit = await page.evaluate(() => {
+        const box = document.querySelector('ytd-commentbox, ytd-comment-simplebox-renderer');
+        if (!box) return false;
+        const buttons = Array.from(box.querySelectorAll('button, ytd-button-renderer'));
+        const btn = buttons.find(b => {
+          const txt = (b.textContent || '').trim().toLowerCase();
+          return txt.includes('comment') || txt.includes('yorum');
+        });
+        if (btn) {
+          btn.click();
+          return true;
+        }
+        return false;
+      });
+
+      if (!clickedSubmit) {
+        const submitBtn = await page.waitForSelector('#submit-button', { timeout: 5000 });
+        await submitBtn.click();
+      }
+
+      console.log('[Puppet Comment] Comment submitted.');
+      await new Promise(r => setTimeout(r, 4000));
+
+      // 3. Try to pin the new comment (FIXED: Target the owner comment specifically!)
+      console.log('[Puppet Comment] Attempting to pin the comment...');
+      try {
+        const menuBtn = await page.evaluateHandle(() => {
+          const threads = Array.from(document.querySelectorAll('ytd-comment-thread-renderer'));
+          // Locate the owner's comment thread specifically
+          const ownerThread = threads.find(t => t.querySelector('ytd-author-comment-badge-renderer, #author-comment-badge'));
+          return ownerThread ? ownerThread.querySelector('#action-menu button, #action-menu yt-icon-button') : null;
+        });
+
+        if (menuBtn && menuBtn.asElement()) {
+          await menuBtn.asElement().click();
+          await new Promise(r => setTimeout(r, 1000));
+
+          const pinClicked = await page.evaluate(() => {
+            const items = Array.from(document.querySelectorAll('tp-yt-paper-item, paper-item, ytd-menu-navigation-item-renderer, ytd-menu-service-item-renderer'));
+            const pinItem = items.find(item => {
+              const txt = (item.textContent || '').toLowerCase();
+              return txt.includes('pin') || txt.includes('sabitle');
+            });
+            if (pinItem) {
+              pinItem.click();
+              return true;
+            }
+            return false;
+          });
+
+          if (pinClicked) {
+            await new Promise(r => setTimeout(r, 1500));
+            await page.evaluate(() => {
+              const dialog = document.querySelector('yt-confirm-dialog-renderer, paper-dialog');
+              if (dialog) {
+                const buttons = Array.from(dialog.querySelectorAll('button, ytd-button-renderer'));
+                const confirmBtn = buttons.find(b => {
+                  const txt = (b.textContent || '').toLowerCase();
+                  return txt.includes('pin') || txt.includes('sabitle');
+                });
+                if (confirmBtn) confirmBtn.click();
+              }
+            });
+            console.log('[Puppet Comment] Comment pinned successfully.');
+            await new Promise(r => setTimeout(r, 2000));
+          }
+        }
+      } catch (pinErr) {
+        console.warn(`[Puppet Comment] Warning: failed to pin comment: ${pinErr.message}`);
+      }
+    }
+  } finally {
+    try {
+      await browser.close();
+    } catch {}
   }
 }
 

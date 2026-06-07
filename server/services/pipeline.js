@@ -1,6 +1,6 @@
 import { queryAll, queryOne, run, insert } from '../db/database.js';
 import { uploadVideo, setThumbnail, addComment } from './youtube.js';
-import { uploadVideoBrowser } from './puppet.js';
+import { uploadVideoBrowser, postCommentBrowser } from './puppet.js';
 import { handlePostFailure } from './scheduler.js';
 
 // Scope active runs by userId
@@ -201,10 +201,18 @@ export async function launchPipeline({ userId, channelIds, videosPerChannel = 1 
                 const commentText = channel.comment_template
                   .replace(/\{title\}/gi, title.text)
                   .replace(/\{videoId\}/gi, videoId);
-                await addComment(channel.id, videoId, commentText);
+                
+                if (channel.upload_mode === 'browser') {
+                  await postCommentBrowser(channel.id, videoId, commentText);
+                } else {
+                  await addComment(channel.id, videoId, commentText);
+                }
+                
+                run(`UPDATE scheduled_posts SET comment_status = 'posted' WHERE id = @id`, { id: scheduledPost.id });
                 appendLog(runId, `Comment posted on ${videoId}`);
               } catch (err) {
-                appendLog(runId, `Comment error on ${videoId}: ${err.message}`);
+                run(`UPDATE scheduled_posts SET comment_status = 'pending' WHERE id = @id`, { id: scheduledPost.id });
+                appendLog(runId, `Comment error on ${videoId} (scheduled for retry when public): ${err.message}`);
               }
             }
           } catch (err) {

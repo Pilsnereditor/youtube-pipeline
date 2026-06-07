@@ -6,7 +6,7 @@ import { fileURLToPath } from 'url';
 import { queryAll, queryOne, run, insert } from '../db/database.js';
 import { syncChannelWithYouTube } from '../services/youtube.js';
 import { setupBrowserSession, checkBrowserSessionActive, closeBrowserSession } from '../services/puppet.js';
-import { launchVncSession, isVncActive, getVncPort, getVncProfileName, getVncProfilePath, verifyVncChannels, stopVncSession } from '../services/vnc.js';
+import { launchVncSession, isVncActive, getVncPort, getVncProfileName, getVncProfilePath, verifyVncChannels, stopVncSession, isLocalChrome } from '../services/vnc.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -255,7 +255,11 @@ router.post('/yt-setup/launch', async (req, res) => {
  * GET /api/channels/yt-setup/status — Check if VNC session is active
  */
 router.get('/yt-setup/status', (req, res) => {
-  res.json({ active: isVncActive(), ws_port: getVncPort() });
+  res.json({ 
+    active: isVncActive(), 
+    ws_port: getVncPort(),
+    is_local_chrome: isLocalChrome()
+  });
 });
 
 /**

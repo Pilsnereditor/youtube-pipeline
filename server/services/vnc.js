@@ -58,6 +58,18 @@ function execQuiet(cmd) {
  * Find Google Chrome on the system
  */
 function findChrome() {
+  if (process.platform === 'win32') {
+    const paths = [
+      'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+      'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+      path.join(process.env.LocalAppData || '', 'Google', 'Chrome', 'Application', 'chrome.exe')
+    ];
+    for (const p of paths) {
+      if (fs.existsSync(p)) return p;
+    }
+    return process.env.CHROME_PATH || 'chrome.exe';
+  }
+
   const candidates = [
     '/usr/bin/google-chrome',
     '/usr/bin/google-chrome-stable',
@@ -74,6 +86,9 @@ function findChrome() {
  * Check if VNC dependencies are installed
  */
 function checkVncDeps() {
+  if (process.platform === 'win32') {
+    return { ok: true, missing: [], novncDir: '' };
+  }
   const deps = ['Xvfb', 'x11vnc', 'websockify'];
   const missing = [];
   for (const dep of deps) {
@@ -129,6 +144,140 @@ export async function launchVncSession(profileName = 'yt_setup_global') {
   for (const f of ['SingletonLock', 'SingletonSocket', 'SingletonCookie']) {
     const p = path.join(profilePath, f);
     try { if (fs.existsSync(p)) fs.unlinkSync(p); } catch {}
+  }
+
+  if (process.platform === 'win32') {
+    console.log('[VNC] Launching Chrome directly on Windows desktop...');
+    const chromePath = findChrome();
+    
+    // Resolve proxy
+    let proxyArg = null;
+    let activeProxyPoolId = null;
+    let needsAuth = false;
+    let proxyUser = '';
+    let proxyPass = '';
+    try {
+      const setting = queryOne("SELECT value FROM settings WHERE key = @key", { key: `proxy_for_profile_${profileName}` });
+      if (setting && setting.value) {
+        activeProxyPoolId = Number(setting.value);
+      }
+      if (!activeProxyPoolId) {
+        const channel = queryOne('SELECT * FROM channels WHERE profile_name = @profileName LIMIT 1', { profileName });
+        if (channel && channel.proxy_pool_id) {
+          activeProxyPoolId = channel.proxy_pool_id;
+        }
+      }
+      if (activeProxyPoolId) {
+        const proxy = queryOne('SELECT * FROM proxy_pool WHERE id = @id', { id: activeProxyPoolId });
+        if (proxy) {
+          proxyArg = `--proxy-server=${proxy.protocol}://${proxy.host}:${proxy.port}`;
+          console.log(`[VNC] Using proxy ${proxy.protocol}://${proxy.host}:${proxy.port} for setup profile "${profileName}"`);
+          if (proxy.username) {
+            needsAuth = true;
+            proxyUser = proxy.username;
+            proxyPass = proxy.password || '';
+          }
+        }
+      }
+    } catch (err) {
+      console.error('[VNC] Error resolving proxy for Windows setup session:', err);
+    }
+
+    const chromeArgs = [
+      `--user-data-dir=${profilePath}`,
+      `--remote-debugging-port=${CDP_PORT}`,
+      '--no-first-run',
+      '--no-default-browser-check',
+      '--disable-features=TranslateUI',
+      '--disable-blink-features=AutomationControlled',
+      '--lang=en-US',
+      '--window-size=1280,800',
+      '--window-position=0,0',
+      '--start-maximized',
+      '--password-store=basic',
+      '--use-mock-keychain'
+    ];
+
+    if (proxyArg) {
+      chromeArgs.push(proxyArg);
+    }
+
+    // WebRTC leak prevention
+    chromeArgs.push('--enforce-webrtc-ip-permission-check');
+    chromeArgs.push('--disable-webrtc-hw-decoding');
+    chromeArgs.push('--disable-webrtc-hw-encoding');
+    chromeArgs.push('--webrtc-ip-handling-policy=disable_non_proxied_udp');
+
+    if (needsAuth) {
+      chromeArgs.push('about:blank');
+    } else {
+      chromeArgs.push('https://studio.youtube.com?hl=en&persist_hl=1');
+    }
+
+    const chrome = spawn(chromePath, chromeArgs, {
+      detached: true, stdio: 'ignore'
+    });
+    chrome.unref();
+    await sleep(2500);
+
+    let cdpBrowser = null;
+    if (needsAuth) {
+      try {
+        console.log('[VNC] Connecting via CDP to authenticate proxy credentials...');
+        await sleep(1500);
+        cdpBrowser = await puppeteer.connect({
+          browserURL: `http://127.0.0.1:${CDP_PORT}`,
+          defaultViewport: null
+        });
+
+        const applyAuth = async (p) => {
+          try {
+            await p.authenticate({
+              username: proxyUser,
+              password: proxyPass
+            });
+            console.log('[VNC] Proxy credentials applied.');
+          } catch (e) {
+            console.error('[VNC] Failed to apply proxy credentials to page:', e);
+          }
+        };
+
+        const pages = await cdpBrowser.pages();
+        for (const p of pages) {
+          await applyAuth(p);
+        }
+
+        cdpBrowser.on('targetcreated', async (target) => {
+          if (target.type() === 'page') {
+            const p = await target.page();
+            if (p) {
+              await applyAuth(p);
+            }
+          }
+        });
+
+        if (pages.length > 0) {
+          const page = pages[0];
+          console.log('[VNC] Navigating page to YouTube Studio after auth setup...');
+          page.goto('https://studio.youtube.com?hl=en&persist_hl=1').catch(err => {
+            console.error('[VNC] Navigation error (expected if loading takes long):', err.message);
+          });
+        }
+      } catch (err) {
+        console.warn('[VNC] Failed to automate proxy credentials via CDP:', err.message);
+      }
+    }
+
+    vncSession = { chrome, profilePath, profileName, cdpBrowser, isLocalChrome: true };
+
+    return {
+      success: true,
+      mode: 'vnc',
+      vnc_available: true,
+      is_local_chrome: true,
+      ws_port: null,
+      missing_deps: []
+    };
   }
 
   // Kill any stale processes from previous runs
@@ -560,10 +709,19 @@ export async function stopVncSession() {
   }
 
   // Kill any remaining processes by name (safety net)
-  execQuiet('pkill -f "Xvfb :99"');
-  execQuiet('pkill -f "x11vnc.*5999"');
-  execQuiet('pkill -f "websockify.*6080"');
+  if (process.platform !== 'win32') {
+    execQuiet('pkill -f "Xvfb :99"');
+    execQuiet('pkill -f "x11vnc.*5999"');
+    execQuiet('pkill -f "websockify.*6080"');
+  }
   await sleep(500);
 
   console.log('[VNC] Session stopped.');
+}
+
+/**
+ * Check if the active session is a local Chrome instance
+ */
+export function isLocalChrome() {
+  return vncSession ? !!vncSession.isLocalChrome : false;
 }

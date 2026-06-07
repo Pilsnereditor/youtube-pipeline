@@ -219,8 +219,9 @@ router.put('/:id', async (req, res) => {
       resolvedIsPremiere = 0;
     }
 
-    // If it's a complete post with a youtube_video_id, update YouTube schedule
-    if (existing.status === 'complete' && existing.youtube_video_id) {
+    // If it's a complete post with a youtube_video_id, and the schedule has actually changed, update YouTube schedule
+    const hasScheduleChanged = (scheduledAt && scheduledAt !== existing.scheduled_at) || (resolvedIsPremiere !== existing.is_premiere);
+    if (existing.status === 'complete' && existing.youtube_video_id && hasScheduleChanged) {
       const channel = queryOne('SELECT * FROM channels WHERE id = @id', { id: existing.channel_id });
       const hasToken = queryOne('SELECT id FROM oauth_tokens WHERE channel_id = @id', { id: existing.channel_id });
       if (hasToken) {

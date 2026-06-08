@@ -1155,7 +1155,7 @@ export async function rescheduleVideoBrowser(channelId, youtubeVideoId, schedule
     if (scheduledAt) {
       logFn('[Puppet] Finding Visibility select dropdown...');
       // Click visibility settings trigger on the edit page
-      const visTrigger = await page.waitForSelector('#visibility-select, ytcp-video-metadata-visibility-select, [aria-label="Visibility"]', { timeout: 30000 });
+      const visTrigger = await page.waitForSelector('#visibility-select, ytcp-video-metadata-visibility, #visibility-display, [aria-label="Visibility"], [aria-label*="visibility" i]', { timeout: 30000 });
       await visTrigger.click();
       await new Promise(r => setTimeout(r, 2000));
 
@@ -1184,11 +1184,11 @@ export async function rescheduleVideoBrowser(channelId, youtubeVideoId, schedule
       const timeStr = formatPublishTime(scheduledAt);
 
       logFn(`[Puppet] Entering scheduled date: ${dateStr}...`);
-      const dateTrigger = await page.waitForSelector('#datepicker-trigger, ytcp-datetime-picker ytcp-dropdown-trigger', { timeout: 5000 }).catch(() => null);
+      const dateTrigger = await page.waitForSelector('#datepicker-trigger, ytcp-datetime-picker ytcp-dropdown-trigger, ytcp-date-picker, [id*="datepicker"] [role="button"]', { timeout: 5000 }).catch(() => null);
       if (dateTrigger) {
         await dateTrigger.click();
         await new Promise(r => setTimeout(r, 1000));
-        const calInput = await page.waitForSelector('#datepicker-trigger input, ytcp-date-picker input', { timeout: 3000 }).catch(() => null);
+        const calInput = await page.waitForSelector('#datepicker-trigger input, ytcp-date-picker input, input[placeholder*="date" i], input[aria-label*="date" i]', { timeout: 3000 }).catch(() => null);
         if (calInput) {
           await calInput.click();
           await new Promise(r => setTimeout(r, 200));
@@ -1207,20 +1207,38 @@ export async function rescheduleVideoBrowser(channelId, youtubeVideoId, schedule
       await new Promise(r => setTimeout(r, 800));
 
       logFn(`[Puppet] Entering scheduled time: ${timeStr}...`);
-      const timeInput = await page.waitForSelector('#time-of-day-trigger input, ytcp-time-of-day-picker input', { timeout: 5000 }).catch(() => null);
-      if (timeInput) {
-        await timeInput.click();
-        await new Promise(r => setTimeout(r, 200));
-        await page.keyboard.down('Control');
-        await page.keyboard.press('A');
-        await page.keyboard.up('Control');
-        await page.keyboard.press('Backspace');
-        await new Promise(r => setTimeout(r, 200));
-        await timeInput.type(timeStr, { delay: 50 });
-        await page.keyboard.press('Enter');
-        await new Promise(r => setTimeout(r, 500));
-        await page.keyboard.press('Escape');
-        await new Promise(r => setTimeout(r, 500));
+      const timeInputSelector = await page.evaluate(() => {
+        const container = document.querySelector('ytcp-datetime-picker, ytcp-visibility-scheduler, ytcp-video-visibility-select');
+        if (!container) return null;
+        const inputs = Array.from(container.querySelectorAll('input'));
+        const timeInput = inputs.find(input => {
+          const val = input.value || '';
+          return val.includes(':') || /\d+:\d+/.test(val);
+        }) || inputs[inputs.length - 1]; // fallback to last input in the container
+        
+        if (timeInput) {
+          timeInput.setAttribute('id', 'temp-time-input-target');
+          return '#temp-time-input-target';
+        }
+        return null;
+      });
+
+      if (timeInputSelector) {
+        const timeInput = await page.waitForSelector(timeInputSelector, { timeout: 5000 }).catch(() => null);
+        if (timeInput) {
+          await timeInput.click();
+          await new Promise(r => setTimeout(r, 200));
+          await page.keyboard.down('Control');
+          await page.keyboard.press('A');
+          await page.keyboard.up('Control');
+          await page.keyboard.press('Backspace');
+          await new Promise(r => setTimeout(r, 200));
+          await timeInput.type(timeStr, { delay: 50 });
+          await page.keyboard.press('Enter');
+          await new Promise(r => setTimeout(r, 500));
+          await page.keyboard.press('Escape');
+          await new Promise(r => setTimeout(r, 500));
+        }
       }
       await new Promise(r => setTimeout(r, 800));
 
@@ -1252,15 +1270,30 @@ export async function rescheduleVideoBrowser(channelId, youtubeVideoId, schedule
       await new Promise(r => setTimeout(r, 800));
 
       logFn('[Puppet] Clicking Done in Visibility dialog...');
-      const doneBtn = await page.waitForSelector('#done-button, ytcp-button[id*="done"]', { timeout: 10000 });
+      const doneBtn = await page.waitForSelector('ytcp-video-visibility-edit-popup #save-button, ytcp-video-visibility-edit-popup ytcp-button[id="save-button"], #done-button, ytcp-button[id*="done"]', { timeout: 10000 });
       await doneBtn.click();
       await new Promise(r => setTimeout(r, 2000));
     }
 
     logFn('[Puppet] Saving video changes...');
-    const saveBtn = await page.waitForSelector('#save-button, ytcp-button[id="save"]', { timeout: 10000 });
-    await saveBtn.click();
-    await new Promise(r => setTimeout(r, 4000));
+    const saveBtn = await page.waitForSelector('ytcp-button#save:not([disabled]):not([aria-disabled="true"]), ytcp-button[id="save"]', { timeout: 15000 }).catch(() => null);
+    if (saveBtn) {
+      await saveBtn.click();
+      logFn('[Puppet] Clicked main save button, waiting for save to complete...');
+      await page.waitForSelector('ytcp-button#save[disabled], ytcp-button#save[aria-disabled="true"]', { timeout: 20000 }).catch(() => null);
+    } else {
+      logFn('[Puppet] Main save button not active or not found. Trying fallback click...');
+      const mainSaveClicked = await page.evaluate(() => {
+        const btn = document.querySelector('ytcp-button#save:not([disabled])') || document.querySelector('ytcp-button#save:not([aria-disabled="true"])') || document.querySelector('ytcp-button#save');
+        if (btn) {
+          btn.click();
+          return true;
+        }
+        return false;
+      });
+      logFn(`[Puppet] Fallback save clicked: ${mainSaveClicked}`);
+      await new Promise(r => setTimeout(r, 5000));
+    }
 
     logFn('[Puppet] Video update complete.');
     await browser.close();

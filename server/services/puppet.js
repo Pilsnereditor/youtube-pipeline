@@ -1174,9 +1174,35 @@ export async function rescheduleVideoBrowser(channelId, youtubeVideoId, schedule
     // 2. Update Video Schedule if provided
     if (scheduledAt) {
       logFn('[Puppet] Finding Visibility select dropdown...');
-      // Click visibility settings trigger on the edit page
-      const visTrigger = await page.waitForSelector('#visibility-select, ytcp-video-metadata-visibility, #visibility-display, [aria-label="Visibility"], [aria-label*="visibility" i]', { timeout: 30000 });
-      await safeClick(page, visTrigger, { scroll: true });
+      await page.waitForSelector('ytcp-video-metadata-visibility', { timeout: 30000 });
+      logFn('[Puppet] Clicking Visibility select dropdown trigger...');
+      const visTriggerResult = await page.evaluate(() => {
+        function queryAllShadow(selector, root = document) {
+          const elements = Array.from(root.querySelectorAll(selector));
+          const children = Array.from(root.querySelectorAll('*'));
+          for (const child of children) {
+            if (child.shadowRoot) {
+              elements.push(...queryAllShadow(selector, child.shadowRoot));
+            }
+          }
+          return elements;
+        }
+
+        const targets = queryAllShadow('#visibility-select, #visibility-display, #trigger, [aria-label*="visibility" i]');
+        const host = document.querySelector('ytcp-video-metadata-visibility');
+        const clickable = targets.find(el => el.offsetParent !== null) || host;
+        if (clickable) {
+          clickable.scrollIntoView({ block: 'center', inline: 'nearest' });
+          clickable.click();
+          return { status: 'success', tag: clickable.tagName, id: clickable.id };
+        }
+        return { status: 'error' };
+      });
+
+      if (visTriggerResult.status !== 'success') {
+        throw new Error('Failed to locate or click Visibility trigger on edit page.');
+      }
+      logFn(`[Puppet] Clicked visibility trigger: [${visTriggerResult.tag}] id="${visTriggerResult.id}"`);
       logFn('[Puppet] Waiting for visibility popup to render...');
       await page.waitForSelector('ytcp-video-visibility-edit-popup', { timeout: 10000 });
       await new Promise(r => setTimeout(r, 1000));
@@ -1318,8 +1344,34 @@ export async function rescheduleVideoBrowser(channelId, youtubeVideoId, schedule
 
         // Re-open visibility dropdown
         logFn('[Puppet] Re-opening Visibility select dropdown after saving Private change...');
-        const visTriggerReopened = await page.waitForSelector('#visibility-select, ytcp-video-metadata-visibility, #visibility-display, [aria-label="Visibility"], [aria-label*="visibility" i]', { timeout: 30000 });
-        await safeClick(page, visTriggerReopened, { scroll: true });
+        await page.waitForSelector('ytcp-video-metadata-visibility', { timeout: 30000 });
+        const visTriggerReopenedResult = await page.evaluate(() => {
+          function queryAllShadow(selector, root = document) {
+            const elements = Array.from(root.querySelectorAll(selector));
+            const children = Array.from(root.querySelectorAll('*'));
+            for (const child of children) {
+              if (child.shadowRoot) {
+                elements.push(...queryAllShadow(selector, child.shadowRoot));
+              }
+            }
+            return elements;
+          }
+
+          const targets = queryAllShadow('#visibility-select, #visibility-display, #trigger, [aria-label*="visibility" i]');
+          const host = document.querySelector('ytcp-video-metadata-visibility');
+          const clickable = targets.find(el => el.offsetParent !== null) || host;
+          if (clickable) {
+            clickable.scrollIntoView({ block: 'center', inline: 'nearest' });
+            clickable.click();
+            return { status: 'success', tag: clickable.tagName, id: clickable.id };
+          }
+          return { status: 'error' };
+        });
+
+        if (visTriggerReopenedResult.status !== 'success') {
+          throw new Error('Failed to locate or click Visibility trigger when re-opening.');
+        }
+        logFn(`[Puppet] Re-opened visibility trigger: [${visTriggerReopenedResult.tag}] id="${visTriggerReopenedResult.id}"`);
         
         logFn('[Puppet] Waiting for visibility popup to render again...');
         await page.waitForSelector('ytcp-video-visibility-edit-popup', { timeout: 10000 });

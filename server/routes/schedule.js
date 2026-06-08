@@ -223,7 +223,7 @@ router.put('/:id', async (req, res) => {
     if (existing.status === 'complete' && existing.youtube_video_id && hasScheduleChanged) {
       const channel = queryOne('SELECT * FROM channels WHERE id = @id', { id: existing.channel_id });
       const hasToken = queryOne('SELECT id FROM oauth_tokens WHERE channel_id = @id', { id: existing.channel_id });
-      if (hasToken) {
+      if (hasToken && !resolvedIsPremiere) {
         // Use API to update schedule (fast & reliable)
         try {
           await updateVideoSchedule(existing.channel_id, existing.youtube_video_id, scheduledAt || existing.scheduled_at);
@@ -231,7 +231,7 @@ router.put('/:id', async (req, res) => {
           console.error('[Scheduler] Failed to reschedule video on YouTube via API:', err);
           return res.status(500).json({ error: 'Failed to update schedule on YouTube: ' + err.message });
         }
-      } else if (channel && channel.upload_mode === 'browser') {
+      } else if (channel) {
         // Use Puppeteer to update schedule (browser automation)
         try {
           await rescheduleVideoBrowser(existing.channel_id, existing.youtube_video_id, scheduledAt || existing.scheduled_at, resolvedIsPremiere);

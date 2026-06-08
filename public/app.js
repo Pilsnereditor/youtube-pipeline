@@ -3268,12 +3268,7 @@ async function saveSchedPostChanges() {
 
     if (!res.ok) throw new Error(await res.text());
 
-    const post = state.scheduledPosts.find(p => p.id === id);
-    if (post && post.status === 'complete' && post.channel_upload_mode === 'browser') {
-      showToast('Updated local schedule. Please manually reschedule the video in YouTube Studio (browser mode).', 'warning');
-    } else {
-      showToast('Scheduled post updated successfully.', 'success');
-    }
+    showToast('Scheduled post updated successfully.', 'success');
     
     closeModal('viewScheduledPostModal');
     loadScheduledPosts();

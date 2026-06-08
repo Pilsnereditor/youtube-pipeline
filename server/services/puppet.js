@@ -1159,31 +1159,32 @@ export async function rescheduleVideoBrowser(channelId, youtubeVideoId, schedule
     }
     await new Promise(r => setTimeout(r, 800));
 
-    if (isPremiere) {
-      logFn('[Puppet] Checking "Set as Premiere" option during reschedule...');
-      try {
-        const clickedPremiere = await page.evaluate(() => {
-          const checkboxes = Array.from(document.querySelectorAll('ytcp-checkbox, tp-yt-paper-checkbox, paper-checkbox, ytcp-checkbox-group ytcp-checkbox, ytcp-checkbox-lit'));
-          const premiereCheckbox = checkboxes.find(el => {
-            const text = (el.textContent || '').trim().toLowerCase();
-            return text.includes('premiere') || text.includes('gösterim') || text.includes('gosterim');
-          });
-          if (premiereCheckbox) {
-            const isChecked = premiereCheckbox.checked || premiereCheckbox.hasAttribute('checked') || premiereCheckbox.getAttribute('aria-checked') === 'true';
-            if (!isChecked) {
-              premiereCheckbox.click();
-              return 'clicked';
-            }
-            return 'already_checked';
-          }
-          return 'not_found';
+    logFn(`[Puppet] Toggling "Set as Premiere" option to ${isPremiere}...`);
+    try {
+      const clickedPremiere = await page.evaluate((targetState) => {
+        const checkboxes = Array.from(document.querySelectorAll('ytcp-checkbox, tp-yt-paper-checkbox, paper-checkbox, ytcp-checkbox-group ytcp-checkbox, ytcp-checkbox-lit'));
+        const premiereCheckbox = checkboxes.find(el => {
+          const text = (el.textContent || '').trim().toLowerCase();
+          return text.includes('premiere') || text.includes('gösterim') || text.includes('gosterim');
         });
-        logFn(`[Puppet] Premiere checkbox status: ${clickedPremiere}`);
-      } catch (e) {
-        logFn(`[Puppet] Warning: failed to check premiere checkbox: ${e.message}`);
-      }
-      await new Promise(r => setTimeout(r, 800));
+        if (premiereCheckbox) {
+          const isChecked = premiereCheckbox.checked || premiereCheckbox.hasAttribute('checked') || premiereCheckbox.getAttribute('aria-checked') === 'true';
+          if (targetState && !isChecked) {
+            premiereCheckbox.click();
+            return 'clicked_to_check';
+          } else if (!targetState && isChecked) {
+            premiereCheckbox.click();
+            return 'clicked_to_uncheck';
+          }
+          return 'already_correct';
+        }
+        return 'not_found';
+      }, isPremiere);
+      logFn(`[Puppet] Premiere checkbox status: ${clickedPremiere}`);
+    } catch (e) {
+      logFn(`[Puppet] Warning: failed to toggle premiere checkbox: ${e.message}`);
     }
+    await new Promise(r => setTimeout(r, 800));
 
     logFn('[Puppet] Clicking Done in Visibility dialog...');
     const doneBtn = await page.waitForSelector('#done-button, ytcp-button[id*="done"]', { timeout: 10000 });

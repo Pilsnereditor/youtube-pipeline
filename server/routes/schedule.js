@@ -439,7 +439,7 @@ function getLocalDateString(date) {
  */
 router.post('/bulk', async (req, res) => {
   const userId = req.session.userId;
-  const { channelIds, count, isDays, presetId, commentId, videoType, videoKeyword, videoOrder, isPremiere, publishNow } = req.body;
+  const { channelIds, count, isDays, presetId, commentId, videoType, videoKeyword, videoOrder, isPremiere, publishNow, videoIds } = req.body;
 
   if (!Array.isArray(channelIds) || channelIds.length === 0) {
     return res.status(400).json({ error: 'channelIds must be a non-empty array.' });
@@ -484,6 +484,44 @@ router.post('/bulk', async (req, res) => {
           throw new Error(`Channel ${channelId} not found or does not belong to you.`);
         }
 
+        let channelVideoIds = [];
+        if (videoOrder === 'none') {
+          if (!Array.isArray(videoIds) || videoIds.length === 0) {
+            throw new Error(`No manually selected videos provided.`);
+          }
+
+          const placeholders = videoIds.map((_, i) => `@id${i}`).join(',');
+          const queryParams = { channelId, userId };
+          videoIds.forEach((id, i) => {
+            queryParams[`id${i}`] = id;
+          });
+
+          const matchingVideos = queryAll(
+            `SELECT id FROM videos 
+             WHERE id IN (${placeholders}) 
+               AND channel_id = @channelId 
+               AND user_id = @userId
+               AND NOT EXISTS (
+                 SELECT 1 FROM scheduled_posts sp 
+                 WHERE sp.video_id = videos.id AND sp.status IN ('pending', 'processing', 'complete')
+               )`,
+            queryParams
+          );
+
+          const matchingSet = new Set(matchingVideos.map(v => v.id));
+          channelVideoIds = videoIds.filter(id => matchingSet.has(id));
+        }
+
+        const requiredCount = videoOrder === 'none' ? channelVideoIds.length : numCount;
+        if (requiredCount === 0) {
+          results.push({
+            channelId,
+            channelName: channel.name,
+            scheduledCount: 0
+          });
+          continue;
+        }
+
         // 2. Resolve schedule days and time
         let scheduleDays = channel.schedule_days;
         let scheduleTime = channel.schedule_time;
@@ -520,12 +558,12 @@ router.post('/bulk', async (req, res) => {
         let now = new Date();
         
         if (publishNow) {
-          for (let i = 0; i < numCount; i++) {
+          for (let i = 0; i < requiredCount; i++) {
             candidateDates.push('now');
           }
         } else if (isDays) {
-          // Check next 'count' calendar days starting tomorrow
-          for (let i = 1; i <= numCount; i++) {
+          // Check next 'requiredCount' calendar days starting tomorrow
+          for (let i = 1; i <= requiredCount; i++) {
             const checkDate = new Date();
             checkDate.setDate(now.getDate() + i);
             if (targetDays.includes(checkDate.getDay())) {
@@ -536,12 +574,12 @@ router.post('/bulk', async (req, res) => {
             }
           }
         } else {
-          // Find next 'count' open schedule slots
+          // Find next 'requiredCount' open schedule slots
           let daysSearched = 0;
           let checkDate = new Date();
           checkDate.setDate(now.getDate() + 1); // Start tomorrow
 
-          while (candidateDates.length < numCount && daysSearched < 365) {
+          while (candidateDates.length < requiredCount && daysSearched < 365) {
             if (targetDays.includes(checkDate.getDay())) {
               const dateStr = getLocalDateString(checkDate);
               if (!takenDates.has(dateStr)) {
@@ -555,40 +593,51 @@ router.post('/bulk', async (req, res) => {
 
         // 5. Schedule videos for candidate dates
         let scheduledForChannel = 0;
-        for (const dateStr of candidateDates) {
+        for (let idx = 0; idx < candidateDates.length; idx++) {
+          const dateStr = candidateDates[idx];
           // Fetch next unscheduled video
-          let sql = `
-            SELECT v.* FROM videos v 
-             WHERE v.channel_id = @channelId AND v.user_id = @userId
-               AND NOT EXISTS (
-                 SELECT 1 FROM scheduled_posts sp 
-                 WHERE sp.video_id = v.id AND sp.status IN ('pending', 'processing', 'complete')
-               )
-          `;
-          const queryParams = { channelId, userId };
-
-          if (videoType === 'shorts') {
-            sql += ` AND v.duration <= 60`;
-          } else if (videoType === 'longform') {
-            sql += ` AND (v.duration > 60 OR v.duration IS NULL)`;
-          }
-
-          if (videoKeyword && videoKeyword.trim()) {
-            sql += ` AND (v.original_filename LIKE @keyword OR v.title LIKE @keyword)`;
-            queryParams.keyword = `%${videoKeyword.trim()}%`;
-          }
-
-          if (videoOrder === 'desc') {
-            sql += ` ORDER BY v.id DESC`;
-          } else if (videoOrder === 'random') {
-            sql += ` ORDER BY RANDOM()`;
+          let video;
+          if (videoOrder === 'none') {
+            const videoId = channelVideoIds[idx];
+            if (!videoId) break;
+            video = queryOne(
+              `SELECT * FROM videos WHERE id = @id AND channel_id = @channelId AND user_id = @userId`,
+              { id: videoId, channelId, userId }
+            );
           } else {
-            sql += ` ORDER BY v.id ASC`;
+            let sql = `
+              SELECT v.* FROM videos v 
+               WHERE v.channel_id = @channelId AND v.user_id = @userId
+                 AND NOT EXISTS (
+                   SELECT 1 FROM scheduled_posts sp 
+                   WHERE sp.video_id = v.id AND sp.status IN ('pending', 'processing', 'complete')
+                 )
+            `;
+            const queryParams = { channelId, userId };
+
+            if (videoType === 'shorts') {
+              sql += ` AND v.duration <= 60`;
+            } else if (videoType === 'longform') {
+              sql += ` AND (v.duration > 60 OR v.duration IS NULL)`;
+            }
+
+            if (videoKeyword && videoKeyword.trim()) {
+              sql += ` AND (v.original_filename LIKE @keyword OR v.title LIKE @keyword)`;
+              queryParams.keyword = `%${videoKeyword.trim()}%`;
+            }
+
+            if (videoOrder === 'desc') {
+              sql += ` ORDER BY v.id DESC`;
+            } else if (videoOrder === 'random') {
+              sql += ` ORDER BY RANDOM()`;
+            } else {
+              sql += ` ORDER BY v.id ASC`;
+            }
+
+            sql += ` LIMIT 1`;
+
+            video = queryOne(sql, queryParams);
           }
-
-          sql += ` LIMIT 1`;
-
-          const video = queryOne(sql, queryParams);
 
           if (!video) {
             break; // Out of video stock

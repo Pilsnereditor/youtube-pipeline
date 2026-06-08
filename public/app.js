@@ -15,7 +15,10 @@ let state = {
   schedulePresets: [],
   currentUser: null,
   videoFilter: 'all',
-  scheduleFilterChannelId: ''
+  scheduleFilterChannelId: '',
+  dashSelectedChannelIds: [],
+  dashManuallySelectedVideoIds: [],
+  dashCountType: 'manual'
 };
 
 let activeUploads = {};
@@ -4505,6 +4508,16 @@ function onDashCountTypeSelectChange() {
   }
   
   countSelect.innerHTML = optionsHTML;
+}
+
+function toggleManualVideoSelection(videoId, checkbox) {
+  if (checkbox.checked) {
+    if (!state.dashManuallySelectedVideoIds.includes(videoId)) {
+      state.dashManuallySelectedVideoIds.push(videoId);
+    }
+  } else {
+    state.dashManuallySelectedVideoIds = state.dashManuallySelectedVideoIds.filter(id => id !== videoId);
+  }
   updateDashboardScheduleSummary();
 }
 
@@ -4587,12 +4600,18 @@ function updateDashboardScheduleSummary() {
       }
     }
 
+    const candidates = getUnusedVideosForChannel(ch.id, typeFilter, keywordFilter, orderFilter);
+    const stock = candidates.length;
+
     let videosForThisChannel = 0;
     const normalizedDays = (daysStr.toLowerCase().trim() === 'everyday') 
       ? ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat']
       : daysStr.toLowerCase().split(',').map(d => d.trim().replace(/^every\s+/i, '').substring(0, 3));
 
-    if (state.dashCountType === 'days') {
+    if (orderFilter === 'none') {
+      // Manual selection: count how many checked candidates belong to this channel
+      videosForThisChannel = candidates.filter(v => state.dashManuallySelectedVideoIds.includes(v.id)).length;
+    } else if (state.dashCountType === 'days') {
       // Calculate how many matching scheduled days fall in the next 'count' days
       let matchingDays = 0;
       let checkDate = new Date();
@@ -4611,25 +4630,33 @@ function updateDashboardScheduleSummary() {
       videosForThisChannel = count;
     }
 
-    // Check video stock
-    const candidates = getUnusedVideosForChannel(ch.id, typeFilter, keywordFilter, orderFilter);
-    const stock = candidates.length;
-    const warning = (videosForThisChannel > stock) ? ` <span style="color: var(--accent-red); font-size: 0.75rem;">(⚠️ Short ${videosForThisChannel - stock} videos)</span>` : '';
+    // Check video stock (hide stock warnings in manual selection mode)
+    const warning = (orderFilter !== 'none' && videosForThisChannel > stock) ? ` <span style="color: var(--accent-red); font-size: 0.75rem;">(⚠️ Short ${videosForThisChannel - stock} videos)</span>` : '';
 
     const rate = normalizedDays.length === 7 ? '1/day' : `${normalizedDays.length}/wk`;
     detailLines.push(`• <strong>${escapeHTML(ch.name)}</strong>: ${videosForThisChannel} videos (${rate})${warning}`);
     totalVideos += videosForThisChannel;
 
     // Generate selected preview list for this channel
-    const selectedCandidates = candidates.slice(0, videosForThisChannel);
-    if (selectedCandidates.length > 0) {
-      const videoItems = selectedCandidates.map((v, idx) => {
+    // If orderFilter is none, display ALL candidates, otherwise slice to requested count
+    const displayCandidates = orderFilter === 'none' ? candidates : candidates.slice(0, videosForThisChannel);
+    
+    if (displayCandidates.length > 0) {
+      const videoItems = displayCandidates.map((v, idx) => {
         const titleText = v.title ? ` — "${v.title}"` : '';
-        const indexLabel = orderFilter === 'random' ? `🎲` : `${idx + 1}.`;
+        
+        let indexLabel = '';
+        if (orderFilter === 'none') {
+          const isChecked = state.dashManuallySelectedVideoIds.includes(v.id);
+          indexLabel = `<input type="checkbox" style="cursor: pointer; width: 14px; height: 14px; margin: 0; display: inline-block; vertical-align: middle;" onchange="toggleManualVideoSelection(${v.id}, this)" ${isChecked ? 'checked' : ''}>`;
+        } else {
+          indexLabel = orderFilter === 'random' ? `🎲` : `${idx + 1}.`;
+        }
+
         return `
           <div style="padding: 4px 6px; border-bottom: 1px solid rgba(255,255,255,0.02); display: flex; align-items: center; justify-content: space-between; gap: 8px;">
-            <span style="text-overflow: ellipsis; overflow: hidden; white-space: nowrap; max-width: 80%;">
-              <span style="color: var(--text-muted); font-weight: 600; margin-right: 4px;">${indexLabel}</span>
+            <span style="text-overflow: ellipsis; overflow: hidden; white-space: nowrap; max-width: 80%; display: flex; align-items: center; gap: 6px;">
+              <span style="color: var(--text-muted); display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px;">${indexLabel}</span>
               <span style="color: var(--text-bright); font-weight: 500;">${escapeHTML(v.original_filename)}</span>${escapeHTML(titleText)}
             </span>
             ${v.duration ? `<span style="font-size: 0.68rem; color: var(--text-muted); background: rgba(255,255,255,0.03); padding: 1px 4px; border-radius: 3px; flex-shrink: 0;">⏱️ ${Math.round(v.duration)}s</span>` : ''}
@@ -4639,7 +4666,7 @@ function updateDashboardScheduleSummary() {
 
       previewList.push(`
         <div style="margin-bottom: 8px;">
-          <div style="font-weight: 600; color: var(--text-accent); font-size: 0.75rem; margin-bottom: 4px;">📺 ${escapeHTML(ch.name)} (${selectedCandidates.length} videos):</div>
+          <div style="font-weight: 600; color: var(--text-accent); font-size: 0.75rem; margin-bottom: 4px;">📺 ${escapeHTML(ch.name)} (${displayCandidates.length} stock videos):</div>
           <div style="background: rgba(0,0,0,0.15); border-radius: 6px; border: 1px solid rgba(255,255,255,0.03);">
             ${videoItems}
           </div>
@@ -4654,14 +4681,19 @@ function updateDashboardScheduleSummary() {
     }
   });
 
-  const headerText = state.dashCountType === 'days' 
-    ? `📅 <strong>${count} days</strong> × <strong>${state.dashSelectedChannelIds.length} ch</strong> = <strong>${totalVideos} videos total</strong>`
-    : `🎬 <strong>${count} videos</strong> × <strong>${state.dashSelectedChannelIds.length} ch</strong> = <strong>${totalVideos} videos total</strong>`;
+  let headerText = '';
+  if (orderFilter === 'none') {
+    headerText = `🎬 <strong>${totalVideos} videos manually selected</strong> × <strong>${state.dashSelectedChannelIds.length} ch</strong>`;
+  } else if (state.dashCountType === 'days') {
+    headerText = `📅 <strong>${count} days</strong> × <strong>${state.dashSelectedChannelIds.length} ch</strong> = <strong>${totalVideos} videos total</strong>`;
+  } else {
+    headerText = `🎬 <strong>${count} videos</strong> × <strong>${state.dashSelectedChannelIds.length} ch</strong> = <strong>${totalVideos} videos total</strong>`;
+  }
 
   const previewPanelHtml = `
     <div style="margin-top: 10px; border-top: 1px dashed rgba(255,255,255,0.1); padding-top: 10px;">
       <div style="font-weight: 600; font-size: 0.78rem; color: var(--text-secondary); margin-bottom: 6px; display: flex; align-items: center; gap: 4px;">
-        🔍 Stock Videos Selection Preview ${orderFilter === 'random' ? '<span style="color:var(--text-muted); font-size:0.7rem; font-weight:400;">(random order at upload time)</span>' : ''}
+        🔍 Stock Videos Selection Preview ${orderFilter === 'none' ? '<span style="color:var(--text-muted); font-size:0.7rem; font-weight:400;">(select checkboxes to schedule)</span>' : (orderFilter === 'random' ? '<span style="color:var(--text-muted); font-size:0.7rem; font-weight:400;">(random order at upload time)</span>' : '')}
       </div>
       <div style="max-height: 160px; overflow-y: auto; background: rgba(0,0,0,0.2); padding: 8px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.05); display: flex; flex-direction: column; gap: 2px;">
         ${previewList.join('')}
@@ -4687,10 +4719,6 @@ async function bulkScheduleDashboardVideos(publishNow = false) {
 
   const countInput = document.getElementById('dashScheduleCount');
   const count = parseInt(countInput ? countInput.value : '5', 10);
-  if (isNaN(count) || count <= 0) {
-    showToast('Please enter a valid count.', 'warning');
-    return;
-  }
 
   const presetSelect = document.getElementById('dashPresetSelect');
   const presetId = presetSelect && presetSelect.value ? parseInt(presetSelect.value) : null;
@@ -4708,6 +4736,18 @@ async function bulkScheduleDashboardVideos(publishNow = false) {
   const videoOrder = orderSelect ? orderSelect.value : 'asc';
   const isPremiere = document.getElementById('dashBulkPremiere') ? document.getElementById('dashBulkPremiere').checked : false;
 
+  if (videoOrder === 'none') {
+    if (!state.dashManuallySelectedVideoIds || state.dashManuallySelectedVideoIds.length === 0) {
+      showToast('Please select at least one stock video from the preview list.', 'warning');
+      return;
+    }
+  } else {
+    if (isNaN(count) || count <= 0) {
+      showToast('Please enter a valid count.', 'warning');
+      return;
+    }
+  }
+
   if (publishNow) {
     if (!confirm('Are you sure you want to immediately publish and upload these videos across the selected channels?')) {
       return;
@@ -4722,7 +4762,7 @@ async function bulkScheduleDashboardVideos(publishNow = false) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         channelIds: state.dashSelectedChannelIds,
-        count,
+        count: videoOrder === 'none' ? state.dashManuallySelectedVideoIds.length : count,
         isDays: state.dashCountType === 'days',
         presetId,
         commentId,
@@ -4730,7 +4770,8 @@ async function bulkScheduleDashboardVideos(publishNow = false) {
         videoKeyword,
         videoOrder,
         isPremiere,
-        publishNow
+        publishNow,
+        videoIds: videoOrder === 'none' ? state.dashManuallySelectedVideoIds : []
       })
     });
 
@@ -4743,6 +4784,7 @@ async function bulkScheduleDashboardVideos(publishNow = false) {
     
     // Clear selection
     state.dashSelectedChannelIds = [];
+    state.dashManuallySelectedVideoIds = [];
     if (document.getElementById('dashBulkPremiere')) {
       document.getElementById('dashBulkPremiere').checked = false;
     }

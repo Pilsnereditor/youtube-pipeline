@@ -4527,8 +4527,10 @@ function updateDashboardScheduleSummary() {
   const typeFilter = typeSelect ? typeSelect.value : 'all';
   const keywordInput = document.getElementById('dashBulkKeyword');
   const keywordFilter = keywordInput ? keywordInput.value : '';
+  const orderSelect = document.getElementById('dashBulkOrder');
+  const orderFilter = orderSelect ? orderSelect.value : 'asc';
 
-  const getUnusedVideosCountForChannel = (channelId, tFilter, kwFilter) => {
+  const getUnusedVideosForChannel = (channelId, tFilter, kwFilter, oFilter) => {
     let videos = state.videos.filter(v => v.channel_id === channelId);
     
     // Find all active scheduled videos (exclude cancelled)
@@ -4556,11 +4558,19 @@ function updateDashboardScheduleSummary() {
       );
     }
 
-    return unused.length;
+    // Sort order
+    if (oFilter === 'desc') {
+      unused.sort((a, b) => b.id - a.id);
+    } else {
+      unused.sort((a, b) => a.id - b.id);
+    }
+
+    return unused;
   };
 
   let detailLines = [];
   let totalVideos = 0;
+  let previewList = [];
 
   state.dashSelectedChannelIds.forEach(id => {
     const ch = state.channels.find(c => c.id === id);
@@ -4602,23 +4612,69 @@ function updateDashboardScheduleSummary() {
     }
 
     // Check video stock
-    const stock = getUnusedVideosCountForChannel(ch.id, typeFilter, keywordFilter);
+    const candidates = getUnusedVideosForChannel(ch.id, typeFilter, keywordFilter, orderFilter);
+    const stock = candidates.length;
     const warning = (videosForThisChannel > stock) ? ` <span style="color: var(--accent-red); font-size: 0.75rem;">(⚠️ Short ${videosForThisChannel - stock} videos)</span>` : '';
 
     const rate = normalizedDays.length === 7 ? '1/day' : `${normalizedDays.length}/wk`;
     detailLines.push(`• <strong>${escapeHTML(ch.name)}</strong>: ${videosForThisChannel} videos (${rate})${warning}`);
     totalVideos += videosForThisChannel;
+
+    // Generate selected preview list for this channel
+    const selectedCandidates = candidates.slice(0, videosForThisChannel);
+    if (selectedCandidates.length > 0) {
+      const videoItems = selectedCandidates.map((v, idx) => {
+        const titleText = v.title ? ` — "${v.title}"` : '';
+        const indexLabel = orderFilter === 'random' ? `🎲` : `${idx + 1}.`;
+        return `
+          <div style="padding: 4px 6px; border-bottom: 1px solid rgba(255,255,255,0.02); display: flex; align-items: center; justify-content: space-between; gap: 8px;">
+            <span style="text-overflow: ellipsis; overflow: hidden; white-space: nowrap; max-width: 80%;">
+              <span style="color: var(--text-muted); font-weight: 600; margin-right: 4px;">${indexLabel}</span>
+              <span style="color: var(--text-bright); font-weight: 500;">${escapeHTML(v.original_filename)}</span>${escapeHTML(titleText)}
+            </span>
+            ${v.duration ? `<span style="font-size: 0.68rem; color: var(--text-muted); background: rgba(255,255,255,0.03); padding: 1px 4px; border-radius: 3px; flex-shrink: 0;">⏱️ ${Math.round(v.duration)}s</span>` : ''}
+          </div>
+        `;
+      }).join('');
+
+      previewList.push(`
+        <div style="margin-bottom: 8px;">
+          <div style="font-weight: 600; color: var(--text-accent); font-size: 0.75rem; margin-bottom: 4px;">📺 ${escapeHTML(ch.name)} (${selectedCandidates.length} videos):</div>
+          <div style="background: rgba(0,0,0,0.15); border-radius: 6px; border: 1px solid rgba(255,255,255,0.03);">
+            ${videoItems}
+          </div>
+        </div>
+      `);
+    } else {
+      previewList.push(`
+        <div style="margin-bottom: 8px; color: var(--accent-red); font-weight: 600; font-size: 0.75rem;">
+          ⚠️ ${escapeHTML(ch.name)}: No matching stock videos available!
+        </div>
+      `);
+    }
   });
 
   const headerText = state.dashCountType === 'days' 
     ? `📅 <strong>${count} days</strong> × <strong>${state.dashSelectedChannelIds.length} ch</strong> = <strong>${totalVideos} videos total</strong>`
     : `🎬 <strong>${count} videos</strong> × <strong>${state.dashSelectedChannelIds.length} ch</strong> = <strong>${totalVideos} videos total</strong>`;
 
+  const previewPanelHtml = `
+    <div style="margin-top: 10px; border-top: 1px dashed rgba(255,255,255,0.1); padding-top: 10px;">
+      <div style="font-weight: 600; font-size: 0.78rem; color: var(--text-secondary); margin-bottom: 6px; display: flex; align-items: center; gap: 4px;">
+        🔍 Stock Videos Selection Preview ${orderFilter === 'random' ? '<span style="color:var(--text-muted); font-size:0.7rem; font-weight:400;">(random order at upload time)</span>' : ''}
+      </div>
+      <div style="max-height: 160px; overflow-y: auto; background: rgba(0,0,0,0.2); padding: 8px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.05); display: flex; flex-direction: column; gap: 2px;">
+        ${previewList.join('')}
+      </div>
+    </div>
+  `;
+
   summaryEl.innerHTML = `
     <div style="margin-bottom: 6px;">${headerText}</div>
-    <div style="font-size: 0.75rem; color: var(--text-secondary); max-height: 80px; overflow-y: auto; display: flex; flex-direction: column; gap: 2px;">
+    <div style="font-size: 0.75rem; color: var(--text-secondary); max-height: 80px; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; margin-bottom: 4px;">
       ${detailLines.join('')}
     </div>
+    ${previewPanelHtml}
   `;
 }
 

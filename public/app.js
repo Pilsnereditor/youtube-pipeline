@@ -791,6 +791,19 @@ function renderUpcomingQueue() {
     const date = new Date(post.scheduled_at).toLocaleString();
     const isError = post.status === 'error';
     
+    // Resolve video details
+    const video = state.videos.find(v => v.id === post.video_id);
+    const filename = video ? video.original_filename : (post.video_filename || '');
+    
+    // Resolve thumbnail ID
+    const thumbnailId = post.thumbnail_id || (video ? video.thumbnail_id : null);
+    
+    // Resolve Premiere status
+    const isPremiere = post.is_premiere === 1;
+    const premiereBadge = isPremiere
+      ? `<span class="badge" style="background: rgba(168, 85, 247, 0.15); color: #c084fc; border: 1px solid rgba(168, 85, 247, 0.3); margin-left: 8px; font-size: 0.72rem; padding: 2px 6px; border-radius: 4px; font-weight: 600;">✨ Premiere</span>`
+      : '';
+
     let statusText = 'FAILED';
     if (isError && post.retry_count > 0 && post.retry_count < 3 && post.next_retry_at) {
       const nextTime = new Date(post.next_retry_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -809,15 +822,23 @@ function renderUpcomingQueue() {
 
     return `
       <div class="queue-item glass-light" style="${isError ? 'border-left: 3px solid #ef4444;' : ''}">
+        <div class="queue-thumb">
+          ${thumbnailId ? `<img src="/api/media/thumbnail-file/${thumbnailId}" alt="Thumbnail">` : '📹'}
+        </div>
         <div class="queue-info">
-          <div style="display: flex; align-items: center;">
-            <h4 style="margin: 0;">${escapeHTML(post.title)}</h4>
+          <div style="display: flex; align-items: center; flex-wrap: wrap; gap: 4px;">
+            <h4 style="margin: 0; font-size: 0.95rem; font-weight: 600; color: var(--text-bright);">${escapeHTML(post.title)}</h4>
+            ${premiereBadge}
             ${statusBadge}
           </div>
-          <p class="meta">📺 Channel: ${escapeHTML(post.channel_name || 'Unknown')} | 📅 Time: ${date}</p>
+          <p class="meta" style="margin: 4px 0 0 0; font-size: 0.78rem; color: var(--text-secondary);">
+            📺 Channel: <span style="color: var(--text-bright); font-weight: 500;">${escapeHTML(post.channel_name || 'Unknown')}</span> | 
+            📅 Time: <span style="color: var(--text-bright); font-weight: 500;">${date}</span>
+          </p>
+          ${filename ? `<p class="filename" style="margin: 2px 0 0 0; font-size: 0.72rem; color: var(--text-muted); font-family: monospace;">📁 File: ${escapeHTML(filename)}</p>` : ''}
           ${isError ? `<p style="font-size: 0.75rem; color: #f87171; margin: 4px 0 0 0; line-height: 1.3;">Error: ${escapeHTML(post.error_message || 'Unknown error')}</p>` : ''}
         </div>
-        <div class="queue-actions" style="display: flex; align-items: center;">
+        <div class="queue-actions" style="display: flex; align-items: center; gap: 8px; margin-left: auto;">
           ${retryBtn}
           <button class="btn-danger btn-sm" onclick="cancelScheduledPost(${post.id})">Cancel</button>
         </div>
@@ -843,6 +864,19 @@ function renderUpcomingQueueTab() {
     const date = new Date(post.scheduled_at).toLocaleString();
     const isError = post.status === 'error';
 
+    // Resolve video details
+    const video = state.videos.find(v => v.id === post.video_id);
+    const filename = video ? video.original_filename : (post.video_filename || '');
+    
+    // Resolve thumbnail ID
+    const thumbnailId = post.thumbnail_id || (video ? video.thumbnail_id : null);
+    
+    // Resolve Premiere status
+    const isPremiere = post.is_premiere === 1;
+    const premiereBadge = isPremiere
+      ? `<span class="badge" style="background: rgba(168, 85, 247, 0.15); color: #c084fc; border: 1px solid rgba(168, 85, 247, 0.3); margin-left: 8px; font-size: 0.72rem; padding: 2px 6px; border-radius: 4px; font-weight: 600;">✨ Premiere</span>`
+      : '';
+
     let statusText = 'FAILED';
     if (isError && post.retry_count > 0 && post.retry_count < 3 && post.next_retry_at) {
       const nextTime = new Date(post.next_retry_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -861,15 +895,23 @@ function renderUpcomingQueueTab() {
 
     return `
       <div class="upcoming-item glass-light" style="${isError ? 'border-left: 3px solid #ef4444;' : ''}">
-        <div class="upcoming-details">
-          <div style="display: flex; align-items: center;">
-            <h4 style="margin: 0;">${escapeHTML(post.title)}</h4>
+        <div class="queue-thumb">
+          ${thumbnailId ? `<img src="/api/media/thumbnail-file/${thumbnailId}" alt="Thumbnail">` : '📹'}
+        </div>
+        <div class="upcoming-details" style="flex: 1; min-width: 0;">
+          <div style="display: flex; align-items: center; flex-wrap: wrap; gap: 4px;">
+            <h4 style="margin: 0; font-size: 0.95rem; font-weight: 600; color: var(--text-bright);">${escapeHTML(post.title)}</h4>
+            ${premiereBadge}
             ${statusBadge}
           </div>
-          <span class="meta">Channel: ${escapeHTML(post.channel_name)} | Scheduled: ${date}</span>
+          <span class="meta" style="margin: 4px 0 0 0; display: block; font-size: 0.78rem; color: var(--text-secondary);">
+            Channel: <span style="color: var(--text-bright); font-weight: 500;">${escapeHTML(post.channel_name)}</span> | 
+            Scheduled: <span style="color: var(--text-bright); font-weight: 500;">${date}</span>
+          </span>
+          ${filename ? `<p class="filename" style="margin: 2px 0 0 0; font-size: 0.72rem; color: var(--text-muted); font-family: monospace;">📁 File: ${escapeHTML(filename)}</p>` : ''}
           ${isError ? `<p style="font-size: 0.72rem; color: #f87171; margin: 2px 0 0 0; line-height: 1.2;">Error: ${escapeHTML(post.error_message || 'Unknown error')}</p>` : ''}
         </div>
-        <div style="display: flex; align-items: center;">
+        <div style="display: flex; align-items: center; gap: 8px; margin-left: auto;">
           ${retryBtn}
           <button class="btn-outline-danger btn-xs" onclick="cancelScheduledPost(${post.id})">Cancel</button>
         </div>

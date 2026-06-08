@@ -3838,9 +3838,7 @@ function closeModal(id) {
 }
 
 function handleOverlayClick(event, id) {
-  if (event.target.id === id) {
-    closeModal(id);
-  }
+  // Do nothing. Modal must only close when explicitly clicking X, Cancel, or Save.
 }
 
 function showToast(message, type = 'info') {

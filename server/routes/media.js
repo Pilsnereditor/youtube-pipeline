@@ -651,4 +651,27 @@ router.post('/videos/:id/thumbnail', uploadThumbnail.single('thumbnail'), (req, 
   }
 });
 
+/**
+ * PUT /api/media/videos/:id — Update video metadata (title, description, tags)
+ */
+router.put('/videos/:id', (req, res) => {
+  const { id } = req.params;
+  const { title, description, tags } = req.body;
+  const userId = req.session.userId || 1;
+
+  try {
+    run(
+      'UPDATE videos SET title = @title, description = @description, tags = @tags WHERE id = @id AND user_id = @userId',
+      { title: title || '', description: description || '', tags: tags || '', id: Number(id), userId }
+    );
+    
+    // Notify clients of media list update
+    broadcast({ type: 'media:updated', userId });
+    
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 export default router;

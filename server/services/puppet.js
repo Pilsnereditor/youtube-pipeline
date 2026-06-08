@@ -515,6 +515,26 @@ function formatPublishTime(dateIso) {
 }
 
 /**
+ * Safely clicks an element using page.evaluate to prevent "Node is either not clickable or not an Element" errors.
+ * Optionally scrolls the element into view and focuses it.
+ * @param {object} page Puppeteer Page object
+ * @param {object} elementHandle Puppeteer ElementHandle object
+ * @param {object} opts { scroll?: boolean, focus?: boolean }
+ */
+async function safeClick(page, elementHandle, opts = {}) {
+  if (!elementHandle) return;
+  await page.evaluate((el, options) => {
+    if (options.scroll) {
+      el.scrollIntoView({ block: 'center', inline: 'nearest' });
+    }
+    if (options.focus) {
+      el.focus();
+    }
+    el.click();
+  }, elementHandle, opts);
+}
+
+/**
  * Automate the video upload using Puppeteer
  * @param {number} channelId 
  * @param {object} opts { videoPath, title, description, tags, privacy, category, scheduledAt, thumbnailPath }
@@ -670,7 +690,7 @@ export async function uploadVideoBrowser(channelId, opts, logFn = console.log) {
     }
 
     logFn('[Puppet] Inputting title...');
-    await titleInput.click();
+    await safeClick(page, titleInput, { scroll: true, focus: true });
     await page.keyboard.down('Control');
     await page.keyboard.press('A');
     await page.keyboard.up('Control');
@@ -679,7 +699,7 @@ export async function uploadVideoBrowser(channelId, opts, logFn = console.log) {
 
     logFn('[Puppet] Inputting description...');
     const descInput = await page.waitForSelector('#description-textarea #textbox', { timeout: 5000 });
-    await descInput.click();
+    await safeClick(page, descInput, { scroll: true, focus: true });
     await page.keyboard.down('Control');
     await page.keyboard.press('A');
     await page.keyboard.up('Control');
@@ -727,7 +747,7 @@ export async function uploadVideoBrowser(channelId, opts, logFn = console.log) {
     if (!kidsClicked) {
       logFn('[Puppet] Warning: could not find "Not Made for Kids" radio button via evaluate, trying selector...');
       const kidsRadio = await page.waitForSelector('tp-yt-paper-radio-button[name="VIDEO_MADE_FOR_KIDS_NOT_FOR_KIDS"]', { timeout: 5000 });
-      await kidsRadio.click();
+      await safeClick(page, kidsRadio, { scroll: true });
     }
 
     // Set Custom Thumbnail if provided
@@ -745,19 +765,19 @@ export async function uploadVideoBrowser(channelId, opts, logFn = console.log) {
     // Step 1: Details -> Video Elements
     logFn('[Puppet] Transitioning from Details to Video Elements...');
     const nextBtn1 = await page.waitForSelector('#next-button', { timeout: 10000 });
-    await nextBtn1.click();
+    await safeClick(page, nextBtn1, { scroll: true });
     await new Promise(r => setTimeout(r, 1500));
 
     // Step 2: Video Elements -> Checks
     logFn('[Puppet] Transitioning from Video Elements to Checks...');
     const nextBtn2 = await page.waitForSelector('#next-button', { timeout: 10000 });
-    await nextBtn2.click();
+    await safeClick(page, nextBtn2, { scroll: true });
     await new Promise(r => setTimeout(r, 1500));
 
     // Step 3: Checks -> Visibility
     logFn('[Puppet] Transitioning from Checks to Visibility...');
     const nextBtn3 = await page.waitForSelector('#next-button', { timeout: 10000 });
-    await nextBtn3.click();
+    await safeClick(page, nextBtn3, { scroll: true });
     await new Promise(r => setTimeout(r, 1500));
 
     // Handle scheduling vs simple visibility setting
@@ -825,7 +845,7 @@ export async function uploadVideoBrowser(channelId, opts, logFn = console.log) {
       ).catch(() => null);
 
       if (dateTrigger) {
-        await dateTrigger.click();
+        await safeClick(page, dateTrigger, { scroll: true });
         await new Promise(r => setTimeout(r, 1000));
         // Type the date into the input that appears
         const calInput = await page.waitForSelector(
@@ -833,7 +853,7 @@ export async function uploadVideoBrowser(channelId, opts, logFn = console.log) {
           { timeout: 3000 }
         ).catch(() => null);
         if (calInput) {
-          await calInput.click();
+          await safeClick(page, calInput, { scroll: true, focus: true });
           await new Promise(r => setTimeout(r, 200));
           await page.keyboard.down('Control');
           await page.keyboard.press('A');
@@ -856,7 +876,7 @@ export async function uploadVideoBrowser(channelId, opts, logFn = console.log) {
           { timeout: 3000 }
         ).catch(() => null);
         if (directDateInput) {
-          await directDateInput.click();
+          await safeClick(page, directDateInput, { scroll: true, focus: true });
           await new Promise(r => setTimeout(r, 200));
           await page.keyboard.down('Control');
           await page.keyboard.press('A');
@@ -882,7 +902,7 @@ export async function uploadVideoBrowser(channelId, opts, logFn = console.log) {
         { timeout: 5000 }
       ).catch(() => null);
       if (timeInput) {
-        await timeInput.click();
+        await safeClick(page, timeInput, { scroll: true, focus: true });
         await new Promise(r => setTimeout(r, 200));
         await page.keyboard.down('Control');
         await page.keyboard.press('A');
@@ -974,7 +994,7 @@ export async function uploadVideoBrowser(channelId, opts, logFn = console.log) {
         else if (privacy === 'unlisted') privacySelector = '#unlisted-radio-button';
         
         const privacyRadio = await page.waitForSelector(privacySelector, { timeout: 5000 });
-        await privacyRadio.click();
+        await safeClick(page, privacyRadio, { scroll: true });
       }
       await new Promise(r => setTimeout(r, 500));
     }
@@ -985,7 +1005,7 @@ export async function uploadVideoBrowser(channelId, opts, logFn = console.log) {
       '#schedule-button, #done-button, #publish-button, #save-button, ytcp-button[id*="schedule"], ytcp-button[id*="done"], ytcp-button[id*="save"]',
       { timeout: 10000 }
     );
-    await doneBtn.click();
+    await safeClick(page, doneBtn, { scroll: true });
     await new Promise(r => setTimeout(r, 3000));
 
     // Wait for the video to complete uploading so we don't abort it
@@ -1141,7 +1161,7 @@ export async function rescheduleVideoBrowser(channelId, youtubeVideoId, schedule
     if (newTitle) {
       logFn(`[Puppet] Updating video title to: "${newTitle}"`);
       const titleInput = await page.waitForSelector('#title-textarea #textbox', { timeout: 15000 });
-      await titleInput.click();
+      await safeClick(page, titleInput, { scroll: true, focus: true });
       await page.keyboard.down('Control');
       await page.keyboard.press('A');
       await page.keyboard.up('Control');
@@ -1156,7 +1176,7 @@ export async function rescheduleVideoBrowser(channelId, youtubeVideoId, schedule
       logFn('[Puppet] Finding Visibility select dropdown...');
       // Click visibility settings trigger on the edit page
       const visTrigger = await page.waitForSelector('#visibility-select, ytcp-video-metadata-visibility, #visibility-display, [aria-label="Visibility"], [aria-label*="visibility" i]', { timeout: 30000 });
-      await visTrigger.click();
+      await safeClick(page, visTrigger, { scroll: true });
       await new Promise(r => setTimeout(r, 2000));
 
       // Now the visibility select dialog should be open.
@@ -1186,11 +1206,11 @@ export async function rescheduleVideoBrowser(channelId, youtubeVideoId, schedule
       logFn(`[Puppet] Entering scheduled date: ${dateStr}...`);
       const dateTrigger = await page.waitForSelector('#datepicker-trigger, ytcp-datetime-picker ytcp-dropdown-trigger, ytcp-date-picker, [id*="datepicker"] [role="button"]', { timeout: 5000 }).catch(() => null);
       if (dateTrigger) {
-        await dateTrigger.click();
+        await safeClick(page, dateTrigger, { scroll: true });
         await new Promise(r => setTimeout(r, 1000));
         const calInput = await page.waitForSelector('#datepicker-trigger input, ytcp-date-picker input, input[placeholder*="date" i], input[aria-label*="date" i]', { timeout: 3000 }).catch(() => null);
         if (calInput) {
-          await calInput.click();
+          await safeClick(page, calInput, { scroll: true, focus: true });
           await new Promise(r => setTimeout(r, 200));
           await page.keyboard.down('Control');
           await page.keyboard.press('A');
@@ -1226,7 +1246,7 @@ export async function rescheduleVideoBrowser(channelId, youtubeVideoId, schedule
       if (timeInputSelector) {
         const timeInput = await page.waitForSelector(timeInputSelector, { timeout: 5000 }).catch(() => null);
         if (timeInput) {
-          await timeInput.click();
+          await safeClick(page, timeInput, { scroll: true, focus: true });
           await new Promise(r => setTimeout(r, 200));
           await page.keyboard.down('Control');
           await page.keyboard.press('A');
@@ -1271,14 +1291,14 @@ export async function rescheduleVideoBrowser(channelId, youtubeVideoId, schedule
 
       logFn('[Puppet] Clicking Done in Visibility dialog...');
       const doneBtn = await page.waitForSelector('ytcp-video-visibility-edit-popup #save-button, ytcp-video-visibility-edit-popup ytcp-button[id="save-button"], #done-button, ytcp-button[id*="done"]', { timeout: 10000 });
-      await doneBtn.click();
+      await safeClick(page, doneBtn, { scroll: true });
       await new Promise(r => setTimeout(r, 2000));
     }
 
     logFn('[Puppet] Saving video changes...');
     const saveBtn = await page.waitForSelector('ytcp-button#save:not([disabled]):not([aria-disabled="true"]), ytcp-button[id="save"]', { timeout: 15000 }).catch(() => null);
     if (saveBtn) {
-      await saveBtn.click();
+      await safeClick(page, saveBtn, { scroll: true });
       logFn('[Puppet] Clicked main save button, waiting for save to complete...');
       await page.waitForSelector('ytcp-button#save[disabled], ytcp-button#save[aria-disabled="true"]', { timeout: 20000 }).catch(() => null);
     } else {
@@ -1383,7 +1403,7 @@ export async function updateThumbnailBrowser(channelId, youtubeVideoId, thumbnai
 
     logFn('[Puppet] Saving video changes...');
     const saveBtn = await page.waitForSelector('#save-button, ytcp-button[id="save"]', { timeout: 10000 });
-    await saveBtn.click();
+    await safeClick(page, saveBtn, { scroll: true });
     await new Promise(r => setTimeout(r, 5000));
 
     logFn('[Puppet] Thumbnail update complete.');
@@ -1517,7 +1537,7 @@ export async function postCommentBrowser(channelId, videoId, text) {
         });
 
         if (menuBtn && menuBtn.asElement()) {
-          await menuBtn.asElement().click();
+          await safeClick(page, menuBtn.asElement(), { scroll: true });
           await new Promise(r => setTimeout(r, 1000));
 
           const deleted = await page.evaluate(() => {
@@ -1602,7 +1622,7 @@ export async function postCommentBrowser(channelId, videoId, text) {
 
       if (!clickedSubmit) {
         const submitBtn = await page.waitForSelector('#submit-button', { timeout: 5000 });
-        await submitBtn.click();
+        await safeClick(page, submitBtn, { scroll: true });
       }
 
       console.log('[Puppet Comment] Comment submitted.');
@@ -1619,7 +1639,7 @@ export async function postCommentBrowser(channelId, videoId, text) {
         });
 
         if (menuBtn && menuBtn.asElement()) {
-          await menuBtn.asElement().click();
+          await safeClick(page, menuBtn.asElement(), { scroll: true });
           await new Promise(r => setTimeout(r, 1000));
 
           const pinClicked = await page.evaluate(() => {

@@ -1079,7 +1079,7 @@ export async function uploadVideoBrowser(channelId, opts, logFn = console.log) {
     logFn(`[Puppet] Error during automated upload: ${err.message}`);
     try {
       logFn(`[Puppet] Current page URL at failure: ${page.url()}`);
-      const screenshotPath = 'C:\\Users\\gemini\\antigravity\\brain\\a54f9989-2478-4345-8cac-eb3e1c28d308\\puppet_error.png';
+      const screenshotPath = path.join(profilePath, 'puppet_upload_error.png');
       await page.screenshot({ path: screenshotPath });
       logFn(`[Puppet] Saved error screenshot to: ${screenshotPath}`);
     } catch (e) {
@@ -1177,66 +1177,117 @@ export async function rescheduleVideoBrowser(channelId, youtubeVideoId, schedule
       // Click visibility settings trigger on the edit page
       const visTrigger = await page.waitForSelector('#visibility-select, ytcp-video-metadata-visibility, #visibility-display, [aria-label="Visibility"], [aria-label*="visibility" i]', { timeout: 30000 });
       await safeClick(page, visTrigger, { scroll: true });
-      await new Promise(r => setTimeout(r, 2000));
+      logFn('[Puppet] Waiting for visibility popup to render...');
+      await page.waitForSelector('ytcp-video-visibility-edit-popup', { timeout: 10000 });
+      await new Promise(r => setTimeout(r, 1000));
 
-      // Now the visibility select dialog should be open.
-      // Select the Schedule option (handles radio buttons for published videos, and accordions for scheduled ones).
+      // Now the visibility select dialog is open.
+      // We will select the Schedule option.
       logFn('[Puppet] Selecting Schedule option...');
-      let scheduleClicked = await page.evaluate(() => {
-        const popup = document.querySelector('ytcp-video-visibility-edit-popup, ytcp-video-visibility-select, #visibility-select-menu');
-        if (!popup) return 'no-popup-found';
-
-        // 1. Look for paper-radio-button or radio button with schedule text/name
-        const radios = Array.from(popup.querySelectorAll('tp-yt-paper-radio-button, paper-radio-button, ytcp-radio-button'));
-        const scheduleRadio = radios.find(r => {
-          const t = (r.textContent || '').trim().toLowerCase();
-          return t.includes('schedule') || t.includes('planla') || (r.getAttribute('name') || '').toLowerCase().includes('schedule');
-        });
-        if (scheduleRadio && scheduleRadio.offsetParent !== null) {
-          scheduleRadio.click();
-          return 'clicked-radio';
+      let selectScheduleResult = await page.evaluate(() => {
+        function queryAllShadow(selector, root = document) {
+          const elements = Array.from(root.querySelectorAll(selector));
+          const children = Array.from(root.querySelectorAll('*'));
+          for (const child of children) {
+            if (child.shadowRoot) {
+              elements.push(...queryAllShadow(selector, child.shadowRoot));
+            }
+          }
+          return elements;
         }
 
-        // 2. Fallback: Look for any div/element containing "Schedule" and click it
-        const allElements = Array.from(popup.querySelectorAll('div, ytcp-paper-expandable-section, tp-yt-paper-item, paper-item, .row, .header'));
-        const scheduleRow = allElements.find(el => {
-          const t = (el.textContent || '').trim();
-          return (t.startsWith('Schedule') || t.startsWith('Planla')) && el.children.length <= 4;
-        });
-        if (scheduleRow && scheduleRow.offsetParent !== null) {
-          scheduleRow.click();
-          return 'clicked-row';
+        const popup = queryAllShadow('ytcp-video-visibility-edit-popup')[0];
+        if (!popup) {
+          return { status: 'error', reason: 'no-popup-found' };
         }
 
-        return 'not-found';
+        const sections = queryAllShadow('ytcp-paper-expandable-section', popup);
+        if (sections.length < 2) {
+          return { status: 'error', reason: 'insufficient-sections' };
+        }
+
+        // Section 0 is "Save or publish", Section 1 is "Schedule"
+        const savePublishSection = sections.find(sec => {
+          const text = (sec.textContent || '').trim().toLowerCase();
+          return text.includes('save or publish') || text.includes('kaydet veya') || text.includes('yayınla') || text.includes('yayinla');
+        }) || sections[0];
+
+        const scheduleSection = sections.find(sec => {
+          const text = (sec.textContent || '').trim().toLowerCase();
+          return text.includes('schedule') || text.includes('planla');
+        }) || sections[1];
+
+        // Check if Schedule is visible and enabled
+        const isScheduleAvailable = scheduleSection && scheduleSection.offsetParent !== null;
+
+        if (isScheduleAvailable) {
+          const isOpened = scheduleSection.opened || scheduleSection.hasAttribute('opened') || scheduleSection.getAttribute('aria-expanded') === 'true';
+          if (!isOpened) {
+            const header = scheduleSection.querySelector('#header') || scheduleSection.querySelector('.header') || scheduleSection.querySelector('[role="button"]') || scheduleSection;
+            header.click();
+            return { status: 'success', action: 'expanded-schedule' };
+          }
+          return { status: 'success', action: 'schedule-already-expanded' };
+        } else {
+          return { status: 'needs-private' };
+        }
       });
-      logFn(`[Puppet] Schedule selection result: ${scheduleClicked}`);
+
+      logFn(`[Puppet] Schedule selection status: ${selectScheduleResult.status} (${selectScheduleResult.action || selectScheduleResult.reason || ''})`);
       await new Promise(r => setTimeout(r, 2000));
 
-      // 2-Step Visibility Toggle: If video is currently Public, the "Schedule" option is hidden.
-      // We must change the visibility to Private first, save, and then reopen the visibility dropdown.
-      if (scheduleClicked === 'not-found' || scheduleClicked === 'no-popup-found') {
-        logFn('[Puppet] Schedule option not found or not visible. Video might be Public. Changing visibility to Private first...');
+      if (selectScheduleResult.status === 'needs-private' || selectScheduleResult.status === 'error') {
+        logFn('[Puppet] Schedule option not available. Video might be Public. Changing visibility to Private first...');
         
-        const privateSelected = await page.evaluate(() => {
-          const popup = document.querySelector('ytcp-video-visibility-edit-popup, ytcp-video-visibility-select, #visibility-select-menu');
-          if (!popup) return false;
-          
-          const radios = Array.from(popup.querySelectorAll('tp-yt-paper-radio-button, paper-radio-button, ytcp-radio-button'));
+        const setPrivateResult = await page.evaluate(() => {
+          function queryAllShadow(selector, root = document) {
+            const elements = Array.from(root.querySelectorAll(selector));
+            const children = Array.from(root.querySelectorAll('*'));
+            for (const child of children) {
+              if (child.shadowRoot) {
+                elements.push(...queryAllShadow(selector, child.shadowRoot));
+              }
+            }
+            return elements;
+          }
+
+          const popup = queryAllShadow('ytcp-video-visibility-edit-popup')[0];
+          if (!popup) return { status: 'error', reason: 'no-popup-found' };
+
+          const sections = queryAllShadow('ytcp-paper-expandable-section', popup);
+          const savePublishSection = sections.find(sec => {
+            const text = (sec.textContent || '').trim().toLowerCase();
+            return text.includes('save or publish') || text.includes('kaydet veya') || text.includes('yayınla') || text.includes('yayinla');
+          }) || sections[0];
+
+          if (!savePublishSection) return { status: 'error', reason: 'save-publish-section-not-found' };
+
+          // Expand Save or publish if collapsed
+          const isSavePublishOpened = savePublishSection.opened || savePublishSection.hasAttribute('opened') || savePublishSection.getAttribute('aria-expanded') === 'true';
+          if (!isSavePublishOpened) {
+            const header = savePublishSection.querySelector('#header') || savePublishSection.querySelector('.header') || savePublishSection.querySelector('[role="button"]') || savePublishSection;
+            header.click();
+          }
+
+          // Find Private radio button
+          const radios = queryAllShadow('tp-yt-paper-radio-button, paper-radio-button, ytcp-radio-button, [role="radio"]', savePublishSection);
+          if (radios.length === 0) return { status: 'error', reason: 'no-radios-found-in-save-publish' };
+
           const privateRadio = radios.find(r => {
             const t = (r.textContent || '').trim().toLowerCase();
             const name = (r.getAttribute('name') || '').toLowerCase();
-            return t.includes('private') || name.includes('private') || t.includes('özel') || t.includes('ozel');
-          });
+            return t.includes('private') || name.includes('private') || t.includes('özel') || t.includes('ozel') || name.includes('private');
+          }) || radios[0]; // fallback to first option (Private)
+
           if (privateRadio) {
             privateRadio.click();
-            return true;
+            return { status: 'success' };
           }
-          return false;
+          return { status: 'error', reason: 'private-radio-not-found' };
         });
 
-        if (!privateSelected) {
-          throw new Error('Failed to find or select "Private" option in visibility dialog.');
+        if (setPrivateResult.status !== 'success') {
+          throw new Error(`Failed to find or select "Private" option in visibility dialog: ${setPrivateResult.reason || 'unknown reason'}`);
         }
         logFn('[Puppet] Selected Private. Clicking Done...');
 
@@ -1269,43 +1320,53 @@ export async function rescheduleVideoBrowser(channelId, youtubeVideoId, schedule
         logFn('[Puppet] Re-opening Visibility select dropdown after saving Private change...');
         const visTriggerReopened = await page.waitForSelector('#visibility-select, ytcp-video-metadata-visibility, #visibility-display, [aria-label="Visibility"], [aria-label*="visibility" i]', { timeout: 30000 });
         await safeClick(page, visTriggerReopened, { scroll: true });
-        await new Promise(r => setTimeout(r, 2500));
+        
+        logFn('[Puppet] Waiting for visibility popup to render again...');
+        await page.waitForSelector('ytcp-video-visibility-edit-popup', { timeout: 10000 });
+        await new Promise(r => setTimeout(r, 1500));
 
         // Retry selecting Schedule
         logFn('[Puppet] Selecting Schedule option again...');
-        scheduleClicked = await page.evaluate(() => {
-          const popup = document.querySelector('ytcp-video-visibility-edit-popup, ytcp-video-visibility-select, #visibility-select-menu');
-          if (!popup) return 'no-popup-found';
-
-          // 1. Look for paper-radio-button or radio button with schedule text/name
-          const radios = Array.from(popup.querySelectorAll('tp-yt-paper-radio-button, paper-radio-button, ytcp-radio-button'));
-          const scheduleRadio = radios.find(r => {
-            const t = (r.textContent || '').trim().toLowerCase();
-            return t.includes('schedule') || t.includes('planla') || (r.getAttribute('name') || '').toLowerCase().includes('schedule');
-          });
-          if (scheduleRadio && scheduleRadio.offsetParent !== null) {
-            scheduleRadio.click();
-            return 'clicked-radio';
+        selectScheduleResult = await page.evaluate(() => {
+          function queryAllShadow(selector, root = document) {
+            const elements = Array.from(root.querySelectorAll(selector));
+            const children = Array.from(root.querySelectorAll('*'));
+            for (const child of children) {
+              if (child.shadowRoot) {
+                elements.push(...queryAllShadow(selector, child.shadowRoot));
+              }
+            }
+            return elements;
           }
 
-          // 2. Fallback: Look for any div/element containing "Schedule" and click it
-          const allElements = Array.from(popup.querySelectorAll('div, ytcp-paper-expandable-section, tp-yt-paper-item, paper-item, .row, .header'));
-          const scheduleRow = allElements.find(el => {
-            const t = (el.textContent || '').trim();
-            return (t.startsWith('Schedule') || t.startsWith('Planla')) && el.children.length <= 4;
-          });
-          if (scheduleRow && scheduleRow.offsetParent !== null) {
-            scheduleRow.click();
-            return 'clicked-row';
-          }
+          const popup = queryAllShadow('ytcp-video-visibility-edit-popup')[0];
+          if (!popup) return { status: 'error', reason: 'no-popup-found' };
 
-          return 'not-found';
+          const sections = queryAllShadow('ytcp-paper-expandable-section', popup);
+          if (sections.length < 2) return { status: 'error', reason: 'insufficient-sections' };
+
+          const scheduleSection = sections.find(sec => {
+            const text = (sec.textContent || '').trim().toLowerCase();
+            return text.includes('schedule') || text.includes('planla');
+          }) || sections[1];
+
+          if (scheduleSection && scheduleSection.offsetParent !== null) {
+            const isOpened = scheduleSection.opened || scheduleSection.hasAttribute('opened') || scheduleSection.getAttribute('aria-expanded') === 'true';
+            if (!isOpened) {
+              const header = scheduleSection.querySelector('#header') || scheduleSection.querySelector('.header') || scheduleSection.querySelector('[role="button"]') || scheduleSection;
+              header.click();
+              return { status: 'success', action: 'expanded-schedule' };
+            }
+            return { status: 'success', action: 'schedule-already-expanded' };
+          }
+          return { status: 'error', reason: 'schedule-not-available' };
         });
-        logFn(`[Puppet] Schedule selection result on retry: ${scheduleClicked}`);
+
+        logFn(`[Puppet] Schedule selection status on retry: ${selectScheduleResult.status} (${selectScheduleResult.action || selectScheduleResult.reason || ''})`);
         await new Promise(r => setTimeout(r, 2000));
 
-        if (scheduleClicked === 'not-found' || scheduleClicked === 'no-popup-found') {
-          throw new Error('Failed to locate "Schedule" option even after setting video to Private.');
+        if (selectScheduleResult.status !== 'success') {
+          throw new Error(`Failed to locate "Schedule" option even after setting video to Private: ${selectScheduleResult.reason || 'unknown reason'}`);
         }
       }
 

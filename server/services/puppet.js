@@ -1222,41 +1222,43 @@ export async function rescheduleVideoBrowser(channelId, youtubeVideoId, schedule
           return elements;
         }
 
+        function findHeaderByText(textList, root) {
+          const allElements = queryAllShadow('*', root);
+          let found = allElements.find(el => {
+            const t = (el.textContent || '').trim().toLowerCase();
+            return textList.includes(t) && el.children.length <= 2;
+          });
+          if (!found) {
+            found = allElements.find(el => {
+              const t = (el.textContent || '').trim().toLowerCase();
+              return textList.some(txt => t.includes(txt)) && el.children.length <= 3;
+            });
+          }
+          return found;
+        }
+
         const popup = queryAllShadow('ytcp-video-visibility-edit-popup')[0];
         if (!popup) {
           return { status: 'error', reason: 'no-popup-found' };
         }
 
-        const sections = queryAllShadow('ytcp-paper-expandable-section', popup);
-        if (sections.length < 2) {
-          return { status: 'error', reason: 'insufficient-sections' };
-        }
+        // Check if datepicker/date trigger is visible (indicates Schedule section is already expanded)
+        const dateTrigger = queryAllShadow('#datepicker-trigger, ytcp-datetime-picker ytcp-dropdown-trigger, ytcp-date-picker', popup)[0];
+        const isScheduleExpanded = dateTrigger && dateTrigger.offsetParent !== null;
 
-        // Section 0 is "Save or publish", Section 1 is "Schedule"
-        const savePublishSection = sections.find(sec => {
-          const text = (sec.textContent || '').trim().toLowerCase();
-          return text.includes('save or publish') || text.includes('kaydet veya') || text.includes('yayınla') || text.includes('yayinla');
-        }) || sections[0];
-
-        const scheduleSection = sections.find(sec => {
-          const text = (sec.textContent || '').trim().toLowerCase();
-          return text.includes('schedule') || text.includes('planla');
-        }) || sections[1];
-
-        // Check if Schedule is visible and enabled
-        const isScheduleAvailable = scheduleSection && scheduleSection.offsetParent !== null;
-
-        if (isScheduleAvailable) {
-          const isOpened = scheduleSection.opened || scheduleSection.hasAttribute('opened') || scheduleSection.getAttribute('aria-expanded') === 'true';
-          if (!isOpened) {
-            const header = scheduleSection.querySelector('#header') || scheduleSection.querySelector('.header') || scheduleSection.querySelector('[role="button"]') || scheduleSection;
-            header.click();
-            return { status: 'success', action: 'expanded-schedule' };
-          }
+        if (isScheduleExpanded) {
           return { status: 'success', action: 'schedule-already-expanded' };
-        } else {
-          return { status: 'needs-private' };
         }
+
+        // It is not expanded. Let's look for the Schedule header to click and expand it.
+        const scheduleHeader = findHeaderByText(['schedule', 'planlayın', 'planla'], popup);
+        if (scheduleHeader && scheduleHeader.offsetParent !== null) {
+          scheduleHeader.click();
+          return { status: 'success', action: 'clicked-schedule-header' };
+        }
+
+        // If Schedule header is not found or hidden, we might need to set to Private first
+        return { status: 'needs-private' };
       });
 
       logFn(`[Puppet] Schedule selection status: ${selectScheduleResult.status} (${selectScheduleResult.action || selectScheduleResult.reason || ''})`);
@@ -1277,36 +1279,52 @@ export async function rescheduleVideoBrowser(channelId, youtubeVideoId, schedule
             return elements;
           }
 
+          function findHeaderByText(textList, root) {
+            const allElements = queryAllShadow('*', root);
+            let found = allElements.find(el => {
+              const t = (el.textContent || '').trim().toLowerCase();
+              return textList.includes(t) && el.children.length <= 2;
+            });
+            if (!found) {
+              found = allElements.find(el => {
+                const t = (el.textContent || '').trim().toLowerCase();
+                return textList.some(txt => t.includes(txt)) && el.children.length <= 3;
+              });
+            }
+            return found;
+          }
+
           const popup = queryAllShadow('ytcp-video-visibility-edit-popup')[0];
           if (!popup) return { status: 'error', reason: 'no-popup-found' };
 
-          const sections = queryAllShadow('ytcp-paper-expandable-section', popup);
-          const savePublishSection = sections.find(sec => {
-            const text = (sec.textContent || '').trim().toLowerCase();
-            return text.includes('save or publish') || text.includes('kaydet veya') || text.includes('yayınla') || text.includes('yayinla');
-          }) || sections[0];
-
-          if (!savePublishSection) return { status: 'error', reason: 'save-publish-section-not-found' };
-
-          // Expand Save or publish if collapsed
-          const isSavePublishOpened = savePublishSection.opened || savePublishSection.hasAttribute('opened') || savePublishSection.getAttribute('aria-expanded') === 'true';
-          if (!isSavePublishOpened) {
-            const header = savePublishSection.querySelector('#header') || savePublishSection.querySelector('.header') || savePublishSection.querySelector('[role="button"]') || savePublishSection;
-            header.click();
-          }
-
           // Find Private radio button
-          const radios = queryAllShadow('tp-yt-paper-radio-button, paper-radio-button, ytcp-radio-button, [role="radio"]', savePublishSection);
-          if (radios.length === 0) return { status: 'error', reason: 'no-radios-found-in-save-publish' };
-
+          const radios = queryAllShadow('tp-yt-paper-radio-button, paper-radio-button, ytcp-radio-button, [role="radio"]', popup);
           const privateRadio = radios.find(r => {
             const t = (r.textContent || '').trim().toLowerCase();
             const name = (r.getAttribute('name') || '').toLowerCase();
-            return t.includes('private') || name.includes('private') || t.includes('özel') || t.includes('ozel') || name.includes('private');
-          }) || radios[0]; // fallback to first option (Private)
+            return t.includes('private') || name.includes('private') || t.includes('özel') || t.includes('ozel');
+          }) || radios[0];
 
-          if (privateRadio) {
-            privateRadio.click();
+          const isPrivateVisible = privateRadio && privateRadio.offsetParent !== null;
+
+          if (!isPrivateVisible) {
+            // Expand "Save or publish" section
+            const savePublishHeader = findHeaderByText(['save or publish', 'kaydet veya yayınlayın', 'kaydet veya yayına al', 'save & publish'], popup);
+            if (savePublishHeader) {
+              savePublishHeader.click();
+            }
+          }
+
+          // Re-query radio buttons to get current visibility state
+          const updatedRadios = queryAllShadow('tp-yt-paper-radio-button, paper-radio-button, ytcp-radio-button, [role="radio"]', popup);
+          const updatedPrivateRadio = updatedRadios.find(r => {
+            const t = (r.textContent || '').trim().toLowerCase();
+            const name = (r.getAttribute('name') || '').toLowerCase();
+            return t.includes('private') || name.includes('private') || t.includes('özel') || t.includes('ozel');
+          }) || updatedRadios[0];
+
+          if (updatedPrivateRadio) {
+            updatedPrivateRadio.click();
             return { status: 'success' };
           }
           return { status: 'error', reason: 'private-radio-not-found' };
@@ -1391,25 +1409,36 @@ export async function rescheduleVideoBrowser(channelId, youtubeVideoId, schedule
             return elements;
           }
 
+          function findHeaderByText(textList, root) {
+            const allElements = queryAllShadow('*', root);
+            let found = allElements.find(el => {
+              const t = (el.textContent || '').trim().toLowerCase();
+              return textList.includes(t) && el.children.length <= 2;
+            });
+            if (!found) {
+              found = allElements.find(el => {
+                const t = (el.textContent || '').trim().toLowerCase();
+                return textList.some(txt => t.includes(txt)) && el.children.length <= 3;
+              });
+            }
+            return found;
+          }
+
           const popup = queryAllShadow('ytcp-video-visibility-edit-popup')[0];
           if (!popup) return { status: 'error', reason: 'no-popup-found' };
 
-          const sections = queryAllShadow('ytcp-paper-expandable-section', popup);
-          if (sections.length < 2) return { status: 'error', reason: 'insufficient-sections' };
+          // Check if datepicker is visible now
+          const dateTrigger = queryAllShadow('#datepicker-trigger, ytcp-datetime-picker ytcp-dropdown-trigger, ytcp-date-picker', popup)[0];
+          const isScheduleExpanded = dateTrigger && dateTrigger.offsetParent !== null;
 
-          const scheduleSection = sections.find(sec => {
-            const text = (sec.textContent || '').trim().toLowerCase();
-            return text.includes('schedule') || text.includes('planla');
-          }) || sections[1];
-
-          if (scheduleSection && scheduleSection.offsetParent !== null) {
-            const isOpened = scheduleSection.opened || scheduleSection.hasAttribute('opened') || scheduleSection.getAttribute('aria-expanded') === 'true';
-            if (!isOpened) {
-              const header = scheduleSection.querySelector('#header') || scheduleSection.querySelector('.header') || scheduleSection.querySelector('[role="button"]') || scheduleSection;
-              header.click();
-              return { status: 'success', action: 'expanded-schedule' };
-            }
+          if (isScheduleExpanded) {
             return { status: 'success', action: 'schedule-already-expanded' };
+          }
+
+          const scheduleHeader = findHeaderByText(['schedule', 'planlayın', 'planla'], popup);
+          if (scheduleHeader && scheduleHeader.offsetParent !== null) {
+            scheduleHeader.click();
+            return { status: 'success', action: 'clicked-schedule-header' };
           }
           return { status: 'error', reason: 'schedule-not-available' };
         });

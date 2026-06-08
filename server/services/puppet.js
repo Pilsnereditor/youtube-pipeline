@@ -1360,6 +1360,11 @@ export async function rescheduleVideoBrowser(channelId, youtubeVideoId, schedule
           await new Promise(r => setTimeout(r, 5000));
         }
 
+        // Clean re-navigation to the edit page to avoid page reload/navigation frame detached errors
+        logFn('[Puppet] Re-navigating to clean edit page after intermediate Private save...');
+        await page.goto(`https://studio.youtube.com/video/${youtubeVideoId}/edit?hl=en&persist_hl=1`, { waitUntil: 'networkidle2', timeout: 60000 });
+        await new Promise(r => setTimeout(r, 3000));
+
         // Re-open visibility dropdown
         logFn('[Puppet] Re-opening Visibility select dropdown after saving Private change...');
         await page.waitForSelector('ytcp-video-metadata-visibility', { timeout: 30000 });

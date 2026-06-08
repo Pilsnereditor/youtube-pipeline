@@ -1180,21 +1180,37 @@ export async function rescheduleVideoBrowser(channelId, youtubeVideoId, schedule
       await new Promise(r => setTimeout(r, 2000));
 
       // Now the visibility select dialog should be open.
-      // Expand the schedule accordion if not already expanded.
-      logFn('[Puppet] Expanding Schedule accordion...');
-      await page.evaluate(() => {
-        const container = document.querySelector('ytcp-video-visibility-select');
-        if (container) {
-          const allDivs = Array.from(container.querySelectorAll('div, ytcp-paper-expandable-section, ytcp-checkbox, .header'));
-          const scheduleRow = allDivs.find(el => {
-            const t = (el.textContent || '').trim();
-            return t.startsWith('Schedule') && el.children.length <= 3;
-          });
-          if (scheduleRow) {
-            scheduleRow.click();
-          }
+      // Select the Schedule option (handles radio buttons for published videos, and accordions for scheduled ones).
+      logFn('[Puppet] Selecting Schedule option...');
+      const scheduleClicked = await page.evaluate(() => {
+        const popup = document.querySelector('ytcp-video-visibility-edit-popup, ytcp-video-visibility-select, #visibility-select-menu');
+        if (!popup) return 'no-popup-found';
+
+        // 1. Look for paper-radio-button or radio button with schedule text/name
+        const radios = Array.from(popup.querySelectorAll('tp-yt-paper-radio-button, paper-radio-button, ytcp-radio-button'));
+        const scheduleRadio = radios.find(r => {
+          const t = (r.textContent || '').trim().toLowerCase();
+          return t.includes('schedule') || t.includes('planla') || (r.getAttribute('name') || '').toLowerCase().includes('schedule');
+        });
+        if (scheduleRadio) {
+          scheduleRadio.click();
+          return 'clicked-radio';
         }
+
+        // 2. Fallback: Look for any div/element containing "Schedule" and click it
+        const allElements = Array.from(popup.querySelectorAll('div, ytcp-paper-expandable-section, tp-yt-paper-item, paper-item, .row, .header'));
+        const scheduleRow = allElements.find(el => {
+          const t = (el.textContent || '').trim();
+          return (t.startsWith('Schedule') || t.startsWith('Planla')) && el.children.length <= 4;
+        });
+        if (scheduleRow) {
+          scheduleRow.click();
+          return 'clicked-row';
+        }
+
+        return 'not-found';
       });
+      logFn(`[Puppet] Schedule selection result: ${scheduleClicked}`);
       await new Promise(r => setTimeout(r, 2000));
 
       // Wait for the datetime picker

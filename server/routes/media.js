@@ -198,10 +198,11 @@ async function generateMetadataForVideoAsync(videoId, channelId, userId, videoFi
     const filenameTitle = video.original_filename.replace(/\.[^/.]+$/, '').slice(0, 99);
     
     // Still generate description and tags via AI
+    let metadata = null;
     let description = '';
     let tags = '';
     try {
-      const metadata = await generateVideoMetadata(video.original_filename, niche, userId, videoFilePath || video.filepath);
+      metadata = await generateVideoMetadata(video.original_filename, niche, userId, videoFilePath || video.filepath);
       description = metadata.description || '';
       tags = metadata.tags || '';
     } catch (metaErr) {
@@ -223,7 +224,7 @@ async function generateMetadataForVideoAsync(videoId, channelId, userId, videoFi
       const filename = `ai_thumb_${videoId}_${Date.now()}.png`;
       const outputPath = path.join(THUMB_DIR, filename);
 
-      await generateAIThumbnail(outputPath, metadata.title, niche, gameName);
+      await generateAIThumbnail(outputPath, (metadata && metadata.title) || filenameTitle, niche, gameName);
 
       // Register the generated thumbnail in the database
       const thumbnailId = Number(

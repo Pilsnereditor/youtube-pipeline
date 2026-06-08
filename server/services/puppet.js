@@ -2,8 +2,44 @@ import puppeteer from 'puppeteer-core';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
+import { exec } from 'child_process';
+import { promisify } from 'util';
 import { queryOne } from '../db/database.js';
 import { stopVncSession } from './vnc.js';
+
+const execAsync = promisify(exec);
+
+/**
+ * Force kill any running Chrome process using the specific profile path
+ */
+async function killOrphanedChrome(profilePath) {
+  if (!profilePath) return;
+  const normalizedPath = path.resolve(profilePath).replace(/\\/g, '/');
+  
+  if (process.platform === 'win32') {
+    try {
+      // Find and kill Chrome processes on Windows containing the user-data-dir in command line
+      const wmicCmd = `wmic process where "name='chrome.exe' and CommandLine like '%${normalizedPath.replace(/\//g, '\\\\')}%'" call terminate`;
+      await execAsync(wmicCmd);
+      console.log(`[Puppet] Terminated Windows Chrome processes using profile: ${profilePath}`);
+    } catch (e) {
+      // Ignore if no processes found
+    }
+  } else {
+    try {
+      // Find Chrome processes on Linux/macOS containing the profile path in command line
+      const { stdout } = await execAsync(`pgrep -f "${normalizedPath}"`);
+      const pids = stdout.trim().split(/\s+/).filter(Boolean);
+      if (pids.length > 0) {
+        console.log(`[Puppet] Found running Chrome processes using profile ${profilePath}: ${pids.join(', ')}. Killing them...`);
+        await execAsync(`kill -9 ${pids.join(' ')}`);
+      }
+    } catch (e) {
+      // Ignore if no processes found
+    }
+  }
+}
+
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -350,9 +386,22 @@ export async function closeBrowserSession(channelId) {
     activeSetupSessions.delete(channelId);
   }
 
+  // Also stop any VNC sessions running Chrome
+  try {
+    await stopVncSession();
+  } catch (e) {}
+
+  const profilePath = getProfilePath(channelId);
+
+  // Force termination of any orphaned Chrome processes using this profile
+  try {
+    await killOrphanedChrome(profilePath);
+  } catch (e) {
+    console.warn(`[Puppet] Failed to kill orphaned Chrome processes: ${e.message}`);
+  }
+
   // Also clean up lock files regardless of whether we had a tracked session
   // This handles cases where the server crashed and left Chrome running
-  const profilePath = getProfilePath(channelId);
   try {
     const lockFiles = ['SingletonLock', 'SingletonSocket', 'SingletonCookie'];
     for (const f of lockFiles) {
@@ -1030,7 +1079,7 @@ export async function uploadVideoBrowser(channelId, opts, logFn = console.log) {
  * @param {string} scheduledAt
  * @param {function} logFn
  */
-export async function rescheduleVideoBrowser(channelId, youtubeVideoId, scheduledAt, isPremiere = false, logFn = console.log) {
+export async function rescheduleVideoBrowser(channelId, youtubeVideoId, scheduledAt, isPremiere = false, newTitle = null, logFn = console.log) {
   await closeBrowserSession(channelId);
 
   const profilePath = getProfilePath(channelId);
@@ -1042,11 +1091,11 @@ export async function rescheduleVideoBrowser(channelId, youtubeVideoId, schedule
   const proxyUrl = proxyConfig ? proxyConfig.proxyUrl : null;
   
   if (proxyUrl) {
-    logFn(`[Puppet] Routing reschedule session for channel ${channelId} via proxy: ${proxyUrl}`);
+    logFn(`[Puppet] Routing reschedule/update session for channel ${channelId} via proxy: ${proxyUrl}`);
   }
 
   const runHeadless = process.env.PUPPET_HEADLESS !== 'false';
-  logFn(`[Puppet] Starting browser reschedule for video ${youtubeVideoId} to ${scheduledAt} (headless: ${runHeadless})`);
+  logFn(`[Puppet] Starting browser update for video ${youtubeVideoId} (headless: ${runHeadless})`);
   const browser = await launchBrowserWithRetry(chromePath, profilePath, runHeadless, 3, 3000, proxyUrl);
 
   let page;
@@ -1088,120 +1137,137 @@ export async function rescheduleVideoBrowser(channelId, youtubeVideoId, schedule
       throw new Error('Not logged in. Please set up your browser session in the channel settings first.');
     }
 
-    logFn('[Puppet] Finding Visibility select dropdown...');
-    // Click visibility settings trigger on the edit page
-    const visTrigger = await page.waitForSelector('#visibility-select, ytcp-video-metadata-visibility-select, [aria-label="Visibility"]', { timeout: 30000 });
-    await visTrigger.click();
-    await new Promise(r => setTimeout(r, 2000));
+    // 1. Update Video Title if provided
+    if (newTitle) {
+      logFn(`[Puppet] Updating video title to: "${newTitle}"`);
+      const titleInput = await page.waitForSelector('#title-textarea #textbox', { timeout: 15000 });
+      await titleInput.click();
+      await page.keyboard.down('Control');
+      await page.keyboard.press('A');
+      await page.keyboard.up('Control');
+      await page.keyboard.press('Backspace');
+      await new Promise(r => setTimeout(r, 200));
+      await titleInput.type(newTitle);
+      await new Promise(r => setTimeout(r, 500));
+    }
 
-    // Now the visibility select dialog should be open.
-    // Expand the schedule accordion if not already expanded.
-    logFn('[Puppet] Expanding Schedule accordion...');
-    await page.evaluate(() => {
-      const container = document.querySelector('ytcp-video-visibility-select');
-      if (container) {
-        const allDivs = Array.from(container.querySelectorAll('div, ytcp-paper-expandable-section, ytcp-checkbox, .header'));
-        const scheduleRow = allDivs.find(el => {
-          const t = (el.textContent || '').trim();
-          return t.startsWith('Schedule') && el.children.length <= 3;
-        });
-        if (scheduleRow) {
-          scheduleRow.click();
+    // 2. Update Video Schedule if provided
+    if (scheduledAt) {
+      logFn('[Puppet] Finding Visibility select dropdown...');
+      // Click visibility settings trigger on the edit page
+      const visTrigger = await page.waitForSelector('#visibility-select, ytcp-video-metadata-visibility-select, [aria-label="Visibility"]', { timeout: 30000 });
+      await visTrigger.click();
+      await new Promise(r => setTimeout(r, 2000));
+
+      // Now the visibility select dialog should be open.
+      // Expand the schedule accordion if not already expanded.
+      logFn('[Puppet] Expanding Schedule accordion...');
+      await page.evaluate(() => {
+        const container = document.querySelector('ytcp-video-visibility-select');
+        if (container) {
+          const allDivs = Array.from(container.querySelectorAll('div, ytcp-paper-expandable-section, ytcp-checkbox, .header'));
+          const scheduleRow = allDivs.find(el => {
+            const t = (el.textContent || '').trim();
+            return t.startsWith('Schedule') && el.children.length <= 3;
+          });
+          if (scheduleRow) {
+            scheduleRow.click();
+          }
+        }
+      });
+      await new Promise(r => setTimeout(r, 2000));
+
+      // Wait for the datetime picker
+      await page.waitForSelector('ytcp-datetime-picker, #datepicker-trigger', { timeout: 5000 });
+
+      const dateStr = formatPublishDate(scheduledAt);
+      const timeStr = formatPublishTime(scheduledAt);
+
+      logFn(`[Puppet] Entering scheduled date: ${dateStr}...`);
+      const dateTrigger = await page.waitForSelector('#datepicker-trigger, ytcp-datetime-picker ytcp-dropdown-trigger', { timeout: 5000 }).catch(() => null);
+      if (dateTrigger) {
+        await dateTrigger.click();
+        await new Promise(r => setTimeout(r, 1000));
+        const calInput = await page.waitForSelector('#datepicker-trigger input, ytcp-date-picker input', { timeout: 3000 }).catch(() => null);
+        if (calInput) {
+          await calInput.click();
+          await new Promise(r => setTimeout(r, 200));
+          await page.keyboard.down('Control');
+          await page.keyboard.press('A');
+          await page.keyboard.up('Control');
+          await page.keyboard.press('Backspace');
+          await new Promise(r => setTimeout(r, 200));
+          await calInput.type(dateStr, { delay: 50 });
+          await page.keyboard.press('Enter');
+          await new Promise(r => setTimeout(r, 500));
+          await page.keyboard.press('Escape');
+          await new Promise(r => setTimeout(r, 500));
         }
       }
-    });
-    await new Promise(r => setTimeout(r, 2000));
+      await new Promise(r => setTimeout(r, 800));
 
-    // Wait for the datetime picker
-    await page.waitForSelector('ytcp-datetime-picker, #datepicker-trigger', { timeout: 5000 });
-
-    const dateStr = formatPublishDate(scheduledAt);
-    const timeStr = formatPublishTime(scheduledAt);
-
-    logFn(`[Puppet] Entering scheduled date: ${dateStr}...`);
-    const dateTrigger = await page.waitForSelector('#datepicker-trigger, ytcp-datetime-picker ytcp-dropdown-trigger', { timeout: 5000 }).catch(() => null);
-    if (dateTrigger) {
-      await dateTrigger.click();
-      await new Promise(r => setTimeout(r, 1000));
-      const calInput = await page.waitForSelector('#datepicker-trigger input, ytcp-date-picker input', { timeout: 3000 }).catch(() => null);
-      if (calInput) {
-        await calInput.click();
+      logFn(`[Puppet] Entering scheduled time: ${timeStr}...`);
+      const timeInput = await page.waitForSelector('#time-of-day-trigger input, ytcp-time-of-day-picker input', { timeout: 5000 }).catch(() => null);
+      if (timeInput) {
+        await timeInput.click();
         await new Promise(r => setTimeout(r, 200));
         await page.keyboard.down('Control');
         await page.keyboard.press('A');
         await page.keyboard.up('Control');
         await page.keyboard.press('Backspace');
         await new Promise(r => setTimeout(r, 200));
-        await calInput.type(dateStr, { delay: 50 });
+        await timeInput.type(timeStr, { delay: 50 });
         await page.keyboard.press('Enter');
         await new Promise(r => setTimeout(r, 500));
         await page.keyboard.press('Escape');
         await new Promise(r => setTimeout(r, 500));
       }
-    }
-    await new Promise(r => setTimeout(r, 800));
+      await new Promise(r => setTimeout(r, 800));
 
-    logFn(`[Puppet] Entering scheduled time: ${timeStr}...`);
-    const timeInput = await page.waitForSelector('#time-of-day-trigger input, ytcp-time-of-day-picker input', { timeout: 5000 }).catch(() => null);
-    if (timeInput) {
-      await timeInput.click();
-      await new Promise(r => setTimeout(r, 200));
-      await page.keyboard.down('Control');
-      await page.keyboard.press('A');
-      await page.keyboard.up('Control');
-      await page.keyboard.press('Backspace');
-      await new Promise(r => setTimeout(r, 200));
-      await timeInput.type(timeStr, { delay: 50 });
-      await page.keyboard.press('Enter');
-      await new Promise(r => setTimeout(r, 500));
-      await page.keyboard.press('Escape');
-      await new Promise(r => setTimeout(r, 500));
-    }
-    await new Promise(r => setTimeout(r, 800));
-
-    logFn(`[Puppet] Toggling "Set as Premiere" option to ${isPremiere}...`);
-    try {
-      const clickedPremiere = await page.evaluate((targetState) => {
-        const checkboxes = Array.from(document.querySelectorAll('ytcp-checkbox, tp-yt-paper-checkbox, paper-checkbox, ytcp-checkbox-group ytcp-checkbox, ytcp-checkbox-lit'));
-        const premiereCheckbox = checkboxes.find(el => {
-          const text = (el.textContent || '').trim().toLowerCase();
-          return text.includes('premiere') || text.includes('gösterim') || text.includes('gosterim');
-        });
-        if (premiereCheckbox) {
-          const isChecked = premiereCheckbox.checked || premiereCheckbox.hasAttribute('checked') || premiereCheckbox.getAttribute('aria-checked') === 'true';
-          if (targetState && !isChecked) {
-            premiereCheckbox.click();
-            return 'clicked_to_check';
-          } else if (!targetState && isChecked) {
-            premiereCheckbox.click();
-            return 'clicked_to_uncheck';
+      logFn(`[Puppet] Toggling "Set as Premiere" option to ${isPremiere}...`);
+      try {
+        const clickedPremiere = await page.evaluate((targetState) => {
+          const checkboxes = Array.from(document.querySelectorAll('ytcp-checkbox, tp-yt-paper-checkbox, paper-checkbox, ytcp-checkbox-group ytcp-checkbox, ytcp-checkbox-lit'));
+          const premiereCheckbox = checkboxes.find(el => {
+            const text = (el.textContent || '').trim().toLowerCase();
+            return text.includes('premiere') || text.includes('gösterim') || text.includes('gosterim');
+          });
+          if (premiereCheckbox) {
+            const isChecked = premiereCheckbox.checked || premiereCheckbox.hasAttribute('checked') || premiereCheckbox.getAttribute('aria-checked') === 'true';
+            if (targetState && !isChecked) {
+              premiereCheckbox.click();
+              return 'clicked_to_check';
+            } else if (!targetState && isChecked) {
+              premiereCheckbox.click();
+              return 'clicked_to_uncheck';
+            }
+            return 'already_correct';
           }
-          return 'already_correct';
-        }
-        return 'not_found';
-      }, isPremiere);
-      logFn(`[Puppet] Premiere checkbox status: ${clickedPremiere}`);
-    } catch (e) {
-      logFn(`[Puppet] Warning: failed to toggle premiere checkbox: ${e.message}`);
-    }
-    await new Promise(r => setTimeout(r, 800));
+          return 'not_found';
+        }, isPremiere);
+        logFn(`[Puppet] Premiere checkbox status: ${clickedPremiere}`);
+      } catch (e) {
+        logFn(`[Puppet] Warning: failed to toggle premiere checkbox: ${e.message}`);
+      }
+      await new Promise(r => setTimeout(r, 800));
 
-    logFn('[Puppet] Clicking Done in Visibility dialog...');
-    const doneBtn = await page.waitForSelector('#done-button, ytcp-button[id*="done"]', { timeout: 10000 });
-    await doneBtn.click();
-    await new Promise(r => setTimeout(r, 2000));
+      logFn('[Puppet] Clicking Done in Visibility dialog...');
+      const doneBtn = await page.waitForSelector('#done-button, ytcp-button[id*="done"]', { timeout: 10000 });
+      await doneBtn.click();
+      await new Promise(r => setTimeout(r, 2000));
+    }
 
     logFn('[Puppet] Saving video changes...');
     const saveBtn = await page.waitForSelector('#save-button, ytcp-button[id="save"]', { timeout: 10000 });
     await saveBtn.click();
     await new Promise(r => setTimeout(r, 4000));
 
-    logFn('[Puppet] Rescheduling complete.');
+    logFn('[Puppet] Video update complete.');
     await browser.close();
   } catch (err) {
-    logFn(`[Puppet] Rescheduling error: ${err.message}`);
+    logFn(`[Puppet] Video update error: ${err.message}`);
     try {
-      await page.screenshot({ path: 'C:\\Users\\nesim\\.gemini\\antigravity\\brain\\a54f9989-2478-4345-8cac-eb3e1c28d308\\puppet_reschedule_error.png' });
+      await page.screenshot({ path: path.join(profilePath, 'puppet_reschedule_error.png') });
     } catch {}
     try {
       await browser.close();

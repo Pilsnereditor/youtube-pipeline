@@ -3190,11 +3190,10 @@ function openEditScheduledPostModal(postId) {
   }
 
   // Setup inputs editability
-  const isFutureComplete = post.status === 'complete' && new Date(post.scheduled_at) > new Date();
   const isEditable = ['pending', 'error'].includes(post.status);
-  const canReschedule = isEditable || isFutureComplete;
+  const canReschedule = isEditable || post.status === 'complete';
 
-  document.getElementById('viewSchedTitle').disabled = !isEditable;
+  document.getElementById('viewSchedTitle').disabled = !canReschedule;
   document.getElementById('viewSchedDesc').disabled = !isEditable;
   document.getElementById('viewSchedTags').disabled = !isEditable;
   document.getElementById('viewSchedDate').disabled = !canReschedule;

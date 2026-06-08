@@ -346,26 +346,68 @@ export async function syncChannelWithYouTube(channelId) {
 }
 
 /**
+ * Update video metadata (title, description, schedule/privacy) on YouTube via API.
+ * Preserves other required fields like categoryId by fetching them first.
+ */
+export async function updateVideoMetadataAPI(channelId, videoId, opts = {}) {
+  const auth = await getAuthenticatedClient(channelId);
+  const yt = google.youtube({ version: 'v3', auth });
+
+  let currentVideo = null;
+  try {
+    const res = await yt.videos.list({
+      part: ['snippet', 'status'],
+      id: [videoId]
+    });
+    if (res.data.items && res.data.items.length > 0) {
+      currentVideo = res.data.items[0];
+    }
+  } catch (err) {
+    console.error(`[YouTube API] Failed to fetch current video details for ${videoId}:`, err);
+  }
+
+  const snippet = currentVideo?.snippet || { title: 'Video Title', categoryId: '22' };
+  const status = currentVideo?.status || { privacyStatus: 'private' };
+
+  const requestBody = {
+    id: videoId,
+    snippet: {
+      title: opts.title !== undefined ? opts.title : snippet.title,
+      description: opts.description !== undefined ? opts.description : snippet.description,
+      categoryId: snippet.categoryId || '22',
+      tags: snippet.tags
+    }
+  };
+
+  const parts = ['snippet'];
+
+  if (opts.scheduledAt !== undefined || opts.privacy !== undefined) {
+    parts.push('status');
+    requestBody.status = {
+      privacyStatus: opts.privacy !== undefined ? opts.privacy : (status.privacyStatus || 'private')
+    };
+
+    if (opts.scheduledAt) {
+      requestBody.status.publishAt = new Date(opts.scheduledAt).toISOString();
+    }
+  }
+
+  await yt.videos.update({
+    part: parts,
+    requestBody
+  });
+}
+
+/**
  * Update the scheduled publish time for a video.
  * @param {number} channelId
  * @param {string} videoId
  * @param {string} scheduledAt
  */
 export async function updateVideoSchedule(channelId, videoId, scheduledAt) {
-  const auth = await getAuthenticatedClient(channelId);
-  const yt = google.youtube({ version: 'v3', auth });
-
-  await yt.videos.update({
-    part: ['status'],
-    requestBody: {
-      id: videoId,
-      status: {
-        privacyStatus: 'private',
-        publishAt: new Date(scheduledAt).toISOString(),
-      },
-    },
-  });
+  await updateVideoMetadataAPI(channelId, videoId, { scheduledAt });
 }
+
 
 /**
  * Update or add a top-level comment on a video, deleting any old comments from the owner first.

@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { queryAll, queryOne, run, getDb } from '../db/database.js';
 import { schedulePost, cancelPost, getUpcoming, processPost, reclaimPostAssets } from '../services/scheduler.js';
-import { syncChannelWithYouTube, updateVideoSchedule, updateOrAddComment, setThumbnail } from '../services/youtube.js';
+import { syncChannelWithYouTube, updateVideoSchedule, updateOrAddComment, setThumbnail, updateVideoMetadataAPI } from '../services/youtube.js';
 import { rescheduleVideoBrowser, postCommentBrowser, updateThumbnailBrowser } from '../services/puppet.js';
 
 const router = Router();
@@ -218,26 +218,41 @@ router.put('/:id', async (req, res) => {
       resolvedIsPremiere = 0;
     }
 
-    // If it's a complete post with a youtube_video_id, and the schedule has actually changed, update YouTube schedule
+    // If it's a complete post with a youtube_video_id, and the schedule or title has changed, update YouTube details
+    const hasTitleChanged = title !== undefined && title !== existing.title;
     const hasScheduleChanged = (scheduledAt && scheduledAt !== existing.scheduled_at) || (resolvedIsPremiere !== existing.is_premiere);
-    if (existing.status === 'complete' && existing.youtube_video_id && hasScheduleChanged) {
+    
+    if (existing.status === 'complete' && existing.youtube_video_id && (hasScheduleChanged || hasTitleChanged)) {
       const channel = queryOne('SELECT * FROM channels WHERE id = @id', { id: existing.channel_id });
       const hasToken = queryOne('SELECT id FROM oauth_tokens WHERE channel_id = @id', { id: existing.channel_id });
-      if (hasToken && !resolvedIsPremiere) {
-        // Use API to update schedule (fast & reliable)
+      
+      if (hasToken) {
+        // Use API to update details (fast & reliable)
         try {
-          await updateVideoSchedule(existing.channel_id, existing.youtube_video_id, scheduledAt || existing.scheduled_at);
+          const updateOpts = {};
+          if (hasTitleChanged) updateOpts.title = title;
+          if (hasScheduleChanged) {
+            updateOpts.scheduledAt = scheduledAt || existing.scheduled_at;
+            updateOpts.privacy = 'private'; // Scheduled videos must be private on YouTube
+          }
+          await updateVideoMetadataAPI(existing.channel_id, existing.youtube_video_id, updateOpts);
         } catch (err) {
-          console.error('[Scheduler] Failed to reschedule video on YouTube via API:', err);
-          return res.status(500).json({ error: 'Failed to update schedule on YouTube: ' + err.message });
+          console.error('[Scheduler] Failed to update video details on YouTube via API:', err);
+          return res.status(500).json({ error: 'Failed to update video details on YouTube: ' + err.message });
         }
       } else if (channel) {
-        // Use Puppeteer to update schedule (browser automation)
+        // Use Puppeteer to update details (browser automation)
         try {
-          await rescheduleVideoBrowser(existing.channel_id, existing.youtube_video_id, scheduledAt || existing.scheduled_at, resolvedIsPremiere);
+          await rescheduleVideoBrowser(
+            existing.channel_id,
+            existing.youtube_video_id,
+            hasScheduleChanged ? (scheduledAt || existing.scheduled_at) : null,
+            resolvedIsPremiere,
+            hasTitleChanged ? title : null
+          );
         } catch (err) {
-          console.error('[Scheduler] Failed to reschedule video on YouTube via Browser:', err);
-          return res.status(500).json({ error: 'Failed to update schedule on YouTube via Browser: ' + err.message });
+          console.error('[Scheduler] Failed to update video details on YouTube via Browser:', err);
+          return res.status(500).json({ error: 'Failed to update video details on YouTube via Browser: ' + err.message });
         }
       }
     }

@@ -3124,20 +3124,29 @@ function openEditScheduledPostModal(postId) {
   document.getElementById('viewSchedComment').value = post.custom_comment || '';
 
   // Setup thumbnail preview
-  const viewSchedThumbGroup = document.getElementById('viewSchedThumbGroup');
   const viewSchedThumbImg = document.getElementById('viewSchedThumbImg');
-  if (viewSchedThumbGroup && viewSchedThumbImg) {
-    let finalThumbId = post.thumbnail_id;
-    if (!finalThumbId && post.video_id) {
-      const associatedVideo = state.videos.find(v => v.id === post.video_id);
-      if (associatedVideo) finalThumbId = associatedVideo.thumbnail_id;
-    }
+  const viewSchedThumbPlaceholder = document.getElementById('viewSchedThumbPlaceholder');
+  const viewSchedThumbOverlay = document.getElementById('viewSchedThumbOverlay');
+
+  let finalThumbId = post.thumbnail_id;
+  if (!finalThumbId && post.video_id) {
+    const associatedVideo = state.videos.find(v => v.id === post.video_id);
+    if (associatedVideo) finalThumbId = associatedVideo.thumbnail_id;
+  }
+
+  state.activeEditPostThumbnailId = finalThumbId || null;
+
+  if (viewSchedThumbImg) {
     if (finalThumbId) {
       viewSchedThumbImg.src = `/api/media/thumbnail-file/${finalThumbId}`;
-      viewSchedThumbGroup.style.display = 'block';
+      viewSchedThumbImg.style.display = 'block';
+      if (viewSchedThumbPlaceholder) viewSchedThumbPlaceholder.style.display = 'none';
     } else {
-      viewSchedThumbGroup.style.display = 'none';
+      viewSchedThumbImg.src = '';
+      viewSchedThumbImg.style.display = 'none';
+      if (viewSchedThumbPlaceholder) viewSchedThumbPlaceholder.style.display = 'flex';
     }
+    if (viewSchedThumbOverlay) viewSchedThumbOverlay.style.display = 'none';
   }
 
   // Setup Date and Time
@@ -3242,7 +3251,6 @@ async function saveSchedPostChanges() {
 
   const scheduledAt = `${date}T${time}:00`;
 
-  showToast('Saving changes...', 'info');
   try {
     const res = await fetch(`${API_BASE}/schedule/${id}`, {
       method: 'PUT',
@@ -3253,7 +3261,8 @@ async function saveSchedPostChanges() {
         tags,
         scheduledAt,
         isPremiere,
-        customComment
+        customComment,
+        thumbnailId: state.activeEditPostThumbnailId
       })
     });
 
@@ -3270,6 +3279,54 @@ async function saveSchedPostChanges() {
     loadScheduledPosts();
   } catch (err) {
     showToast('Failed to save changes: ' + err.message, 'error');
+  }
+}
+
+// Upload thumbnail from Schedule Details Modal
+async function handleSchedPostThumbUpload(files) {
+  if (!files || files.length === 0) return;
+  const file = files[0];
+
+  const id = state.activeEditPostId;
+  if (!id) return;
+
+  const post = state.scheduledPosts.find(p => p.id === id);
+  const channelId = post ? post.channel_id : null;
+
+  const formData = new FormData();
+  formData.append('thumbnails', file);
+  if (channelId) {
+    formData.append('channelId', channelId);
+  }
+
+  showToast('Uploading new thumbnail...', 'info');
+  try {
+    const res = await fetch(`${API_BASE}/media/upload-thumbnail`, {
+      method: 'POST',
+      body: formData
+    });
+
+    if (!res.ok) throw new Error(await res.text());
+    const result = await res.json();
+
+    if (result.thumbnails && result.thumbnails.length > 0) {
+      const newThumbId = result.thumbnails[0].id;
+      state.activeEditPostThumbnailId = newThumbId;
+
+      const viewSchedThumbImg = document.getElementById('viewSchedThumbImg');
+      const viewSchedThumbPlaceholder = document.getElementById('viewSchedThumbPlaceholder');
+      if (viewSchedThumbImg) {
+        viewSchedThumbImg.src = `/api/media/thumbnail-file/${newThumbId}`;
+        viewSchedThumbImg.style.display = 'block';
+        if (viewSchedThumbPlaceholder) viewSchedThumbPlaceholder.style.display = 'none';
+      }
+      showToast('Thumbnail uploaded and preview updated.', 'success');
+      
+      // Reload thumbnails cache
+      loadThumbnails();
+    }
+  } catch (err) {
+    showToast('Failed to upload thumbnail: ' + err.message, 'error');
   }
 }
 

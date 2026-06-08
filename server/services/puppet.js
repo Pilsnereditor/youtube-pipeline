@@ -1210,6 +1210,98 @@ export async function rescheduleVideoBrowser(channelId, youtubeVideoId, schedule
 }
 
 /**
+ * Update the custom thumbnail for a YouTube video using Puppeteer browser session.
+ */
+export async function updateThumbnailBrowser(channelId, youtubeVideoId, thumbnailPath, logFn = console.log) {
+  await closeBrowserSession(channelId);
+
+  const profilePath = getProfilePath(channelId);
+  const chromePath = getChromePath();
+
+  // Force clean up browser lock files
+  try {
+    const lockFiles = ['SingletonLock', 'SingletonSocket', 'SingletonCookie'];
+    for (const f of lockFiles) {
+      const p = path.join(profilePath, f);
+      if (fs.existsSync(p)) {
+        fs.unlinkSync(p);
+      }
+    }
+  } catch (e) {}
+
+  const channel = queryOne('SELECT * FROM channels WHERE id = @id', { id: channelId });
+  const proxyConfig = resolveChannelProxy(channel);
+  const proxyUrl = proxyConfig ? proxyConfig.proxyUrl : null;
+
+  const runHeadless = process.env.PUPPET_HEADLESS !== 'false';
+  logFn(`[Puppet] Starting browser thumbnail update for video ${youtubeVideoId} (headless: ${runHeadless})`);
+  const browser = await launchBrowserWithRetry(chromePath, profilePath, runHeadless, 3, 3000, proxyUrl);
+
+  let page;
+  try {
+    page = await browser.newPage();
+    if (proxyConfig && (proxyConfig.username || proxyConfig.password)) {
+      await page.authenticate({
+        username: proxyConfig.username || '',
+        password: proxyConfig.password || ''
+      });
+    }
+    await page.setExtraHTTPHeaders({
+      'Accept-Language': 'en-US,en;q=0.9'
+    });
+    await page.setUserAgent(getUserAgent());
+    await page.setViewport({ width: 1280, height: 800 });
+
+    // Override webdriver and plugins to bypass Google bot block
+    await page.evaluateOnNewDocument(() => {
+      Object.defineProperty(navigator, 'webdriver', {
+        get: () => false,
+      });
+      Object.defineProperty(navigator, 'plugins', {
+        get: () => [
+          { name: 'PDF Viewer' },
+          { name: 'Chrome PDF Viewer' },
+          { name: 'Chromium PDF Viewer' },
+          { name: 'Microsoft Edge PDF Viewer' },
+          { name: 'WebKit built-in PDF' }
+        ]
+      });
+    });
+
+    logFn('[Puppet] Navigating to YouTube Studio video edit page...');
+    await page.goto(`https://studio.youtube.com/video/${youtubeVideoId}/edit?hl=en&persist_hl=1`, { waitUntil: 'networkidle2', timeout: 60000 });
+
+    // Check if we are redirected to login
+    if (page.url().includes('accounts.google.com')) {
+      throw new Error('Not logged in. Please set up your browser session in the channel settings first.');
+    }
+
+    logFn('[Puppet] Uploading custom thumbnail...');
+    const thumbInput = await page.waitForSelector('ytcp-thumbnails-compact-editor-uploader input[type="file"], input#file-loader', { timeout: 10000 });
+    await thumbInput.uploadFile(thumbnailPath);
+    await new Promise(r => setTimeout(r, 2000));
+
+    logFn('[Puppet] Saving video changes...');
+    const saveBtn = await page.waitForSelector('#save-button, ytcp-button[id="save"]', { timeout: 10000 });
+    await saveBtn.click();
+    await new Promise(r => setTimeout(r, 5000));
+
+    logFn('[Puppet] Thumbnail update complete.');
+    await browser.close();
+  } catch (err) {
+    logFn(`[Puppet] Thumbnail update error: ${err.message}`);
+    try {
+      const screenshotPath = path.join(profilePath, 'puppet_thumbnail_error.png');
+      await page.screenshot({ path: screenshotPath });
+    } catch {}
+    try {
+      await browser.close();
+    } catch {}
+    throw err;
+  }
+}
+
+/**
  * Post a comment on a YouTube video using Puppeteer browser session.
  * Also deletes any previous owner comment if found, and pins the new comment.
  */

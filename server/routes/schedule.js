@@ -1,8 +1,8 @@
 import { Router } from 'express';
 import { queryAll, queryOne, run, getDb } from '../db/database.js';
 import { schedulePost, cancelPost, getUpcoming, processPost, reclaimPostAssets } from '../services/scheduler.js';
-import { syncChannelWithYouTube, updateVideoSchedule, updateOrAddComment } from '../services/youtube.js';
-import { rescheduleVideoBrowser, postCommentBrowser } from '../services/puppet.js';
+import { syncChannelWithYouTube, updateVideoSchedule, updateOrAddComment, setThumbnail } from '../services/youtube.js';
+import { rescheduleVideoBrowser, postCommentBrowser, updateThumbnailBrowser } from '../services/puppet.js';
 
 const router = Router();
 
@@ -180,9 +180,8 @@ router.put('/:id', async (req, res) => {
   const existing = queryOne('SELECT * FROM scheduled_posts WHERE id = @id AND user_id = @userId', { id, userId });
   if (!existing) return res.status(404).json({ error: 'Scheduled post not found.' });
 
-  const isFutureComplete = existing.status === 'complete' && new Date(existing.scheduled_at) > new Date();
-  if (!['pending', 'error'].includes(existing.status) && !isFutureComplete) {
-    return res.status(400).json({ error: 'Only pending, failed, or future completed posts can be updated.' });
+  if (!['pending', 'error', 'complete'].includes(existing.status)) {
+    return res.status(400).json({ error: 'Only pending, failed, or completed posts can be updated.' });
   }
 
   const { title, description, tags, thumbnailId, videoId, videoPath, scheduledAt, customComment, isPremiere, privacy } = req.body;
@@ -239,6 +238,33 @@ router.put('/:id', async (req, res) => {
         } catch (err) {
           console.error('[Scheduler] Failed to reschedule video on YouTube via Browser:', err);
           return res.status(500).json({ error: 'Failed to update schedule on YouTube via Browser: ' + err.message });
+        }
+      }
+    }
+
+    // If it's a complete post with a youtube_video_id, and the thumbnail has changed, update it on YouTube
+    const hasThumbnailChanged = thumbnailId !== undefined && thumbnailId !== existing.thumbnail_id;
+    if (existing.status === 'complete' && existing.youtube_video_id && hasThumbnailChanged && thumbnailId) {
+      const channel = queryOne('SELECT * FROM channels WHERE id = @id', { id: existing.channel_id });
+      const hasToken = queryOne('SELECT id FROM oauth_tokens WHERE channel_id = @id', { id: existing.channel_id });
+      const thumbnail = queryOne('SELECT filepath FROM thumbnails WHERE id = @id AND user_id = @userId', { id: thumbnailId, userId });
+
+      if (thumbnail) {
+        if (hasToken) {
+          try {
+            await setThumbnail(existing.channel_id, existing.youtube_video_id, thumbnail.filepath);
+          } catch (err) {
+            console.error('[Scheduler] Failed to update thumbnail on YouTube via API:', err);
+            return res.status(500).json({ error: 'Failed to update thumbnail on YouTube: ' + err.message });
+          }
+        } else if (channel && channel.upload_mode === 'browser') {
+          (async () => {
+            try {
+              await updateThumbnailBrowser(existing.channel_id, existing.youtube_video_id, thumbnail.filepath);
+            } catch (err) {
+              console.error('[Scheduler] Background browser thumbnail update failed:', err);
+            }
+          })();
         }
       }
     }

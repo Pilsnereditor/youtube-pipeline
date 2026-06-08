@@ -1577,10 +1577,18 @@
         </div>
 
         <!-- Thumbnail Preview -->
-        <div class="form-group" id="viewSchedThumbGroup" style="display: none; margin-bottom: 15px;">
+        <div class="form-group" id="viewSchedThumbGroup" style="margin-bottom: 15px;">
           <label>Thumbnail</label>
-          <div class="thumb-preview-container" style="margin-top: 8px; border-radius: 8px; overflow: hidden; border: var(--border-glass); max-width: 240px; aspect-ratio: 16/9; background: rgba(0,0,0,0.2);">
-            <img id="viewSchedThumbImg" src="" style="width: 100%; height: 100%; object-fit: cover;">
+          <input type="file" id="viewSchedThumbInput" accept="image/*" style="display: none;" onchange="handleSchedPostThumbUpload(this.files)">
+          <div class="thumb-preview-container" style="margin-top: 8px; border-radius: 8px; overflow: hidden; border: var(--border-glass); max-width: 240px; aspect-ratio: 16/9; background: rgba(0,0,0,0.2); position: relative; cursor: pointer; transition: all 0.2s ease-in-out;" onclick="document.getElementById('viewSchedThumbInput').click()" onmouseover="if(document.getElementById('viewSchedThumbImg').style.display !== 'none') document.getElementById('viewSchedThumbOverlay').style.display = 'flex'" onmouseout="document.getElementById('viewSchedThumbOverlay').style.display = 'none'">
+            <img id="viewSchedThumbImg" src="" style="width: 100%; height: 100%; object-fit: cover; display: none;">
+            <div id="viewSchedThumbPlaceholder" style="width: 100%; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; color: var(--text-muted); border: 2px dashed rgba(255,255,255,0.15); border-radius: 8px; gap: 8px; box-sizing: border-box; padding: 15px;">
+              <span style="font-size: 1.5rem;">🖼️</span>
+              <span style="font-size: 0.8rem; font-weight: 500;">Upload thumbnail</span>
+            </div>
+            <div id="viewSchedThumbOverlay" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.6); display: none; align-items: center; justify-content: center; color: #fff; font-size: 0.8rem; font-weight: 600; gap: 6px;">
+              ✏️ Change Thumbnail
+            </div>
           </div>
         </div>
 

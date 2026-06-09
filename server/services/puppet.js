@@ -1995,46 +1995,62 @@ export async function updateChannelBrandingBrowser(channelId, opts, logFn = cons
 
     const hasLogo = opts.logoPath && fs.existsSync(opts.logoPath);
     const hasBanner = opts.bannerPath && fs.existsSync(opts.bannerPath);
+    const hasDescription = opts.description !== undefined && opts.description !== null;
 
-    if (hasLogo || hasBanner) {
-      const brandingUrl = channel.youtube_channel_id
-        ? `https://studio.youtube.com/channel/${channel.youtube_channel_id}/editing/branding?hl=en`
-        : `https://studio.youtube.com/editing/branding?hl=en`;
+    if (hasLogo || hasBanner || hasDescription) {
+      const initialUrl = channel.youtube_channel_id
+        ? `https://studio.youtube.com/channel/${channel.youtube_channel_id}/videos/upload?hl=en`
+        : `https://studio.youtube.com/videos/upload?hl=en`;
 
-      logFn(`[Puppet Branding] Navigating to Branding Customization: ${brandingUrl}`);
-      await page.goto(brandingUrl, { waitUntil: 'networkidle2', timeout: 60000 });
+      logFn(`[Puppet Branding] Navigating to initial URL to set session context: ${initialUrl}`);
+      await page.goto(initialUrl, { waitUntil: 'networkidle2', timeout: 60000 });
 
       if (page.url().includes('accounts.google.com')) {
         throw new Error('Not logged in. Please set up your browser session in the channel settings first.');
       }
 
-      // Wait for page elements to load
-      logFn('[Puppet Branding] Waiting for branding page elements to render...');
-      await page.waitForSelector('ytcp-brand-editing-row, ytcp-button, button', { timeout: 20000 }).catch(() => null);
-      await new Promise(r => setTimeout(r, 4000)); // Allow dynamic angular/polymer components to settle
+      logFn('[Puppet Branding] Waiting 5 seconds on content page...');
+      await new Promise(r => setTimeout(r, 5000));
+
+      logFn('[Puppet Branding] Searching for Customization sidebar link...');
+      const clickedSidebar = await page.evaluate(async () => {
+        const navItems = Array.from(document.querySelectorAll('ytcp-navigation-item, a'));
+        const customizationItem = navItems.find(el => {
+          const text = (el.textContent || '').trim().toLowerCase();
+          const href = el.getAttribute('href') || '';
+          return text.includes('customization') || text.includes('özelleştirme') || text.includes('ozellestirme') || href.includes('editing');
+        });
+
+        if (customizationItem) {
+          customizationItem.scrollIntoView();
+          customizationItem.click();
+          return true;
+        }
+        return false;
+      });
+
+      const targetUrl = channel.youtube_channel_id
+        ? `https://studio.youtube.com/channel/${channel.youtube_channel_id}/editing/profile?hl=en`
+        : `https://studio.youtube.com/editing/profile?hl=en`;
+
+      if (clickedSidebar) {
+        logFn('[Puppet Branding] Clicked sidebar link, waiting for customization page load...');
+        await page.waitForSelector('ytcp-profile-image-upload, ytcp-banner-upload', { timeout: 15000 }).catch(() => null);
+      } else {
+        logFn(`[Puppet Branding] Could not find or click sidebar link. Falling back to direct navigation: ${targetUrl}`);
+        await page.goto(targetUrl, { waitUntil: 'networkidle2', timeout: 60000 });
+      }
+
+      logFn('[Puppet Branding] Waiting for customization page elements to render...');
+      await page.waitForSelector('ytcp-profile-image-upload, ytcp-banner-upload, ytcp-button, button', { timeout: 20000 }).catch(() => null);
+      await new Promise(r => setTimeout(r, 4000)); // Allow dynamic components to settle
 
       if (hasLogo) {
         logFn('[Puppet Branding] Finding profile logo upload button...');
         const logoButtonHandle = await page.evaluateHandle(() => {
-          const items = Array.from(document.querySelectorAll('ytcp-firm-validation-item, ytcp-brand-editing-section, ytcp-brand-editing-row, [role="row"], .section, .row'));
-          const targetItem = items.find(el => {
-            const text = (el.textContent || '').toLowerCase();
-            return text.includes('picture') || text.includes('profile') || text.includes('profil') || text.includes('resim');
-          });
-          const buttons = targetItem ? Array.from(targetItem.querySelectorAll('ytcp-button, button')) : [];
-          const btn = buttons.find(b => {
-            const text = (b.textContent || '').toLowerCase();
-            return text.includes('upload') || text.includes('change') || text.includes('yükle') || text.includes('değiştir') || text.includes('seç');
-          });
-          if (btn) return btn;
-
-          // Fallback: click first upload/change button
-          const allButtons = Array.from(document.querySelectorAll('ytcp-button, button'));
-          const fallbackBtn = allButtons.find(b => {
-            const text = (b.textContent || '').toLowerCase();
-            return text.includes('upload') || text.includes('change') || text.includes('yükle') || text.includes('değiştir');
-          });
-          return fallbackBtn || null;
+          return document.querySelector('.upload-btn.style-scope.ytcp-profile-image-upload') ||
+                 document.querySelector('ytcp-profile-image-upload button, ytcp-profile-image-upload ytcp-button') ||
+                 document.querySelector('ytcp-profile-image-upload [id="upload-button"]');
         });
 
         if (logoButtonHandle && logoButtonHandle.asElement()) {
@@ -2071,24 +2087,9 @@ export async function updateChannelBrandingBrowser(channelId, opts, logFn = cons
       if (hasBanner) {
         logFn('[Puppet Branding] Finding banner image upload button...');
         const bannerButtonHandle = await page.evaluateHandle(() => {
-          const items = Array.from(document.querySelectorAll('ytcp-firm-validation-item, ytcp-brand-editing-section, ytcp-brand-editing-row, [role="row"], .section, .row'));
-          const targetItem = items.find(el => {
-            const text = (el.textContent || '').toLowerCase();
-            return text.includes('banner') || text.includes('kapak') || text.includes('banner image');
-          });
-          const buttons = targetItem ? Array.from(targetItem.querySelectorAll('ytcp-button, button')) : [];
-          const btn = buttons.find(b => {
-            const text = (b.textContent || '').toLowerCase();
-            return text.includes('upload') || text.includes('change') || text.includes('yükle') || text.includes('değiştir') || text.includes('seç');
-          });
-          if (btn) return btn;
-
-          // Fallback: click second upload/change button
-          const allButtons = Array.from(document.querySelectorAll('ytcp-button, button')).filter(b => {
-            const text = (b.textContent || '').toLowerCase();
-            return text.includes('upload') || text.includes('change') || text.includes('yükle') || text.includes('değiştir');
-          });
-          return allButtons[1] || null;
+          return document.querySelector('.upload-btn.style-scope.ytcp-banner-upload') ||
+                 document.querySelector('ytcp-banner-upload button, ytcp-banner-upload ytcp-button') ||
+                 document.querySelector('ytcp-banner-upload [id="upload-button"]');
         });
 
         if (bannerButtonHandle && bannerButtonHandle.asElement()) {
@@ -2121,68 +2122,40 @@ export async function updateChannelBrandingBrowser(channelId, opts, logFn = cons
           logFn('[Puppet Branding] Warning: Could not find banner upload button.');
         }
       }
-    }
 
-    if (opts.description !== undefined && opts.description !== null) {
-      const detailsUrl = channel.youtube_channel_id
-        ? `https://studio.youtube.com/channel/${channel.youtube_channel_id}/editing/details?hl=en`
-        : `https://studio.youtube.com/editing/details?hl=en`;
-
-      logFn(`[Puppet Branding] Navigating to Details Customization: ${detailsUrl}`);
-      await page.goto(detailsUrl, { waitUntil: 'networkidle2', timeout: 60000 });
-
-      if (page.url().includes('accounts.google.com')) {
-        throw new Error('Not logged in. Please set up your browser session in the channel settings first.');
-      }
-
-      logFn('[Puppet Branding] Inputting description...');
-      const descSet = await page.evaluate((descText) => {
-        const textareas = Array.from(document.querySelectorAll('textarea, [id*="description"] [id="textbox"], ytcp-textarea [id="textbox"], ytcp-mention-textbox [id="textbox"]'));
-        let descInput = textareas.find(ta => {
-          const parentText = (ta.parentElement?.textContent || ta.closest('ytcp-textarea, ytcp-mention-textbox')?.textContent || '').toLowerCase();
-          return parentText.includes('description') || parentText.includes('açıklama') || parentText.includes('aciklama');
-        }) || textareas[0];
-
+      if (hasDescription) {
+        logFn('[Puppet Branding] Inputting description...');
+        const descInput = await page.waitForSelector('ytcp-textarea[id*="description"] #textbox, #description-textarea #textbox, div#textbox[contenteditable="true"], textarea', { timeout: 10000 }).catch(() => null);
         if (descInput) {
-          descInput.focus();
-          descInput.select && descInput.select();
-          document.execCommand('selectAll');
-          document.execCommand('insertText', false, descText);
-          descInput.dispatchEvent(new Event('input', { bubbles: true }));
-          descInput.dispatchEvent(new Event('change', { bubbles: true }));
-          return true;
+          await safeClick(page, descInput, { scroll: true, focus: true });
+          await page.keyboard.down('Control');
+          await page.keyboard.press('A');
+          await page.keyboard.up('Control');
+          await page.keyboard.press('Backspace');
+          await page.keyboard.type(opts.description);
+          await new Promise(r => setTimeout(r, 2000));
+        } else {
+          logFn('[Puppet Branding] Warning: Could not find description input field.');
         }
-        return false;
-      }, opts.description);
-
-      if (!descSet) {
-        const descInput = await page.waitForSelector('ytcp-textarea[id*="description"] #textbox, #description-textarea #textbox, textarea', { timeout: 5000 });
-        await safeClick(page, descInput, { scroll: true, focus: true });
-        await page.keyboard.down('Control');
-        await page.keyboard.press('A');
-        await page.keyboard.up('Control');
-        await page.keyboard.press('Backspace');
-        await page.keyboard.type(opts.description);
       }
-      await new Promise(r => setTimeout(r, 2000));
-    }
 
-    logFn('[Puppet Branding] Publishing changes...');
-    const publishBtn = await page.waitForSelector('#publish-button, ytcp-button#publish-button', { timeout: 10000 }).catch(() => null);
-    if (publishBtn) {
-      await safeClick(page, publishBtn);
-    } else {
-      await page.evaluate(() => {
-        const buttons = Array.from(document.querySelectorAll('ytcp-button, button'));
-        const btn = buttons.find(b => {
-          const text = (b.textContent || '').trim().toLowerCase();
-          return text === 'publish' || text === 'yayınla' || text === 'yayinla' || text.includes('publish') || text.includes('yayınla');
+      logFn('[Puppet Branding] Publishing changes...');
+      const publishBtn = await page.waitForSelector('#publish-button, ytcp-button#publish-button', { timeout: 10000 }).catch(() => null);
+      if (publishBtn) {
+        await safeClick(page, publishBtn);
+      } else {
+        await page.evaluate(() => {
+          const buttons = Array.from(document.querySelectorAll('ytcp-button, button'));
+          const btn = buttons.find(b => {
+            const text = (b.textContent || '').trim().toLowerCase();
+            return text === 'publish' || text === 'yayınla' || text === 'yayinla' || text.includes('publish') || text.includes('yayınla');
+          });
+          if (btn) btn.click();
         });
-        if (btn) btn.click();
-      });
+      }
+      await new Promise(r => setTimeout(r, 5000));
+      logFn('[Puppet Branding] Branding update complete.');
     }
-    await new Promise(r => setTimeout(r, 5000));
-    logFn('[Puppet Branding] Branding update complete.');
     await browser.close();
   } catch (err) {
     logFn(`[Puppet Branding] Branding update error: ${err.message}`);

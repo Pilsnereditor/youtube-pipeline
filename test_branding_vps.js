@@ -77,6 +77,8 @@ async function run() {
     await new Promise(r => setTimeout(r, 10000));
   }
 
+  // Check for customization page elements
+  const pageElements = await page.evaluate(() => {
     const textareas = Array.from(document.querySelectorAll('textarea, input, [contenteditable="true"], [id="textbox"]')).map(ta => {
       let labelText = '';
       try {

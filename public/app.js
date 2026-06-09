@@ -105,7 +105,7 @@ async function triggerBackgroundSync() {
   
   let anyCancelled = false;
 
-  await Promise.all(connectedChannels.map(async (ch) => {
+  for (const ch of connectedChannels) {
     try {
       const res = await fetch(`${API_BASE}/channels/${ch.id}/sync`, { method: 'POST' });
       const data = await res.json();
@@ -118,7 +118,7 @@ async function triggerBackgroundSync() {
     } catch (err) {
       console.error(`[Sync] Failed to sync channel "${ch.name}":`, err);
     }
-  }));
+  }
 
   if (anyCancelled) {
     console.log('[Sync] Deletions detected. Reloading data...');

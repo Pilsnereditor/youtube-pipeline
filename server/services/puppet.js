@@ -2322,6 +2322,10 @@ export async function syncChannelWithYouTubeBrowser(channelId, logFn = console.l
         }
         // Mark post as cancelled
         run(`UPDATE scheduled_posts SET status = 'cancelled' WHERE id = @id`, { id: post.id });
+        run(`UPDATE uploads SET status = 'cancelled' WHERE channel_id = @channelId AND youtube_video_id = @youtubeVideoId`, {
+          channelId: post.channel_id,
+          youtubeVideoId: post.youtube_video_id
+        });
         cancelledCount++;
       }
     }

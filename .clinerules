@@ -1,0 +1,26 @@
+# YouTube Pipeline Project - Agent Behavior & Environment Rules
+
+## 1. Production Server Environment
+- **Operating System:** Linux (Ubuntu / Debian)
+- **Target Server:** VPS at IP `95.111.250.107` (`gageditor.com`)
+- **Remote Project Directory:** `/var/www/youtube-pipeline`
+- **Node.js Process Manager:** PM2 (service name: `youtube-pipeline`)
+- **CRITICAL:** Always assume the production server runs Linux. Never suggest Windows command prompt or PowerShell commands for remote VPS deployment or setup operations. Always use standard bash commands.
+
+## 2. Deployment Instructions
+To deploy code modifications onto the production server, the user must run:
+```bash
+cd /var/www/youtube-pipeline
+git pull origin main
+pm2 restart youtube-pipeline
+```
+
+## 3. Data & Channel Isolation Rules
+- **Multi-Channel Scope:** The dashboard supports multiple YouTube channels. All queries for videos, scheduled posts, titles, and thumbnails MUST be scoped to the active channel/user.
+- **Media Library Restriction:** If no channel is selected (i.e. channelId is empty/null), the UI must show an empty state warning asking the user to select a channel. It must NEVER load or list videos/thumbnails globally across other channels.
+- **User Authentication:** All routes must be auth-gated and read `req.session.userId` to ensure data isolation between different logged-in users.
+
+## 4. Upload & Connection Modes
+- **API Mode:** Uses official YouTube OAuth tokens stored in the `oauth_tokens` table.
+- **Browser (Puppet) Mode:** Uses Puppeteer browser automation with manual login sessions stored in `data/profiles/channel_<id>`.
+- **Proxy Configuration:** Respect the channel's proxy settings (from proxy pool or host/port credentials) when launching Puppeteer sessions.

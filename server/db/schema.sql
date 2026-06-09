@@ -57,6 +57,10 @@ CREATE TABLE IF NOT EXISTS channels (
     proxy_port INTEGER DEFAULT 0,
     proxy_username TEXT DEFAULT '',
     proxy_password TEXT DEFAULT '',
+    profile_name TEXT DEFAULT NULL,
+    proxy_pool_id INTEGER DEFAULT NULL,
+    custom_logo_path TEXT DEFAULT NULL,
+    custom_banner_path TEXT DEFAULT NULL,
     created_at TEXT DEFAULT (datetime('now')),
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );

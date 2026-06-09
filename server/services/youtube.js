@@ -478,3 +478,64 @@ export async function updateOrAddComment(channelId, videoId, text) {
   }
 }
 
+/**
+ * Update the channel description and banner via YouTube Data API.
+ * @param {number} channelId
+ * @param {object} opts { description, bannerPath }
+ */
+export async function updateChannelBrandingAPI(channelId, { description, bannerPath }) {
+  const auth = await getAuthenticatedClient(channelId);
+  const yt = google.youtube({ version: 'v3', auth });
+
+  // 1. Fetch channel details
+  const channelList = await yt.channels.list({
+    part: ['snippet', 'brandingSettings'],
+    mine: true,
+  });
+
+  if (!channelList.data.items || channelList.data.items.length === 0) {
+    throw new Error('No channel found for this authenticated account.');
+  }
+
+  const channel = channelList.data.items[0];
+
+  // 2. Update Description if provided
+  if (description !== undefined && description !== null) {
+    channel.snippet.description = description;
+    await yt.channels.update({
+      part: ['snippet'],
+      requestBody: {
+        id: channel.id,
+        snippet: channel.snippet,
+      },
+    });
+  }
+
+  // 3. Update Banner if provided
+  if (bannerPath && fs.existsSync(bannerPath)) {
+    const uploadResponse = await yt.channelBanners.insert({
+      media: {
+        body: fs.createReadStream(bannerPath),
+      },
+    });
+
+    const bannerUrl = uploadResponse.data.url;
+
+    if (!channel.brandingSettings) {
+      channel.brandingSettings = {};
+    }
+    if (!channel.brandingSettings.image) {
+      channel.brandingSettings.image = {};
+    }
+    channel.brandingSettings.image.bannerExternalUrl = bannerUrl;
+
+    await yt.channels.update({
+      part: ['brandingSettings'],
+      requestBody: {
+        id: channel.id,
+        brandingSettings: channel.brandingSettings,
+      },
+    });
+  }
+}
+

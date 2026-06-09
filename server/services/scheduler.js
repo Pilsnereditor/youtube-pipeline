@@ -1,12 +1,13 @@
 import cron from 'node-cron';
 import { queryAll, queryOne, run, insert } from '../db/database.js';
-import { uploadVideo, setThumbnail, addComment } from './youtube.js';
-import { uploadVideoBrowser, postCommentBrowser } from './puppet.js';
+import { uploadVideo, setThumbnail, addComment, syncChannelWithYouTube } from './youtube.js';
+import { uploadVideoBrowser, postCommentBrowser, syncChannelWithYouTubeBrowser } from './puppet.js';
 import { runWeeklyCleanup } from './videoCleanup.js';
 
 let broadcastFn = null;
 let cronTask = null;
 let cleanupTask = null;
+let syncTask = null;
 
 let isCheckingDuePosts = false;
 let isCheckingPendingComments = false;
@@ -54,7 +55,30 @@ export function init(broadcast) {
     }
   });
 
-  console.log('[Scheduler] Started — checking every minute for due posts/comments and weekly on Thursdays for cleanup.');
+  // Automatic Channel Sync every 6 hours
+  syncTask = cron.schedule('0 */6 * * *', async () => {
+    try {
+      console.log('[Scheduler] Running automatic 6-hour channel state synchronization...');
+      const channels = queryAll('SELECT id, upload_mode, name FROM channels');
+      for (const ch of channels) {
+        try {
+          console.log(`[Scheduler] Auto-syncing channel "${ch.name}" (${ch.id}) in mode: ${ch.upload_mode}`);
+          if (ch.upload_mode === 'browser') {
+            await syncChannelWithYouTubeBrowser(ch.id);
+          } else {
+            await syncChannelWithYouTube(ch.id);
+          }
+        } catch (syncErr) {
+          console.error(`[Scheduler] Auto-sync failed for channel "${ch.name}" (${ch.id}):`, syncErr.message);
+        }
+      }
+      console.log('[Scheduler] Automatic channel state synchronization finished.');
+    } catch (err) {
+      console.error('[Scheduler] Error running automatic channel synchronization:', err);
+    }
+  });
+
+  console.log('[Scheduler] Started — checking every minute for due posts/comments, weekly on Thursdays for cleanup, and every 6 hours for channel sync.');
 }
 
 /**
@@ -482,6 +506,9 @@ export function stop() {
   }
   if (cleanupTask) {
     cleanupTask.stop();
+  }
+  if (syncTask) {
+    syncTask.stop();
   }
   console.log('[Scheduler] Stopped.');
 }

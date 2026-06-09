@@ -4,8 +4,8 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { queryAll, queryOne, run, insert } from '../db/database.js';
-import { syncChannelWithYouTube } from '../services/youtube.js';
-import { setupBrowserSession, checkBrowserSessionActive, closeBrowserSession } from '../services/puppet.js';
+import { syncChannelWithYouTube, updateChannelBrandingAPI } from '../services/youtube.js';
+import { setupBrowserSession, checkBrowserSessionActive, closeBrowserSession, updateChannelBrandingBrowser, syncChannelWithYouTubeBrowser } from '../services/puppet.js';
 import { launchVncSession, isVncActive, getVncPort, getVncProfileName, getVncProfilePath, verifyVncChannels, stopVncSession, isLocalChrome } from '../services/vnc.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -45,6 +45,37 @@ const upload = multer({
       cb(null, true);
     } else {
       cb(new Error('Only .jpg, .jpeg, .png, and .webp files are allowed.'));
+    }
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Multer setup for branding uploads (logo / banner)
+// ---------------------------------------------------------------------------
+const BRANDING_DIR = path.join(__dirname, '..', '..', 'data', 'branding');
+if (!fs.existsSync(BRANDING_DIR)) {
+  fs.mkdirSync(BRANDING_DIR, { recursive: true });
+}
+
+const brandingStorage = multer.diskStorage({
+  destination: (_req, _file, cb) => cb(null, BRANDING_DIR),
+  filename: (_req, file, cb) => {
+    const unique = `${Date.now()}-${Math.round(Math.random() * 1e6)}`;
+    const ext = path.extname(file.originalname);
+    cb(null, `${file.fieldname}-${unique}${ext}`);
+  },
+});
+
+const uploadBranding = multer({
+  storage: brandingStorage,
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10 MB limit
+  fileFilter: (_req, file, cb) => {
+    const allowed = ['.jpg', '.jpeg', '.png'];
+    const ext = path.extname(file.originalname).toLowerCase();
+    if (allowed.includes(ext)) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only .jpg, .jpeg, and .png files are allowed for branding.'));
     }
   },
 });
@@ -352,13 +383,22 @@ router.post('/yt-setup/close', async (req, res) => {
 });
 
 /** PUT /api/channels/:id — update a channel */
-router.put('/:id', (req, res) => {
+router.put('/:id', uploadBranding.fields([{ name: 'logo', maxCount: 1 }, { name: 'banner', maxCount: 1 }]), (req, res) => {
   const userId = req.session.userId;
   const { id } = req.params;
   const existing = verifyChannel(id, userId);
   if (!existing) return res.status(404).json({ error: 'Channel not found.' });
 
   const { name, niche, description, schedule_time, schedule_days, upload_privacy, category, comment_template, upload_mode, schedule_as_premiere, proxy_type, proxy_host, proxy_port, proxy_username, proxy_password, proxy_pool_id } = req.body;
+
+  const clearLogo = req.body.clear_logo === 'true' || req.body.clear_logo === true;
+  const clearBanner = req.body.clear_banner === 'true' || req.body.clear_banner === true;
+
+  const logoFile = req.files && req.files['logo'] ? req.files['logo'][0] : null;
+  const bannerFile = req.files && req.files['banner'] ? req.files['banner'][0] : null;
+
+  const logoPath = clearLogo ? null : (logoFile ? logoFile.path : existing.custom_logo_path);
+  const bannerPath = clearBanner ? null : (bannerFile ? bannerFile.path : existing.custom_banner_path);
 
   try {
     run(
@@ -378,7 +418,9 @@ router.put('/:id', (req, res) => {
          proxy_port = @proxyPort,
          proxy_username = @proxyUsername,
          proxy_password = @proxyPassword,
-         proxy_pool_id = @proxyPoolId
+         proxy_pool_id = @proxyPoolId,
+         custom_logo_path = @customLogoPath,
+         custom_banner_path = @customBannerPath
        WHERE id = @id AND user_id = @userId`,
       {
         name: name ?? existing.name,
@@ -397,6 +439,8 @@ router.put('/:id', (req, res) => {
         proxyUsername: proxy_username ?? existing.proxy_username,
         proxyPassword: proxy_password ?? existing.proxy_password,
         proxyPoolId: proxy_pool_id !== undefined ? (proxy_pool_id ? Number(proxy_pool_id) : null) : existing.proxy_pool_id,
+        customLogoPath: logoPath,
+        customBannerPath: bannerPath,
         id,
         userId,
       },
@@ -627,14 +671,74 @@ router.post('/:id/sync', async (req, res) => {
     return res.status(404).json({ error: 'Channel not found or does not belong to you.' });
   }
 
+  const channel = queryOne('SELECT upload_mode FROM channels WHERE id = @id', { id });
+
   try {
-    const result = await syncChannelWithYouTube(Number(id));
+    let result;
+    if (channel && channel.upload_mode === 'browser') {
+      result = await syncChannelWithYouTubeBrowser(Number(id));
+    } else {
+      result = await syncChannelWithYouTube(Number(id));
+    }
     res.json({
       success: true,
       ...result
     });
   } catch (err) {
     console.error(`[Sync] Error syncing channel ${id}:`, err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * POST /api/channels/:id/sync-branding — Synchronize channel branding (logo, banner, description) with YouTube
+ */
+router.post('/:id/sync-branding', async (req, res) => {
+  const userId = req.session.userId;
+  const { id } = req.params;
+  
+  const channel = verifyChannel(id, userId);
+  if (!channel) {
+    return res.status(404).json({ error: 'Channel not found or does not belong to you.' });
+  }
+
+  try {
+    let warning = null;
+
+    if (channel.upload_mode === 'browser') {
+      // Sync everything using Puppeteer browser automation
+      await updateChannelBrandingBrowser(Number(id), {
+        logoPath: channel.custom_logo_path,
+        bannerPath: channel.custom_banner_path,
+        description: channel.description
+      });
+    } else {
+      // API Mode
+      // Update description and banner via YouTube Data API
+      await updateChannelBrandingAPI(Number(id), {
+        description: channel.description,
+        bannerPath: channel.custom_banner_path
+      });
+
+      // If a custom logo is uploaded
+      if (channel.custom_logo_path) {
+        // If a browser profile is linked, sync logo via Puppeteer
+        if (channel.profile_name) {
+          await updateChannelBrandingBrowser(Number(id), {
+            logoPath: channel.custom_logo_path
+          });
+        } else {
+          warning = 'YouTube Data API does not support updating profile logos. To sync the profile logo, please link a browser profile in settings.';
+        }
+      }
+    }
+
+    res.json({
+      success: true,
+      warning
+    });
+  } catch (err) {
+    console.error(`[Branding Sync] Error syncing branding for channel ${id}:`, err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -762,6 +866,40 @@ router.get('/debug-db', (req, res) => {
       channels: channelStatus,
       recent_scheduled_posts: scheduled
     });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * GET /api/channels/:id/logo-file — Serve the channel logo file
+ */
+router.get('/:id/logo-file', (req, res) => {
+  const userId = req.session.userId;
+  const { id } = req.params;
+  try {
+    const channel = verifyChannel(id, userId);
+    if (!channel || !channel.custom_logo_path || !fs.existsSync(channel.custom_logo_path)) {
+      return res.status(404).send('Logo file not found.');
+    }
+    res.sendFile(channel.custom_logo_path);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * GET /api/channels/:id/banner-file — Serve the channel banner file
+ */
+router.get('/:id/banner-file', (req, res) => {
+  const userId = req.session.userId;
+  const { id } = req.params;
+  try {
+    const channel = verifyChannel(id, userId);
+    if (!channel || !channel.custom_banner_path || !fs.existsSync(channel.custom_banner_path)) {
+      return res.status(404).send('Banner file not found.');
+    }
+    res.sendFile(channel.custom_banner_path);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

@@ -4,7 +4,7 @@ import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { exec } from 'child_process';
 import { promisify } from 'util';
-import { queryOne } from '../db/database.js';
+import { queryOne, queryAll, run } from '../db/database.js';
 import { stopVncSession } from './vnc.js';
 
 const execAsync = promisify(exec);
@@ -505,13 +505,17 @@ function formatPublishDate(dateIso) {
 }
 
 /**
- * Formats publish time to YouTube-accepted text: "10:00 PM"
+ * Formats publish time to YouTube-accepted text: "07:00 PM"
  */
 function formatPublishTime(dateIso) {
   const date = new Date(dateIso);
-  const hours = String(date.getHours()).padStart(2, '0');
+  let hours = date.getHours();
   const minutes = String(date.getMinutes()).padStart(2, '0');
-  return `${hours}:${minutes}`;
+  const ampm = hours >= 12 ? 'PM' : 'AM';
+  hours = hours % 12;
+  hours = hours ? hours : 12; // Hour 0 becomes 12
+  const hoursStr = String(hours).padStart(2, '0');
+  return `${hoursStr}:${minutes} ${ampm}`;
 }
 
 /**
@@ -999,6 +1003,46 @@ export async function uploadVideoBrowser(channelId, opts, logFn = console.log) {
       await new Promise(r => setTimeout(r, 500));
     }
 
+    // Wait for the video to complete uploading so we don't abort it (checks run BEFORE clicking Save/Schedule)
+    logFn('[Puppet] Monitoring upload completion progress inside dialog (do not close)...');
+    let isUploading = true;
+    let checksCount = 0;
+    while (isUploading && checksCount < 720) {
+      const status = await page.evaluate(() => {
+        const uploadDialog = document.querySelector('ytcp-uploads-dialog');
+        if (!uploadDialog) {
+          return { done: false, reason: 'dialog_not_found' };
+        }
+        
+        const text = (uploadDialog.textContent || '').toLowerCase();
+        
+        const isDone = 
+          text.includes('upload complete') || 
+          text.includes('processing') || 
+          text.includes('checks') || 
+          text.includes('uploaded successfully') || 
+          text.includes('finished') ||
+          text.includes('yükleme tamamlandı') ||
+          text.includes('işleniyor') ||
+          text.includes('kontroller') ||
+          text.includes('başarıyla yüklendi') ||
+          text.includes('bitti');
+          
+        return { done: isDone, text: text.slice(0, 100) };
+      });
+
+      if (status.done) {
+        logFn(`[Puppet] Video upload complete or processing/checks started inside dialog: ${status.text}`);
+        isUploading = false;
+      } else {
+        await new Promise(r => setTimeout(r, 5000));
+        checksCount++;
+        if (checksCount % 12 === 0) {
+          logFn(`[Puppet] Uploading in progress... (${checksCount * 5}s elapsed)`);
+        }
+      }
+    }
+
     logFn('[Puppet] Finalizing upload (clicking Schedule/Save button)...');
     // YouTube shows "Schedule" button when scheduling, "Save" or "Done" otherwise
     const doneBtn = await page.waitForSelector(
@@ -1006,67 +1050,17 @@ export async function uploadVideoBrowser(channelId, opts, logFn = console.log) {
       { timeout: 10000 }
     );
     await safeClick(page, doneBtn, { scroll: true });
-    await new Promise(r => setTimeout(r, 3000));
-
-    // Wait for the video to complete uploading so we don't abort it
-    logFn('[Puppet] Monitoring upload completion progress (do not close)...');
-    let isUploading = true;
-    let checksCount = 0;
-    while (isUploading && checksCount < 120) {
-      const status = await page.evaluate(() => {
-        const uploadDialog = document.querySelector('ytcp-uploads-dialog');
-        const shareDialog = document.querySelector('ytcp-video-share-dialog');
-        
-        if (!uploadDialog && !shareDialog) {
-          return { done: true, reason: 'dialogs_closed' };
-        }
-        
-        const dialog = uploadDialog || shareDialog;
-        const text = (dialog.textContent || '').toLowerCase();
-        
-        const isDone = 
-          text.includes('upload complete') || 
-          text.includes('processing') || 
-          text.includes('checks') || 
-          text.includes('uploaded successfully') || 
-          text.includes('scheduled') || 
-          text.includes('finished') ||
-          text.includes('video published') ||
-          text.includes('yükleme tamamlandı') ||
-          text.includes('işleniyor') ||
-          text.includes('kontroller') ||
-          text.includes('başarıyla yüklendi') ||
-          text.includes('planlandı') ||
-          text.includes('zamanlandı') ||
-          text.includes('bitti') ||
-          text.includes('yayınlandı') ||
-          text.includes('paylaş') ||
-          text.includes('share') ||
-          text.includes('kapat') ||
-          text.includes('close');
-          
-        return { done: isDone, text: text.slice(0, 100) };
-      });
-
-      if (status.done) {
-        logFn(`[Puppet] Video upload complete or scheduled successfully: ${status.reason || 'completion text detected'}`);
-        isUploading = false;
-      } else {
-        await new Promise(r => setTimeout(r, 5000));
-        checksCount++;
-        if (checksCount % 6 === 0) {
-          logFn(`[Puppet] Uploading in progress... (${checksCount * 5}s elapsed)`);
-        }
-      }
-    }
+    await new Promise(r => setTimeout(r, 5000));
 
     // Try to get video ID again if we couldn't get it earlier
     if (!youtubeVideoId) {
       try {
-        const linkElem = await page.waitForSelector('span.video-url-text a, a.style-scope.ytcp-video-info, #share-url, .video-url-fadeable a', { timeout: 10000 });
-        const videoLink = await page.evaluate(el => el.href || el.textContent, linkElem);
-        youtubeVideoId = extractVideoId(videoLink);
-        logFn(`[Puppet] Extracted YouTube Video ID on completion: ${youtubeVideoId}`);
+        const linkElem = await page.waitForSelector('span.video-url-text a, a.style-scope.ytcp-video-info, #share-url, .video-url-fadeable a', { timeout: 10000 }).catch(() => null);
+        if (linkElem) {
+          const videoLink = await page.evaluate(el => el.href || el.textContent, linkElem);
+          youtubeVideoId = extractVideoId(videoLink);
+          logFn(`[Puppet] Extracted YouTube Video ID on completion: ${youtubeVideoId}`);
+        }
       } catch (e) {
         logFn(`[Puppet] Warning: could not find video ID at completion: ${e.message}`);
       }
@@ -1939,6 +1933,410 @@ export async function postCommentBrowser(channelId, videoId, text) {
     try {
       await browser.close();
     } catch {}
+  }
+}
+
+// ---------------------------------------------------------------------------
+
+/**
+ * Update the profile picture logo, banner image, and description in YouTube Studio using Puppeteer.
+ * @param {number} channelId
+ * @param {object} opts { logoPath, bannerPath, description }
+ * @param {function} logFn
+ */
+export async function updateChannelBrandingBrowser(channelId, opts, logFn = console.log) {
+  await closeBrowserSession(channelId);
+  try { await stopVncSession(); } catch (e) {}
+  await new Promise(r => setTimeout(r, 1000));
+
+  const profilePath = getProfilePath(channelId);
+  const chromePath = getChromePath();
+
+  // Force clean up lock files
+  try {
+    const lockFiles = ['SingletonLock', 'SingletonSocket', 'SingletonCookie'];
+    for (const f of lockFiles) {
+      const p = path.join(profilePath, f);
+      if (fs.existsSync(p)) fs.unlinkSync(p);
+    }
+  } catch (e) {}
+
+  const channel = queryOne('SELECT * FROM channels WHERE id = @id', { id: channelId });
+  const proxyConfig = resolveChannelProxy(channel);
+  const proxyUrl = proxyConfig ? proxyConfig.proxyUrl : null;
+
+  const runHeadless = process.env.PUPPET_HEADLESS !== 'false';
+  logFn(`[Puppet Branding] Starting browser branding update for channel ${channelId} (headless: ${runHeadless})`);
+  const browser = await launchBrowserWithRetry(chromePath, profilePath, runHeadless, 3, 3000, proxyUrl);
+
+  let page;
+  try {
+    page = await browser.newPage();
+    if (proxyConfig && (proxyConfig.username || proxyConfig.password)) {
+      await page.authenticate({
+        username: proxyConfig.username || '',
+        password: proxyConfig.password || ''
+      });
+    }
+    await page.setExtraHTTPHeaders({ 'Accept-Language': 'en-US,en;q=0.9' });
+    await page.setUserAgent(getUserAgent());
+    await page.setViewport({ width: 1280, height: 800 });
+
+    await page.evaluateOnNewDocument(() => {
+      Object.defineProperty(navigator, 'webdriver', { get: () => false });
+      Object.defineProperty(navigator, 'plugins', {
+        get: () => [
+          { name: 'PDF Viewer' },
+          { name: 'Chrome PDF Viewer' },
+          { name: 'Chromium PDF Viewer' }
+        ]
+      });
+    });
+
+    const hasLogo = opts.logoPath && fs.existsSync(opts.logoPath);
+    const hasBanner = opts.bannerPath && fs.existsSync(opts.bannerPath);
+
+    if (hasLogo || hasBanner) {
+      const brandingUrl = channel.youtube_channel_id
+        ? `https://studio.youtube.com/channel/${channel.youtube_channel_id}/editing/branding?hl=en`
+        : `https://studio.youtube.com/editing/branding?hl=en`;
+
+      logFn(`[Puppet Branding] Navigating to Branding Customization: ${brandingUrl}`);
+      await page.goto(brandingUrl, { waitUntil: 'networkidle2', timeout: 60000 });
+
+      if (page.url().includes('accounts.google.com')) {
+        throw new Error('Not logged in. Please set up your browser session in the channel settings first.');
+      }
+
+      if (hasLogo) {
+        logFn('[Puppet Branding] Uploading profile logo...');
+        const fileChooserPromise = page.waitForFileChooser();
+
+        const logoBtnClicked = await page.evaluate(() => {
+          const items = Array.from(document.querySelectorAll('ytcp-firm-validation-item, ytcp-brand-editing-section, ytcp-brand-editing-row, [role="row"], .section, .row'));
+          const targetItem = items.find(el => {
+            const text = (el.textContent || '').toLowerCase();
+            return text.includes('picture') || text.includes('profile') || text.includes('profil') || text.includes('resim');
+          });
+          const buttons = targetItem ? Array.from(targetItem.querySelectorAll('ytcp-button, button')) : [];
+          const btn = buttons.find(b => {
+            const text = (b.textContent || '').toLowerCase();
+            return text.includes('upload') || text.includes('change') || text.includes('yükle') || text.includes('değiştir') || text.includes('seç');
+          });
+          if (btn) { btn.click(); return true; }
+
+          // Fallback: click first upload/change button
+          const allButtons = Array.from(document.querySelectorAll('ytcp-button, button'));
+          const fallbackBtn = allButtons.find(b => {
+            const text = (b.textContent || '').toLowerCase();
+            return text.includes('upload') || text.includes('change') || text.includes('yükle') || text.includes('değiştir');
+          });
+          if (fallbackBtn) { fallbackBtn.click(); return true; }
+          return false;
+        });
+
+        if (logoBtnClicked) {
+          const fileChooser = await fileChooserPromise;
+          await fileChooser.accept([opts.logoPath]);
+
+          logFn('[Puppet Branding] Logo file uploaded, waiting for crop dialog Done button...');
+          await new Promise(r => setTimeout(r, 2000));
+          const doneBtn = await page.waitForSelector('#done-button, ytcp-button#done-button, ytcp-button[id="done-button"]', { timeout: 8000 }).catch(() => null);
+          if (doneBtn) {
+            await safeClick(page, doneBtn);
+          } else {
+            await page.evaluate(() => {
+              const buttons = Array.from(document.querySelectorAll('ytcp-button, paper-button, button'));
+              const btn = buttons.find(b => {
+                const text = (b.textContent || '').trim().toLowerCase();
+                return text === 'done' || text === 'bitti' || text.includes('done') || text.includes('bitti');
+              });
+              if (btn) btn.click();
+            });
+          }
+          await new Promise(r => setTimeout(r, 2000));
+        } else {
+          logFn('[Puppet Branding] Warning: Could not click logo upload button.');
+        }
+      }
+
+      if (hasBanner) {
+        logFn('[Puppet Branding] Uploading banner image...');
+        const fileChooserPromise = page.waitForFileChooser();
+
+        const bannerBtnClicked = await page.evaluate(() => {
+          const items = Array.from(document.querySelectorAll('ytcp-firm-validation-item, ytcp-brand-editing-section, ytcp-brand-editing-row, [role="row"], .section, .row'));
+          const targetItem = items.find(el => {
+            const text = (el.textContent || '').toLowerCase();
+            return text.includes('banner') || text.includes('kapak') || text.includes('banner image');
+          });
+          const buttons = targetItem ? Array.from(targetItem.querySelectorAll('ytcp-button, button')) : [];
+          const btn = buttons.find(b => {
+            const text = (b.textContent || '').toLowerCase();
+            return text.includes('upload') || text.includes('change') || text.includes('yükle') || text.includes('değiştir') || text.includes('seç');
+          });
+          if (btn) { btn.click(); return true; }
+
+          // Fallback: click second upload/change button
+          const allButtons = Array.from(document.querySelectorAll('ytcp-button, button')).filter(b => {
+            const text = (b.textContent || '').toLowerCase();
+            return text.includes('upload') || text.includes('change') || text.includes('yükle') || text.includes('değiştir');
+          });
+          if (allButtons[1]) { allButtons[1].click(); return true; }
+          return false;
+        });
+
+        if (bannerBtnClicked) {
+          const fileChooser = await fileChooserPromise;
+          await fileChooser.accept([opts.bannerPath]);
+
+          logFn('[Puppet Branding] Banner file uploaded, waiting for crop dialog Done button...');
+          await new Promise(r => setTimeout(r, 2000));
+          const doneBtn = await page.waitForSelector('#done-button, ytcp-button#done-button, ytcp-button[id="done-button"]', { timeout: 8000 }).catch(() => null);
+          if (doneBtn) {
+            await safeClick(page, doneBtn);
+          } else {
+            await page.evaluate(() => {
+              const buttons = Array.from(document.querySelectorAll('ytcp-button, paper-button, button'));
+              const btn = buttons.find(b => {
+                const text = (b.textContent || '').trim().toLowerCase();
+                return text === 'done' || text === 'bitti' || text.includes('done') || text.includes('bitti');
+              });
+              if (btn) btn.click();
+            });
+          }
+          await new Promise(r => setTimeout(r, 2000));
+        } else {
+          logFn('[Puppet Branding] Warning: Could not click banner upload button.');
+        }
+      }
+    }
+
+    if (opts.description !== undefined && opts.description !== null) {
+      const detailsUrl = channel.youtube_channel_id
+        ? `https://studio.youtube.com/channel/${channel.youtube_channel_id}/editing/details?hl=en`
+        : `https://studio.youtube.com/editing/details?hl=en`;
+
+      logFn(`[Puppet Branding] Navigating to Details Customization: ${detailsUrl}`);
+      await page.goto(detailsUrl, { waitUntil: 'networkidle2', timeout: 60000 });
+
+      if (page.url().includes('accounts.google.com')) {
+        throw new Error('Not logged in. Please set up your browser session in the channel settings first.');
+      }
+
+      logFn('[Puppet Branding] Inputting description...');
+      const descSet = await page.evaluate((descText) => {
+        const textareas = Array.from(document.querySelectorAll('textarea, [id*="description"] [id="textbox"], ytcp-textarea [id="textbox"], ytcp-mention-textbox [id="textbox"]'));
+        let descInput = textareas.find(ta => {
+          const parentText = (ta.parentElement?.textContent || ta.closest('ytcp-textarea, ytcp-mention-textbox')?.textContent || '').toLowerCase();
+          return parentText.includes('description') || parentText.includes('açıklama') || parentText.includes('aciklama');
+        }) || textareas[0];
+
+        if (descInput) {
+          descInput.focus();
+          descInput.select && descInput.select();
+          document.execCommand('selectAll');
+          document.execCommand('insertText', false, descText);
+          descInput.dispatchEvent(new Event('input', { bubbles: true }));
+          descInput.dispatchEvent(new Event('change', { bubbles: true }));
+          return true;
+        }
+        return false;
+      }, opts.description);
+
+      if (!descSet) {
+        const descInput = await page.waitForSelector('ytcp-textarea[id*="description"] #textbox, #description-textarea #textbox, textarea', { timeout: 5000 });
+        await safeClick(page, descInput, { scroll: true, focus: true });
+        await page.keyboard.down('Control');
+        await page.keyboard.press('A');
+        await page.keyboard.up('Control');
+        await page.keyboard.press('Backspace');
+        await page.keyboard.type(opts.description);
+      }
+      await new Promise(r => setTimeout(r, 2000));
+    }
+
+    logFn('[Puppet Branding] Publishing changes...');
+    const publishBtn = await page.waitForSelector('#publish-button, ytcp-button#publish-button', { timeout: 10000 }).catch(() => null);
+    if (publishBtn) {
+      await safeClick(page, publishBtn);
+    } else {
+      await page.evaluate(() => {
+        const buttons = Array.from(document.querySelectorAll('ytcp-button, button'));
+        const btn = buttons.find(b => {
+          const text = (b.textContent || '').trim().toLowerCase();
+          return text === 'publish' || text === 'yayınla' || text === 'yayinla' || text.includes('publish') || text.includes('yayınla');
+        });
+        if (btn) btn.click();
+      });
+    }
+    await new Promise(r => setTimeout(r, 5000));
+    logFn('[Puppet Branding] Branding update complete.');
+    await browser.close();
+  } catch (err) {
+    logFn(`[Puppet Branding] Branding update error: ${err.message}`);
+    try {
+      await page.screenshot({ path: path.join(profilePath, 'puppet_branding_error.png') });
+    } catch {}
+    try {
+      await browser.close();
+    } catch {}
+    throw err;
+  }
+}
+
+/**
+ * Headlessly navigate to YouTube Studio content uploads page to extract visible videos.
+ * Compares them with completed scheduled posts in the database from the last 7 days.
+ * Marks missing ones as cancelled and reclaims assets.
+ * @param {number} channelId
+ * @param {function} logFn
+ */
+export async function syncChannelWithYouTubeBrowser(channelId, logFn = console.log) {
+  await closeBrowserSession(channelId);
+  try { await stopVncSession(); } catch (e) {}
+  await new Promise(r => setTimeout(r, 1000));
+
+  const profilePath = getProfilePath(channelId);
+  const chromePath = getChromePath();
+
+  // Force clean up lock files
+  try {
+    const lockFiles = ['SingletonLock', 'SingletonSocket', 'SingletonCookie'];
+    for (const f of lockFiles) {
+      const p = path.join(profilePath, f);
+      if (fs.existsSync(p)) fs.unlinkSync(p);
+    }
+  } catch (e) {}
+
+  const channel = queryOne('SELECT * FROM channels WHERE id = @id', { id: channelId });
+  if (!channel) throw new Error(`Channel ${channelId} not found.`);
+
+  const proxyConfig = resolveChannelProxy(channel);
+  const proxyUrl = proxyConfig ? proxyConfig.proxyUrl : null;
+
+  const runHeadless = process.env.PUPPET_HEADLESS !== 'false';
+  logFn(`[Puppet Sync] Starting browser sync for channel ${channelId} (headless: ${runHeadless})`);
+  const browser = await launchBrowserWithRetry(chromePath, profilePath, runHeadless, 3, 3000, proxyUrl);
+
+  let page;
+  try {
+    page = await browser.newPage();
+    if (proxyConfig && (proxyConfig.username || proxyConfig.password)) {
+      await page.authenticate({
+        username: proxyConfig.username || '',
+        password: proxyConfig.password || ''
+      });
+    }
+    await page.setExtraHTTPHeaders({ 'Accept-Language': 'en-US,en;q=0.9' });
+    await page.setUserAgent(getUserAgent());
+    await page.setViewport({ width: 1280, height: 800 });
+
+    await page.evaluateOnNewDocument(() => {
+      Object.defineProperty(navigator, 'webdriver', { get: () => false });
+    });
+
+    const targetUrl = channel.youtube_channel_id
+      ? `https://studio.youtube.com/channel/${channel.youtube_channel_id}/videos/upload?hl=en`
+      : `https://studio.youtube.com/channel/videos?hl=en`;
+
+    logFn(`[Puppet Sync] Navigating to Content page: ${targetUrl}`);
+    await page.goto(targetUrl, { waitUntil: 'networkidle2', timeout: 60000 });
+
+    if (page.url().includes('accounts.google.com')) {
+      throw new Error('Not logged in. Please set up your browser session in the channel settings first.');
+    }
+
+    logFn('[Puppet Sync] Waiting for videos list to load...');
+    await page.waitForSelector('ytcp-video-row, #row-container, ytcp-video-list-cell-video, a', { timeout: 15000 }).catch(() => null);
+
+    // Give a small delay for react rendering
+    await new Promise(r => setTimeout(r, 3000));
+
+    logFn('[Puppet Sync] Extracting video IDs from the page DOM...');
+    const videoIds = await page.evaluate(() => {
+      const ids = new Set();
+      const anchors = Array.from(document.querySelectorAll('a'));
+      for (const a of anchors) {
+        const href = a.href || '';
+        const watchMatch = href.match(/[?&]v=([a-zA-Z0-9_-]{11})/);
+        if (watchMatch) {
+          ids.add(watchMatch[1]);
+          continue;
+        }
+        const shortsMatch = href.match(/\/shorts\/([a-zA-Z0-9_-]{11})/);
+        if (shortsMatch) {
+          ids.add(shortsMatch[1]);
+          continue;
+        }
+        const editMatch = href.match(/\/video\/([a-zA-Z0-9_-]{11})/);
+        if (editMatch) {
+          ids.add(editMatch[1]);
+          continue;
+        }
+      }
+      const elements = Array.from(document.querySelectorAll('[video-id], [videoid]'));
+      for (const el of elements) {
+        const vid = el.getAttribute('video-id') || el.getAttribute('videoid');
+        if (vid && vid.length === 11) {
+          ids.add(vid);
+        }
+      }
+      return Array.from(ids);
+    });
+
+    logFn(`[Puppet Sync] Found ${videoIds.length} video IDs on the visible page.`);
+    await browser.close();
+
+    // Query completed posts from last 14 days
+    const cutoffDate = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString();
+    const completedPosts = queryAll(
+      `SELECT * FROM scheduled_posts 
+       WHERE channel_id = @channelId 
+         AND status = 'complete' 
+         AND youtube_video_id IS NOT NULL
+         AND scheduled_at >= @cutoffDate`,
+      { channelId, cutoffDate }
+    );
+
+    let cancelledCount = 0;
+    for (const post of completedPosts) {
+      if (!videoIds.includes(post.youtube_video_id)) {
+        logFn(`[Puppet Sync] Video ${post.youtube_video_id} ("${post.title}") not found on YouTube Studio. Reclaiming assets...`);
+        // Reclaim thumbnail
+        if (post.thumbnail_id) {
+          run(`UPDATE thumbnails SET used = 0 WHERE id = @id`, { id: post.thumbnail_id });
+        }
+        // Reclaim title
+        if (post.title) {
+          run(`
+            UPDATE titles 
+            SET used = 0 
+            WHERE id = (
+              SELECT id FROM titles 
+              WHERE channel_id = @channelId AND text = @title AND used = 1 
+              ORDER BY id DESC 
+              LIMIT 1
+            )
+          `, { channelId: post.channel_id, title: post.title });
+        }
+        // Mark post as cancelled
+        run(`UPDATE scheduled_posts SET status = 'cancelled' WHERE id = @id`, { id: post.id });
+        cancelledCount++;
+      }
+    }
+
+    logFn(`[Puppet Sync] Sync complete. Synced: ${completedPosts.length}, Cancelled: ${cancelledCount}`);
+    return { synced: completedPosts.length, cancelled: cancelledCount };
+  } catch (err) {
+    logFn(`[Puppet Sync] Sync error: ${err.message}`);
+    try {
+      await page.screenshot({ path: path.join(profilePath, 'puppet_sync_error.png') });
+    } catch {}
+    try {
+      await browser.close();
+    } catch {}
+    throw err;
   }
 }
 

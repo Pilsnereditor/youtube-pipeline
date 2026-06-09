@@ -270,6 +270,21 @@ export function initDb() {
     console.error('[DB Migration] Error adding proxy_pool_id column to channels:', err);
   }
 
+  // Self-healing migration for custom_logo_path and custom_banner_path columns in channels
+  try {
+    const pragma = db.prepare('PRAGMA table_info(channels)').all();
+    if (!pragma.some(c => c.name === 'custom_logo_path')) {
+      db.prepare(`ALTER TABLE channels ADD COLUMN custom_logo_path TEXT DEFAULT NULL`).run();
+      console.log('[DB Migration] Added custom_logo_path column to channels table.');
+    }
+    if (!pragma.some(c => c.name === 'custom_banner_path')) {
+      db.prepare(`ALTER TABLE channels ADD COLUMN custom_banner_path TEXT DEFAULT NULL`).run();
+      console.log('[DB Migration] Added custom_banner_path column to channels table.');
+    }
+  } catch (err) {
+    console.error('[DB Migration] Error adding branding columns to channels:', err);
+  }
+
   // Seed webshare_api_key setting
   try {
     db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('webshare_api_key', 'grts0ygdwgzh971s0iblqmssqogisrc04adyjm4d')").run();

@@ -95,7 +95,10 @@ async function loadAllData() {
 }
 
 async function triggerBackgroundSync() {
-  const connectedChannels = state.channels.filter(ch => ch.has_token > 0);
+  const connectedChannels = state.channels.filter(ch => 
+    (ch.upload_mode === 'browser' && ch.has_profile > 0) || 
+    (ch.upload_mode === 'api' && ch.has_token > 0)
+  );
   if (connectedChannels.length === 0) return;
 
   console.log(`[Sync] Triggering background sync for ${connectedChannels.length} channel(s)...`);
@@ -151,8 +154,27 @@ async function loadMediaVideos() {
   try {
     const channelSelect = document.getElementById('mediaChannelSelect');
     const channelId = channelSelect ? channelSelect.value : '';
-    const url = channelId ? `${API_BASE}/media/videos?channelId=${channelId}` : `${API_BASE}/media/videos`;
+    
+    if (!channelId) {
+      state.videos = [];
+      const badgeAll = document.getElementById('badge-all-count');
+      const badgePub = document.getElementById('badge-published-count');
+      const badgeUnpub = document.getElementById('badge-unpublished-count');
+      const badgeUploading = document.getElementById('badge-uploading-count');
+      if (badgeAll) badgeAll.textContent = 0;
+      if (badgePub) badgePub.textContent = 0;
+      if (badgeUnpub) badgeUnpub.textContent = 0;
+      if (badgeUploading) badgeUploading.textContent = 0;
+      
+      const countEl = document.getElementById('mediaVideoCount');
+      if (countEl) countEl.textContent = '0 videos';
+      
+      renderVideosGrid();
+      populateVideoDropdowns();
+      return;
+    }
 
+    const url = `${API_BASE}/media/videos?channelId=${channelId}`;
     const res = await fetch(url);
     state.videos = await res.json();
 
@@ -190,8 +212,17 @@ async function loadMediaThumbnails() {
   try {
     const channelSelect = document.getElementById('mediaChannelSelect');
     const channelId = channelSelect ? channelSelect.value : '';
-    const url = channelId ? `${API_BASE}/media/thumbnails?channelId=${channelId}` : `${API_BASE}/media/thumbnails`;
+    
+    if (!channelId) {
+      state.thumbnails = [];
+      const countEl = document.getElementById('mediaThumbCount');
+      if (countEl) countEl.textContent = '0 thumbnails';
+      renderThumbnailsGrid();
+      populateThumbnailDropdowns();
+      return;
+    }
 
+    const url = `${API_BASE}/media/thumbnails?channelId=${channelId}`;
     const res = await fetch(url);
     state.thumbnails = await res.json();
     document.getElementById('mediaThumbCount').textContent = `${state.thumbnails.length} thumbnails`;
@@ -205,6 +236,42 @@ async function loadMediaThumbnails() {
 function onMediaChannelChange() {
   loadMediaVideos();
   loadMediaThumbnails();
+}
+
+async function refreshMediaVideos(event) {
+  const channelSelect = document.getElementById('mediaChannelSelect');
+  const channelId = channelSelect ? channelSelect.value : '';
+  if (!channelId) {
+    loadMediaVideos();
+    return;
+  }
+  
+  const refreshBtn = event.currentTarget;
+  const originalText = refreshBtn.innerHTML;
+  refreshBtn.disabled = true;
+  refreshBtn.innerHTML = '🔄 Syncing...';
+  
+  showToast('Syncing channel videos with YouTube...', 'info');
+  try {
+    const syncRes = await fetch(`${API_BASE}/channels/${channelId}/sync`, { method: 'POST' });
+    const syncData = await syncRes.json();
+    if (syncData.success) {
+      showToast(`Sync complete! ${syncData.cancelled} deleted videos cancelled and returned to stock.`, 'success');
+    } else {
+      showToast(`Sync completed with warning: ${syncData.error || 'Unknown error'}`, 'warning');
+    }
+  } catch (err) {
+    showToast('Failed to sync channel with YouTube: ' + err.message, 'warning');
+  } finally {
+    refreshBtn.disabled = false;
+    refreshBtn.innerHTML = originalText;
+    // Reload channels to update stock count in other views
+    await loadChannels();
+    // Reload videos
+    await loadMediaVideos();
+    // Reload scheduled posts
+    await loadScheduledPosts();
+  }
 }
 
 async function loadScheduledPosts() {
@@ -561,6 +628,17 @@ function renderVideosGrid() {
   const grid = document.getElementById('mediaVideoGrid');
   if (!grid) return;
 
+  const channelSelect = document.getElementById('mediaChannelSelect');
+  const channelId = channelSelect ? channelSelect.value : '';
+  if (!channelId) {
+    grid.innerHTML = `
+      <div class="empty-state">
+        <p class="muted">Please select a YouTube Channel from the list above to view its library.</p>
+      </div>
+    `;
+    return;
+  }
+
   // Override grid styling to support horizontal list view stack
   grid.style.display = 'flex';
   grid.style.flexDirection = 'column';
@@ -743,6 +821,19 @@ function renderVideosGrid() {
 
 function renderThumbnailsGrid() {
   const grid = document.getElementById('mediaThumbGrid');
+  if (!grid) return;
+
+  const channelSelect = document.getElementById('mediaChannelSelect');
+  const channelId = channelSelect ? channelSelect.value : '';
+  if (!channelId) {
+    grid.innerHTML = `
+      <div class="empty-state">
+        <p class="muted">Please select a YouTube Channel from the list above to view its library.</p>
+      </div>
+    `;
+    return;
+  }
+
   if (state.thumbnails.length === 0) {
     grid.innerHTML = `
       <div class="empty-state">
@@ -1463,6 +1554,41 @@ async function openEditChannelModal(channelId) {
   document.getElementById('editChName').value = channel.name;
   document.getElementById('editChNiche').value = channel.niche || '';
   document.getElementById('editChDesc').value = channel.description || '';
+
+  // Reset branding selectors and flags
+  window.logoCleared = false;
+  window.bannerCleared = false;
+  window.logoFileSelected = null;
+  window.bannerFileSelected = null;
+  document.getElementById('editChLogoFile').value = '';
+  document.getElementById('editChBannerFile').value = '';
+
+  // Show current logo if exists
+  const logoImg = document.getElementById('editChLogoPreview');
+  const logoPlaceholder = document.getElementById('editChLogoPlaceholder');
+  if (channel.custom_logo_path) {
+    logoImg.src = `${API_BASE}/channels/${channel.id}/logo-file?t=${Date.now()}`;
+    logoImg.style.display = 'block';
+    logoPlaceholder.style.display = 'none';
+  } else {
+    logoImg.src = '';
+    logoImg.style.display = 'none';
+    logoPlaceholder.style.display = 'block';
+  }
+
+  // Show current banner if exists
+  const bannerImg = document.getElementById('editChBannerPreview');
+  const bannerPlaceholder = document.getElementById('editChBannerPlaceholder');
+  if (channel.custom_banner_path) {
+    bannerImg.src = `${API_BASE}/channels/${channel.id}/banner-file?t=${Date.now()}`;
+    bannerImg.style.display = 'block';
+    bannerPlaceholder.style.display = 'none';
+  } else {
+    bannerImg.src = '';
+    bannerImg.style.display = 'none';
+    bannerPlaceholder.style.display = 'block';
+  }
+
   document.getElementById('editChTime').value = channel.schedule_time || '10:00';
   const scheduleDays = channel.schedule_days || 'mon,wed,fri';
   document.getElementById('editChDays').value = scheduleDays;
@@ -1550,26 +1676,44 @@ async function saveChannel() {
 
   const proxy_pool_id = document.getElementById('editChProxyPoolId') ? document.getElementById('editChProxyPoolId').value : '';
 
+  const formData = new FormData();
+  formData.append('name', name);
+  formData.append('niche', niche);
+  formData.append('description', description);
+  formData.append('schedule_time', time);
+  formData.append('schedule_days', days);
+  formData.append('comment_template', comment);
+  formData.append('upload_mode', uploadMode);
+  formData.append('schedule_as_premiere', scheduleAsPremiere);
+  formData.append('proxy_type', proxy_type);
+  formData.append('proxy_host', proxy_host);
+  formData.append('proxy_port', proxy_port);
+  formData.append('proxy_username', proxy_username);
+  formData.append('proxy_password', proxy_password);
+  if (proxy_pool_id) {
+    formData.append('proxy_pool_id', proxy_pool_id);
+  }
+
+  // Clear flags
+  if (window.logoCleared) {
+    formData.append('clear_logo', 'true');
+  }
+  if (window.bannerCleared) {
+    formData.append('clear_banner', 'true');
+  }
+
+  // Selected files
+  if (window.logoFileSelected) {
+    formData.append('logo', window.logoFileSelected);
+  }
+  if (window.bannerFileSelected) {
+    formData.append('banner', window.bannerFileSelected);
+  }
+
   try {
     const res = await fetch(`${API_BASE}/channels/${state.selectedChannelId}`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        name,
-        niche,
-        description,
-        schedule_time: time,
-        schedule_days: days,
-        comment_template: comment,
-        upload_mode: uploadMode,
-        schedule_as_premiere: scheduleAsPremiere,
-        proxy_type,
-        proxy_host,
-        proxy_port,
-        proxy_username,
-        proxy_password,
-        proxy_pool_id: proxy_pool_id ? Number(proxy_pool_id) : null
-      })
+      body: formData
     });
 
     if (!res.ok) throw new Error(await res.text());
@@ -5617,5 +5761,84 @@ async function deleteProxy(proxyId) {
     loadProxyPool();
   } catch (err) {
     showToast('Delete failed: ' + err.message, 'error');
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Channel Branding Management (Logo / Banner / Description Sync)
+// ---------------------------------------------------------------------------
+function previewBrandingFile(type) {
+  const fileInput = document.getElementById(type === 'logo' ? 'editChLogoFile' : 'editChBannerFile');
+  const previewImg = document.getElementById(type === 'logo' ? 'editChLogoPreview' : 'editChBannerPreview');
+  const placeholder = document.getElementById(type === 'logo' ? 'editChLogoPlaceholder' : 'editChBannerPlaceholder');
+
+  const file = fileInput.files[0];
+  if (file) {
+    if (type === 'logo') {
+      window.logoFileSelected = file;
+      window.logoCleared = false;
+    } else {
+      window.bannerFileSelected = file;
+      window.bannerCleared = false;
+    }
+
+    const reader = new FileReader();
+    reader.onload = function (e) {
+      previewImg.src = e.target.result;
+      previewImg.style.display = 'block';
+      placeholder.style.display = 'none';
+    };
+    reader.readAsDataURL(file);
+  }
+}
+
+function clearChLogo() {
+  window.logoCleared = true;
+  window.logoFileSelected = null;
+  document.getElementById('editChLogoFile').value = '';
+  const previewImg = document.getElementById('editChLogoPreview');
+  const placeholder = document.getElementById('editChLogoPlaceholder');
+  previewImg.src = '';
+  previewImg.style.display = 'none';
+  placeholder.style.display = 'block';
+}
+
+function clearChBanner() {
+  window.bannerCleared = true;
+  window.bannerFileSelected = null;
+  document.getElementById('editChBannerFile').value = '';
+  const previewImg = document.getElementById('editChBannerPreview');
+  const placeholder = document.getElementById('editChBannerPlaceholder');
+  previewImg.src = '';
+  previewImg.style.display = 'none';
+  placeholder.style.display = 'block';
+}
+
+async function syncChannelBranding() {
+  if (!state.selectedChannelId) return;
+
+  const btn = document.getElementById('btnSyncBranding');
+  const originalHtml = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = '⏳ Syncing...';
+
+  try {
+    const res = await fetch(`${API_BASE}/channels/${state.selectedChannelId}/sync-branding`, {
+      method: 'POST'
+    });
+
+    if (!res.ok) throw new Error(await res.text());
+    
+    const data = await res.json();
+    if (data.warning) {
+      showToast(data.warning, 'warning');
+    } else {
+      showToast('Branding synchronized successfully!', 'success');
+    }
+  } catch (err) {
+    showToast('Failed to sync branding: ' + err.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = originalHtml;
   }
 }

@@ -10,24 +10,28 @@ async function run() {
   const profilePath = '/var/www/youtube-pipeline/data/profiles/profile_Levo_SG_Arsiv';
   const chromePath = '/usr/bin/google-chrome'; // Standard path on Linux VPS
 
-  console.log('Launching browser directly via puppeteer-core...');
+  console.log('Launching browser in HEADED mode on display :99...');
   const browser = await puppeteer.launch({
     executablePath: chromePath,
     userDataDir: profilePath,
-    headless: true,
+    headless: false, // Headed mode
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
-      '--disable-blink-features=AutomationControlled'
-    ]
+      '--disable-blink-features=AutomationControlled',
+      '--start-maximized'
+    ],
+    env: {
+      ...process.env,
+      DISPLAY: ':99' // Use Xvfb virtual display
+    }
   });
 
   const page = await browser.newPage();
   await page.setViewport({ width: 1280, height: 800 });
-  await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+  await page.setUserAgent('Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
   await page.setExtraHTTPHeaders({ 'Accept-Language': 'en-US,en;q=0.9' });
 
-  // Use generic URL without channel ID prefix
   const targetUrl = 'https://studio.youtube.com/editing/branding?hl=en';
   console.log(`Navigating to ${targetUrl}...`);
   await page.goto(targetUrl, { waitUntil: 'networkidle2', timeout: 60000 });

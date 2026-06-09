@@ -1,5 +1,4 @@
-import { launchBrowserWithRetry } from './server/services/puppet.js';
-import Database from 'better-sqlite3';
+import puppeteer from 'puppeteer-core';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
@@ -8,12 +7,21 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 async function run() {
-  const channelId = 1; // Sizden Gelenler Videolari
   const profilePath = '/var/www/youtube-pipeline/data/profiles/profile_Levo_SG_Arsiv';
   const chromePath = '/usr/bin/google-chrome'; // Standard path on Linux VPS
 
-  console.log('Starting diagnostic browser...');
-  const browser = await launchBrowserWithRetry(chromePath, profilePath, true, 1, 1000, null);
+  console.log('Launching browser directly via puppeteer-core...');
+  const browser = await puppeteer.launch({
+    executablePath: chromePath,
+    userDataDir: profilePath,
+    headless: true,
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-blink-features=AutomationControlled'
+    ]
+  });
+
   const page = await browser.newPage();
   await page.setViewport({ width: 1280, height: 800 });
   await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
@@ -28,6 +36,12 @@ async function run() {
 
   // Save screenshot
   const screenshotPath = path.join(__dirname, 'scratch', 'branding_vps_screenshot.png');
+  // Ensure scratch directory exists
+  const scratchDir = path.join(__dirname, 'scratch');
+  if (!fs.existsSync(scratchDir)) {
+    fs.mkdirSync(scratchDir, { recursive: true });
+  }
+  
   await page.screenshot({ path: screenshotPath });
   console.log(`Screenshot saved to ${screenshotPath}`);
 
@@ -45,9 +59,9 @@ async function run() {
       url: window.location.href,
       title: document.title,
       iframes,
-      buttons: buttons.slice(0, 50), // first 50
+      buttons: buttons.slice(0, 100), // first 100
       bodyTextLength: document.body.textContent.length,
-      bodyTextSnippet: document.body.textContent.substring(0, 500)
+      bodyTextSnippet: document.body.textContent.substring(0, 800)
     };
   });
 

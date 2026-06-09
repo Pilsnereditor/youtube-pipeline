@@ -27,7 +27,8 @@ async function run() {
   await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
   await page.setExtraHTTPHeaders({ 'Accept-Language': 'en-US,en;q=0.9' });
 
-  const targetUrl = 'https://studio.youtube.com/channel/UCq3cRUVvokqGesD15gRBElw/editing/branding?hl=en';
+  // Use generic URL without channel ID prefix
+  const targetUrl = 'https://studio.youtube.com/editing/branding?hl=en';
   console.log(`Navigating to ${targetUrl}...`);
   await page.goto(targetUrl, { waitUntil: 'networkidle2', timeout: 60000 });
 
@@ -36,7 +37,6 @@ async function run() {
 
   // Save screenshot
   const screenshotPath = path.join(__dirname, 'scratch', 'branding_vps_screenshot.png');
-  // Ensure scratch directory exists
   const scratchDir = path.join(__dirname, 'scratch');
   if (!fs.existsSync(scratchDir)) {
     fs.mkdirSync(scratchDir, { recursive: true });

@@ -77,6 +77,29 @@ async function run() {
     await new Promise(r => setTimeout(r, 10000));
   }
 
+  // Check for customization page elements
+  const pageElements = await page.evaluate(() => {
+    const textareas = Array.from(document.querySelectorAll('textarea, [id*="description"] [id="textbox"], ytcp-textarea [id="textbox"], ytcp-mention-textbox [id="textbox"]')).map(ta => ({
+      tag: ta.tagName,
+      id: ta.id,
+      placeholder: ta.getAttribute('placeholder') || '',
+      labelText: ta.closest('ytcp-textarea, ytcp-mention-textbox')?.textContent?.trim().substring(0, 100) || ta.parentElement?.textContent?.trim().substring(0, 100) || ''
+    }));
+
+    const logoBtn = document.querySelector('.upload-btn.style-scope.ytcp-profile-image-upload') || document.querySelector('ytcp-profile-image-upload button, ytcp-profile-image-upload ytcp-button');
+    const bannerBtn = document.querySelector('.upload-btn.style-scope.ytcp-banner-upload') || document.querySelector('ytcp-banner-upload button, ytcp-banner-upload ytcp-button');
+
+    return {
+      textareas,
+      hasLogoBtn: !!logoBtn,
+      logoBtnText: logoBtn ? (logoBtn.textContent || '').trim() : '',
+      hasBannerBtn: !!bannerBtn,
+      bannerBtnText: bannerBtn ? (bannerBtn.textContent || '').trim() : ''
+    };
+  });
+
+  console.log('Detected Customization Page Elements:', JSON.stringify(pageElements, null, 2));
+
   // Save screenshot
   const screenshotPath = path.join(__dirname, 'scratch', 'branding_vps_screenshot.png');
   const scratchDir = path.join(__dirname, 'scratch');

@@ -2008,11 +2008,14 @@ export async function updateChannelBrandingBrowser(channelId, opts, logFn = cons
         throw new Error('Not logged in. Please set up your browser session in the channel settings first.');
       }
 
-      if (hasLogo) {
-        logFn('[Puppet Branding] Uploading profile logo...');
-        const fileChooserPromise = page.waitForFileChooser();
+      // Wait for page elements to load
+      logFn('[Puppet Branding] Waiting for branding page elements to render...');
+      await page.waitForSelector('ytcp-brand-editing-row, ytcp-button, button', { timeout: 20000 }).catch(() => null);
+      await new Promise(r => setTimeout(r, 4000)); // Allow dynamic angular/polymer components to settle
 
-        const logoBtnClicked = await page.evaluate(() => {
+      if (hasLogo) {
+        logFn('[Puppet Branding] Finding profile logo upload button...');
+        const logoButtonHandle = await page.evaluateHandle(() => {
           const items = Array.from(document.querySelectorAll('ytcp-firm-validation-item, ytcp-brand-editing-section, ytcp-brand-editing-row, [role="row"], .section, .row'));
           const targetItem = items.find(el => {
             const text = (el.textContent || '').toLowerCase();
@@ -2023,7 +2026,7 @@ export async function updateChannelBrandingBrowser(channelId, opts, logFn = cons
             const text = (b.textContent || '').toLowerCase();
             return text.includes('upload') || text.includes('change') || text.includes('yükle') || text.includes('değiştir') || text.includes('seç');
           });
-          if (btn) { btn.click(); return true; }
+          if (btn) return btn;
 
           // Fallback: click first upload/change button
           const allButtons = Array.from(document.querySelectorAll('ytcp-button, button'));
@@ -2031,17 +2034,21 @@ export async function updateChannelBrandingBrowser(channelId, opts, logFn = cons
             const text = (b.textContent || '').toLowerCase();
             return text.includes('upload') || text.includes('change') || text.includes('yükle') || text.includes('değiştir');
           });
-          if (fallbackBtn) { fallbackBtn.click(); return true; }
-          return false;
+          return fallbackBtn || null;
         });
 
-        if (logoBtnClicked) {
-          const fileChooser = await fileChooserPromise;
+        if (logoButtonHandle && logoButtonHandle.asElement()) {
+          logFn('[Puppet Branding] Logo upload button found. Launching file chooser...');
+          const btnElement = logoButtonHandle.asElement();
+          const [fileChooser] = await Promise.all([
+            page.waitForFileChooser({ timeout: 15000 }),
+            btnElement.click()
+          ]);
           await fileChooser.accept([opts.logoPath]);
 
           logFn('[Puppet Branding] Logo file uploaded, waiting for crop dialog Done button...');
-          await new Promise(r => setTimeout(r, 2000));
-          const doneBtn = await page.waitForSelector('#done-button, ytcp-button#done-button, ytcp-button[id="done-button"]', { timeout: 8000 }).catch(() => null);
+          await new Promise(r => setTimeout(r, 3000));
+          const doneBtn = await page.waitForSelector('#done-button, ytcp-button#done-button, ytcp-button[id="done-button"]', { timeout: 10000 }).catch(() => null);
           if (doneBtn) {
             await safeClick(page, doneBtn);
           } else {
@@ -2054,17 +2061,16 @@ export async function updateChannelBrandingBrowser(channelId, opts, logFn = cons
               if (btn) btn.click();
             });
           }
-          await new Promise(r => setTimeout(r, 2000));
+          await new Promise(r => setTimeout(r, 3000));
+          logFn('[Puppet Branding] Logo crop confirmed.');
         } else {
-          logFn('[Puppet Branding] Warning: Could not click logo upload button.');
+          logFn('[Puppet Branding] Warning: Could not find logo upload button.');
         }
       }
 
       if (hasBanner) {
-        logFn('[Puppet Branding] Uploading banner image...');
-        const fileChooserPromise = page.waitForFileChooser();
-
-        const bannerBtnClicked = await page.evaluate(() => {
+        logFn('[Puppet Branding] Finding banner image upload button...');
+        const bannerButtonHandle = await page.evaluateHandle(() => {
           const items = Array.from(document.querySelectorAll('ytcp-firm-validation-item, ytcp-brand-editing-section, ytcp-brand-editing-row, [role="row"], .section, .row'));
           const targetItem = items.find(el => {
             const text = (el.textContent || '').toLowerCase();
@@ -2075,24 +2081,28 @@ export async function updateChannelBrandingBrowser(channelId, opts, logFn = cons
             const text = (b.textContent || '').toLowerCase();
             return text.includes('upload') || text.includes('change') || text.includes('yükle') || text.includes('değiştir') || text.includes('seç');
           });
-          if (btn) { btn.click(); return true; }
+          if (btn) return btn;
 
           // Fallback: click second upload/change button
           const allButtons = Array.from(document.querySelectorAll('ytcp-button, button')).filter(b => {
             const text = (b.textContent || '').toLowerCase();
             return text.includes('upload') || text.includes('change') || text.includes('yükle') || text.includes('değiştir');
           });
-          if (allButtons[1]) { allButtons[1].click(); return true; }
-          return false;
+          return allButtons[1] || null;
         });
 
-        if (bannerBtnClicked) {
-          const fileChooser = await fileChooserPromise;
+        if (bannerButtonHandle && bannerButtonHandle.asElement()) {
+          logFn('[Puppet Branding] Banner upload button found. Launching file chooser...');
+          const btnElement = bannerButtonHandle.asElement();
+          const [fileChooser] = await Promise.all([
+            page.waitForFileChooser({ timeout: 15000 }),
+            btnElement.click()
+          ]);
           await fileChooser.accept([opts.bannerPath]);
 
           logFn('[Puppet Branding] Banner file uploaded, waiting for crop dialog Done button...');
-          await new Promise(r => setTimeout(r, 2000));
-          const doneBtn = await page.waitForSelector('#done-button, ytcp-button#done-button, ytcp-button[id="done-button"]', { timeout: 8000 }).catch(() => null);
+          await new Promise(r => setTimeout(r, 3000));
+          const doneBtn = await page.waitForSelector('#done-button, ytcp-button#done-button, ytcp-button[id="done-button"]', { timeout: 10000 }).catch(() => null);
           if (doneBtn) {
             await safeClick(page, doneBtn);
           } else {
@@ -2105,9 +2115,10 @@ export async function updateChannelBrandingBrowser(channelId, opts, logFn = cons
               if (btn) btn.click();
             });
           }
-          await new Promise(r => setTimeout(r, 2000));
+          await new Promise(r => setTimeout(r, 3000));
+          logFn('[Puppet Branding] Banner crop confirmed.');
         } else {
-          logFn('[Puppet Branding] Warning: Could not click banner upload button.');
+          logFn('[Puppet Branding] Warning: Could not find banner upload button.');
         }
       }
     }

@@ -151,6 +151,7 @@ async function loadChannels() {
 }
 
 async function loadMediaVideos() {
+  state.dashVideos = {};
   try {
     const channelSelect = document.getElementById('mediaChannelSelect');
     const channelId = channelSelect ? channelSelect.value : '';
@@ -4717,13 +4718,29 @@ function toggleManualVideoSelection(videoId, checkbox) {
 }
 
 // Calculate the summary of scheduled posts to be created
-function updateDashboardScheduleSummary() {
+async function updateDashboardScheduleSummary() {
   const summaryEl = document.getElementById('dashScheduleSummary');
   if (!summaryEl) return;
 
   if (state.dashSelectedChannelIds.length === 0) {
     summaryEl.innerHTML = '<span style="color: var(--text-muted)">Select channels to preview scheduling total.</span>';
     return;
+  }
+
+  if (!state.dashVideos) {
+    state.dashVideos = {};
+  }
+  try {
+    const fetchPromises = state.dashSelectedChannelIds.map(async (channelId) => {
+      if (state.dashVideos[channelId]) return;
+      const res = await fetch(`${API_BASE}/media/videos?channelId=${channelId}`);
+      if (res.ok) {
+        state.dashVideos[channelId] = await res.json();
+      }
+    });
+    await Promise.all(fetchPromises);
+  } catch (e) {
+    console.error('[Dashboard] Error fetching channel videos:', e);
   }
 
   const countInput = document.getElementById('dashScheduleCount');
@@ -4739,7 +4756,7 @@ function updateDashboardScheduleSummary() {
   const orderFilter = orderSelect ? orderSelect.value : 'asc';
 
   const getUnusedVideosForChannel = (channelId, tFilter, kwFilter, oFilter) => {
-    let videos = state.videos.filter(v => v.channel_id === channelId);
+    let videos = state.dashVideos[channelId] || [];
     
     // Find all active scheduled videos (exclude cancelled)
     const scheduledVideoIds = new Set(

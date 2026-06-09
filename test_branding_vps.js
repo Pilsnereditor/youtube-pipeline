@@ -10,7 +10,7 @@ async function run() {
   const profilePath = '/var/www/youtube-pipeline/data/profiles/profile_Levo_SG_Arsiv';
   const chromePath = '/usr/bin/google-chrome'; // Standard path on Linux VPS
 
-  console.log('Launching browser in HEADED mode on display :99...');
+  console.log('Launching browser in HEADED mode via xvfb-run...');
   const browser = await puppeteer.launch({
     executablePath: chromePath,
     userDataDir: profilePath,
@@ -20,11 +20,7 @@ async function run() {
       '--disable-setuid-sandbox',
       '--disable-blink-features=AutomationControlled',
       '--start-maximized'
-    ],
-    env: {
-      ...process.env,
-      DISPLAY: ':99' // Use Xvfb virtual display
-    }
+    ]
   });
 
   const page = await browser.newPage();

@@ -50,3 +50,16 @@
 
 ## Current Status
 All 8 phases complete. Fully functional multi-user SaaS panel.
+
+## Production Environment & Deployments
+
+- **Server IP / Domain:** `95.111.250.107` / `gageditor.com`
+- **Operating System:** Linux (Ubuntu / Debian)
+- **Project Location on VPS:** `/var/www/youtube-pipeline`
+- **PM2 Process Name:** `youtube-pipeline`
+- **Deployment Commands:**
+  ```bash
+  cd /var/www/youtube-pipeline
+  git pull origin main
+  pm2 restart youtube-pipeline
+  ```

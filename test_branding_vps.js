@@ -89,12 +89,18 @@ async function run() {
     const logoBtn = document.querySelector('.upload-btn.style-scope.ytcp-profile-image-upload') || document.querySelector('ytcp-profile-image-upload button, ytcp-profile-image-upload ytcp-button');
     const bannerBtn = document.querySelector('.upload-btn.style-scope.ytcp-banner-upload') || document.querySelector('ytcp-banner-upload button, ytcp-banner-upload ytcp-button');
 
+    const tabs = Array.from(document.querySelectorAll('paper-tab, ytcp-paper-tab, [role="tab"], .tab, .paper-tab')).map(t => ({
+      text: t.textContent?.trim() || '',
+      selected: t.getAttribute('aria-selected') === 'true' || t.classList.contains('iron-selected') || t.classList.contains('selected')
+    }));
+
     return {
       textareas,
       hasLogoBtn: !!logoBtn,
       logoBtnText: logoBtn ? (logoBtn.textContent || '').trim() : '',
       hasBannerBtn: !!bannerBtn,
-      bannerBtnText: bannerBtn ? (bannerBtn.textContent || '').trim() : ''
+      bannerBtnText: bannerBtn ? (bannerBtn.textContent || '').trim() : '',
+      tabs
     };
   });
 

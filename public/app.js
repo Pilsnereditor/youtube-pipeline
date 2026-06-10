@@ -18,7 +18,9 @@ let state = {
   scheduleFilterChannelId: '',
   dashSelectedChannelIds: [],
   dashManuallySelectedVideoIds: [],
-  dashCountType: 'manual'
+  dashCountType: 'manual',
+  schedVideos: [],
+  schedThumbnails: []
 };
 
 let activeUploads = {};
@@ -1092,16 +1094,17 @@ function setScheduleTimeValue(timeStr) {
   }
 }
 
-function populateVideoDropdowns() {
+function populateVideoDropdowns(videosArray = null) {
   const schedChannel = document.getElementById('schedChannel');
   const selectedChannelId = schedChannel ? parseInt(schedChannel.value) : null;
   const schedVideoSelect = document.getElementById('schedVideoSelect');
   if (!schedVideoSelect) return;
 
   const currentVal = schedVideoSelect.value;
+  const videosSource = videosArray !== null ? videosArray : state.videos;
 
   const filteredVideos = selectedChannelId 
-    ? state.videos.filter(vid => vid.channel_id === selectedChannelId)
+    ? videosSource.filter(vid => vid.channel_id === selectedChannelId)
     : [];
 
   const options = filteredVideos.map(vid => 
@@ -1114,16 +1117,17 @@ function populateVideoDropdowns() {
   }
 }
 
-function populateThumbnailDropdowns() {
+function populateThumbnailDropdowns(thumbsArray = null) {
   const schedChannel = document.getElementById('schedChannel');
   const selectedChannelId = schedChannel ? parseInt(schedChannel.value) : null;
   const schedThumbSelect = document.getElementById('schedThumbSelect');
   if (!schedThumbSelect) return;
 
   const currentVal = schedThumbSelect.value;
+  const thumbsSource = thumbsArray !== null ? thumbsArray : state.thumbnails;
 
   const filteredThumbs = selectedChannelId 
-    ? state.thumbnails.filter(thumb => thumb.channel_id === selectedChannelId)
+    ? thumbsSource.filter(thumb => thumb.channel_id === selectedChannelId)
     : [];
 
   const options = filteredThumbs.map(thumb => 
@@ -1151,7 +1155,7 @@ function onSchedVideoSelectChange() {
     return;
   }
 
-  const video = state.videos.find(v => v.id === videoId);
+  const video = (state.schedVideos && state.schedVideos.find(v => v.id === videoId)) || state.videos.find(v => v.id === videoId);
   if (video) {
     // Show/hide auto-generated thumbnail preview
     const previewGroup = document.getElementById('schedThumbPreviewGroup');
@@ -1202,12 +1206,41 @@ function onSchedVideoSelectChange() {
   }
 }
 
-function onSchedChannelChange() {
-  populateVideoDropdowns();
-  populateThumbnailDropdowns();
-  
-  // Auto fill next open slot when selecting a channel
+async function onSchedChannelChange() {
   const channelId = document.getElementById('schedChannel').value;
+  if (!channelId) {
+    state.schedVideos = [];
+    state.schedThumbnails = [];
+    populateVideoDropdowns([]);
+    populateThumbnailDropdowns([]);
+    return;
+  }
+
+  try {
+    const [videosRes, thumbsRes] = await Promise.all([
+      fetch(`${API_BASE}/media/videos?channelId=${channelId}`),
+      fetch(`${API_BASE}/media/thumbnails?channelId=${channelId}`)
+    ]);
+    
+    if (!videosRes.ok || !thumbsRes.ok) {
+      throw new Error('Failed to fetch media for selected channel');
+    }
+    
+    const videos = await videosRes.json();
+    const thumbs = await thumbsRes.json();
+    
+    state.schedVideos = videos;
+    state.schedThumbnails = thumbs;
+    
+    const stockVideos = videos.filter(vid => !vid.is_published);
+    
+    populateVideoDropdowns(stockVideos);
+    populateThumbnailDropdowns(thumbs);
+  } catch (err) {
+    showToast('Failed to load media for channel: ' + err.message, 'error');
+  }
+
+  // Auto fill next open slot when selecting a channel
   if (channelId) {
     const channel = state.channels.find(c => c.id === parseInt(channelId));
     if (channel) {
@@ -1418,8 +1451,9 @@ function renderCalendar(gridElement, labelElement, dateObj, isLarge) {
       cell.appendChild(indicatorsContainer);
     }
 
-    // Double click to open schedule modal for that day
+        // Double click to open schedule modal for that day
     cell.addEventListener('click', () => {
+      resetScheduleForm(true); // Preserve date
       document.getElementById('schedDate').value = dayStr;
       openModal('scheduleModal');
     });
@@ -2701,12 +2735,13 @@ async function handleChannelThumbnailUpload(files) {
   }
 }
 
-function openScheduleModalForVideo(event, videoId) {
-  // Prevent modal opening when clicking on video controls, delete button, or tags/descriptions
+async function openScheduleModalForVideo(event, videoId) {
   if (event && event.target) {
-    if (event.target.tagName === 'VIDEO' || 
-        event.target.tagName === 'BUTTON' || 
-        event.target.closest('button') || 
+    if (event.target.closest('button') ||
+        event.target.closest('a') ||
+        event.target.closest('input') ||
+        event.target.closest('select') ||
+        event.target.closest('textarea') ||
         event.target.closest('video') ||
         event.target.classList.contains('delete-media-btn') ||
         event.target.hasAttribute('controls') ||
@@ -2715,15 +2750,17 @@ function openScheduleModalForVideo(event, videoId) {
     }
   }
   
-  const video = state.videos.find(v => v.id === videoId);
+  const video = state.videos.find(v => v.id === videoId) || state.schedVideos.find(v => v.id === videoId);
   if (!video) return;
+
+  resetScheduleForm(false);
 
   // 1. Select the Channel in the modal
   const schedChannel = document.getElementById('schedChannel');
   if (schedChannel && video.channel_id) {
     schedChannel.value = video.channel_id;
     // Trigger channel change logic (populates video dropdown, next open slot, defaults etc.)
-    onSchedChannelChange();
+    await onSchedChannelChange();
   }
 
   // 2. Select the Video in the modal
@@ -3050,6 +3087,46 @@ function runSimulatedChecks() {
   }, 2000);
 }
 
+function resetScheduleForm(preserveDate = false) {
+  const schedChannel = document.getElementById('schedChannel');
+  if (schedChannel) schedChannel.value = '';
+  
+  const schedVideoSelect = document.getElementById('schedVideoSelect');
+  if (schedVideoSelect) {
+    schedVideoSelect.innerHTML = '<option value="">Select a video...</option>';
+    schedVideoSelect.value = '';
+  }
+  
+  const schedThumbSelect = document.getElementById('schedThumbSelect');
+  if (schedThumbSelect) {
+    schedThumbSelect.innerHTML = '<option value="">Select a thumbnail (optional)...</option>';
+    schedThumbSelect.value = '';
+  }
+  
+  document.getElementById('schedTitle').value = '';
+  document.getElementById('schedDesc').value = '';
+  document.getElementById('schedTags').value = '';
+  document.getElementById('schedComment').value = '';
+  if (!preserveDate) {
+    document.getElementById('schedDate').value = '';
+  }
+  setScheduleTimeValue('10:00');
+  
+  if (document.getElementById('schedIsPremiere')) {
+    document.getElementById('schedIsPremiere').checked = false;
+  }
+  const previewGroup = document.getElementById('schedThumbPreviewGroup');
+  if (previewGroup) previewGroup.style.display = 'none';
+
+  state.schedVideos = [];
+  state.schedThumbnails = [];
+}
+
+function openNewScheduleModal() {
+  resetScheduleForm(false);
+  openModal('scheduleModal');
+}
+
 function resetScheduleWizard() {
   state.currentWizardStep = 1;
   goToWizardStep(1);
@@ -3095,8 +3172,11 @@ async function createScheduledPost() {
   const isPremiere = document.getElementById('schedIsPremiere') ? document.getElementById('schedIsPremiere').checked : false;
   
   let thumbnailId = null;
-  if (videoId) {
-    const videoObj = state.videos.find(v => v.id === parseInt(videoId, 10));
+  const customThumbId = document.getElementById('schedThumbSelect')?.value;
+  if (customThumbId) {
+    thumbnailId = parseInt(customThumbId, 10);
+  } else if (videoId) {
+    const videoObj = (state.schedVideos && state.schedVideos.find(v => v.id === parseInt(videoId, 10))) || state.videos.find(v => v.id === parseInt(videoId, 10));
     if (videoObj && videoObj.thumbnail_id) {
       thumbnailId = videoObj.thumbnail_id;
     }
@@ -3275,7 +3355,7 @@ function openEditScheduledPostModal(postId) {
 
   let finalThumbId = post.thumbnail_id;
   if (!finalThumbId && post.video_id) {
-    const associatedVideo = state.videos.find(v => v.id === post.video_id);
+    const associatedVideo = (state.schedVideos && state.schedVideos.find(v => v.id === post.video_id)) || state.videos.find(v => v.id === post.video_id);
     if (associatedVideo) finalThumbId = associatedVideo.thumbnail_id;
   }
 
@@ -3350,7 +3430,7 @@ function openEditScheduledPostModal(postId) {
   document.getElementById('viewSchedTime').disabled = !canReschedule;
 
   // Toggle Premiere option visibility based on video duration
-  const video = post.video_id ? state.videos.find(v => v.id === post.video_id) : null;
+  const video = post.video_id ? ((state.schedVideos && state.schedVideos.find(v => v.id === post.video_id)) || state.videos.find(v => v.id === post.video_id)) : null;
   const viewSchedPremiereGroup = document.getElementById('viewSchedPremiereGroup');
   const viewSchedIsPremiere = document.getElementById('viewSchedIsPremiere');
   if (viewSchedPremiereGroup && viewSchedIsPremiere) {
@@ -3559,7 +3639,7 @@ async function autoGenerateTitle() {
   let videoContext = '';
   const videoSelect = document.getElementById('schedVideoSelect');
   if (videoSelect && videoSelect.value) {
-    const video = state.videos.find(v => v.id === parseInt(videoSelect.value));
+    const video = (state.schedVideos && state.schedVideos.find(v => v.id === parseInt(videoSelect.value))) || state.videos.find(v => v.id === parseInt(videoSelect.value));
     if (video) {
       videoContext = video.original_filename || video.title || '';
     }
@@ -5129,6 +5209,8 @@ window.saveVideoDuration = async (videoId, duration) => {
       // Find and update local state
       const video = state.videos.find(v => v.id === videoId);
       if (video) video.duration = duration;
+      const schedVid = state.schedVideos && state.schedVideos.find(v => v.id === videoId);
+      if (schedVid) schedVid.duration = duration;
     }
   } catch (e) {
     console.error('Error saving video duration:', e);

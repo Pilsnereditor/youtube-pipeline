@@ -7,6 +7,7 @@ import { queryAll, queryOne, run, insert } from '../db/database.js';
 import { syncChannelWithYouTube, updateChannelBrandingAPI } from '../services/youtube.js';
 import { setupBrowserSession, checkBrowserSessionActive, closeBrowserSession, updateChannelBrandingBrowser, syncChannelWithYouTubeBrowser } from '../services/puppet.js';
 import { launchVncSession, isVncActive, getVncPort, getVncProfileName, getVncProfilePath, verifyVncChannels, stopVncSession, isLocalChrome } from '../services/vnc.js';
+import { requireAdmin } from './client.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -873,7 +874,7 @@ router.post('/:id/browser-login-close', async (req, res) => {
   }
 });
 
-router.get('/debug-db', (req, res) => {
+router.get('/debug-db', requireAdmin, (req, res) => {
   try {
     const channels = queryAll('SELECT id, name, youtube_channel_id, profile_name, upload_mode FROM channels');
     const scheduled = queryAll('SELECT id, channel_id, status, title, error_message, scheduled_at FROM scheduled_posts ORDER BY scheduled_at DESC LIMIT 20');

@@ -96,13 +96,17 @@ try {
 
 // Authentication middleware
 app.use((req, res, next) => {
-  // Bypass authentication and auto-login if running locally
-  const isLocal = req.hostname === 'localhost' || req.hostname === '127.0.0.1';
-  if (isLocal && req.session && !req.session.userId) {
-    req.session.userId = 1;
-    req.session.userRole = 'admin';
-    req.session.email = 'pilsnereditor@gmail.com';
-    console.log('[Auth] Auto-authenticated localhost request as admin.');
+  // Local auto-login is DISABLED by default. It only activates if the operator
+  // explicitly sets ALLOW_LOCAL_ADMIN=true (for local development). This prevents a
+  // request carrying "Host: localhost" from silently gaining admin access in production.
+  if (process.env.ALLOW_LOCAL_ADMIN === 'true') {
+    const isLocal = req.hostname === 'localhost' || req.hostname === '127.0.0.1';
+    if (isLocal && req.session && !req.session.userId) {
+      req.session.userId = 1;
+      req.session.userRole = 'admin';
+      req.session.email = 'pilsnereditor@gmail.com';
+      console.log('[Auth] Auto-authenticated localhost request as admin (ALLOW_LOCAL_ADMIN dev mode).');
+    }
   }
 
   const publicPaths = ['/login.html', '/index.css', '/favicon.ico'];

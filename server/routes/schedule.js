@@ -285,7 +285,11 @@ router.put('/:id', async (req, res) => {
     }
 
     let commentStatus = existing.comment_status || 'none';
-    const hasCommentChanged = customComment !== undefined && customComment !== existing.custom_comment;
+    const normalizeComment = (str) => {
+      if (str === null || str === undefined) return '';
+      return str.toString().replace(/\r\n/g, '\n').trim();
+    };
+    const hasCommentChanged = customComment !== undefined && normalizeComment(customComment) !== normalizeComment(existing.custom_comment);
     
     if (existing.status === 'complete' && existing.youtube_video_id && hasCommentChanged) {
       const targetComment = customComment || '';

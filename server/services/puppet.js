@@ -499,13 +499,13 @@ function formatPublishDate(dateIso) {
   const date = new Date(dateIso);
   const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
   const mm = months[date.getMonth()];
-  const dd = String(date.getDate()).padStart(2, '0');
+  const dd = String(date.getDate()); // No padding (e.g. "Jun 5, 2026")
   const yyyy = date.getFullYear();
   return `${mm} ${dd}, ${yyyy}`;
 }
 
 /**
- * Formats publish time to YouTube-accepted text: "07:00 PM"
+ * Formats publish time to YouTube-accepted text: "7:00 PM"
  */
 function formatPublishTime(dateIso) {
   const date = new Date(dateIso);
@@ -514,7 +514,7 @@ function formatPublishTime(dateIso) {
   const ampm = hours >= 12 ? 'PM' : 'AM';
   hours = hours % 12;
   hours = hours ? hours : 12; // Hour 0 becomes 12
-  const hoursStr = String(hours).padStart(2, '0');
+  const hoursStr = String(hours); // No padding (e.g. "7:00 PM")
   return `${hoursStr}:${minutes} ${ampm}`;
 }
 

@@ -1213,6 +1213,14 @@ export async function uploadVideoBrowser(channelId, opts, logFn = console.log) {
             return calInput ? calInput.value : '';
           });
           logFn(`[Puppet] Date Input - Final Value after typing: "${finalDateVal}"`);
+
+          // Verify the date actually changed. If the field still shows the old value while a
+          // different date was requested, the entry silently failed — abort rather than report
+          // a false success that leaves YouTube out of sync with the panel.
+          const normDate = (s) => (s || '').toString().replace(/\s+/g, '').toLowerCase();
+          if (normDate(finalDateVal) === normDate(initialValue) && normDate(initialValue) !== normDate(targetDateStr)) {
+            throw new Error(`Schedule date did not apply: the date field still shows "${finalDateVal}" but "${targetDateStr}" was requested. Aborted so the panel and YouTube stay consistent.`);
+          }
         } else {
           logFn('[Puppet] Warning: could not focus date input field.');
         }
@@ -1236,14 +1244,21 @@ export async function uploadVideoBrowser(channelId, opts, logFn = console.log) {
           return elements;
         }
         const container = queryAllShadow('ytcp-datetime-picker, ytcp-visibility-scheduler, ytcp-video-visibility-select')[0];
-        if (!container) return { exists: false };
-        
-        const inputs = Array.from(container.querySelectorAll('input'));
-        const timeInput = inputs.find(input => {
-          const val = input.value || '';
-          return val.includes(':') || /\d+:\d+/.test(val);
-        }) || inputs[inputs.length - 1];
-        
+        const containerInputs = container ? Array.from(container.querySelectorAll('input')) : [];
+        // Also pierce nested shadow roots: the time field often lives in shadow DOM that the
+        // container's own querySelectorAll cannot reach. Missing it caused the time to never
+        // apply during reschedule (the date applied but the time stayed unchanged).
+        const seen = new Set();
+        const inputs = [];
+        for (const inp of [...containerInputs, ...queryAllShadow('input')]) {
+          if (!seen.has(inp)) { seen.add(inp); inputs.push(inp); }
+        }
+        // Prefer the input whose value looks like a clock time (e.g. "7:30 PM" / "19:30");
+        // fall back to the last container input to preserve the original upload behavior.
+        const timeInput = inputs.find(input => /\d{1,2}:\d{2}/.test(input.value || ''))
+          || containerInputs[containerInputs.length - 1]
+          || inputs[inputs.length - 1];
+
         if (timeInput) {
           timeInput.scrollIntoView({ block: 'center', inline: 'nearest' });
           timeInput.click();
@@ -1302,15 +1317,16 @@ export async function uploadVideoBrowser(channelId, opts, logFn = console.log) {
             return elements;
           }
           const container = queryAllShadow('ytcp-datetime-picker, ytcp-visibility-scheduler, ytcp-video-visibility-select')[0];
-          if (container) {
-            const inputs = Array.from(container.querySelectorAll('input'));
-            const timeInput = inputs.find(input => {
-              const val = input.value || '';
-              return val.includes(':') || /\d+:\d+/.test(val);
-            }) || inputs[inputs.length - 1];
-            return timeInput ? timeInput.value : '';
+          const containerInputs = container ? Array.from(container.querySelectorAll('input')) : [];
+          const seen = new Set();
+          const inputs = [];
+          for (const inp of [...containerInputs, ...queryAllShadow('input')]) {
+            if (!seen.has(inp)) { seen.add(inp); inputs.push(inp); }
           }
-          return '';
+          const timeInput = inputs.find(input => /\d{1,2}:\d{2}/.test(input.value || ''))
+            || containerInputs[containerInputs.length - 1]
+            || inputs[inputs.length - 1];
+          return timeInput ? timeInput.value : '';
         });
         logFn(`[Puppet] Time Input - Final Value after typing: "${finalTimeVal}"`);
       } else {
@@ -1967,6 +1983,14 @@ export async function rescheduleVideoBrowser(channelId, youtubeVideoId, schedule
             return calInput ? calInput.value : '';
           });
           logFn(`[Puppet] Date Input - Final Value after typing: "${finalDateVal}"`);
+
+          // Verify the date actually changed. If the field still shows the old value while a
+          // different date was requested, the entry silently failed — abort rather than report
+          // a false success that leaves YouTube out of sync with the panel.
+          const normDate = (s) => (s || '').toString().replace(/\s+/g, '').toLowerCase();
+          if (normDate(finalDateVal) === normDate(initialValue) && normDate(initialValue) !== normDate(targetDateStr)) {
+            throw new Error(`Schedule date did not apply: the date field still shows "${finalDateVal}" but "${targetDateStr}" was requested. Aborted so the panel and YouTube stay consistent.`);
+          }
         } else {
           logFn('[Puppet] Warning: could not focus date input field.');
         }
@@ -1990,14 +2014,21 @@ export async function rescheduleVideoBrowser(channelId, youtubeVideoId, schedule
           return elements;
         }
         const container = queryAllShadow('ytcp-datetime-picker, ytcp-visibility-scheduler, ytcp-video-visibility-select')[0];
-        if (!container) return { exists: false };
-        
-        const inputs = Array.from(container.querySelectorAll('input'));
-        const timeInput = inputs.find(input => {
-          const val = input.value || '';
-          return val.includes(':') || /\d+:\d+/.test(val);
-        }) || inputs[inputs.length - 1];
-        
+        const containerInputs = container ? Array.from(container.querySelectorAll('input')) : [];
+        // Also pierce nested shadow roots: the time field often lives in shadow DOM that the
+        // container's own querySelectorAll cannot reach. Missing it caused the time to never
+        // apply during reschedule (the date applied but the time stayed unchanged).
+        const seen = new Set();
+        const inputs = [];
+        for (const inp of [...containerInputs, ...queryAllShadow('input')]) {
+          if (!seen.has(inp)) { seen.add(inp); inputs.push(inp); }
+        }
+        // Prefer the input whose value looks like a clock time (e.g. "7:30 PM" / "19:30");
+        // fall back to the last container input to preserve the original upload behavior.
+        const timeInput = inputs.find(input => /\d{1,2}:\d{2}/.test(input.value || ''))
+          || containerInputs[containerInputs.length - 1]
+          || inputs[inputs.length - 1];
+
         if (timeInput) {
           timeInput.scrollIntoView({ block: 'center', inline: 'nearest' });
           timeInput.click();
@@ -2056,19 +2087,28 @@ export async function rescheduleVideoBrowser(channelId, youtubeVideoId, schedule
             return elements;
           }
           const container = queryAllShadow('ytcp-datetime-picker, ytcp-visibility-scheduler, ytcp-video-visibility-select')[0];
-          if (container) {
-            const inputs = Array.from(container.querySelectorAll('input'));
-            const timeInput = inputs.find(input => {
-              const val = input.value || '';
-              return val.includes(':') || /\d+:\d+/.test(val);
-            }) || inputs[inputs.length - 1];
-            return timeInput ? timeInput.value : '';
+          const containerInputs = container ? Array.from(container.querySelectorAll('input')) : [];
+          const seen = new Set();
+          const inputs = [];
+          for (const inp of [...containerInputs, ...queryAllShadow('input')]) {
+            if (!seen.has(inp)) { seen.add(inp); inputs.push(inp); }
           }
-          return '';
+          const timeInput = inputs.find(input => /\d{1,2}:\d{2}/.test(input.value || ''))
+            || containerInputs[containerInputs.length - 1]
+            || inputs[inputs.length - 1];
+          return timeInput ? timeInput.value : '';
         });
         logFn(`[Puppet] Time Input - Final Value after typing: "${finalTimeVal}"`);
+
+        // Verify the time actually changed. If the field still shows the old value while a
+        // different time was requested, the entry silently failed — surface it instead of
+        // reporting a false success (which would leave YouTube out of sync with the panel).
+        const normTime = (s) => (s || '').toString().replace(/\s+/g, '').toLowerCase();
+        if (normTime(finalTimeVal) === normTime(initialValue) && normTime(initialValue) !== normTime(targetTimeStr)) {
+          throw new Error(`Schedule time did not apply: the time field still shows "${finalTimeVal}" but "${targetTimeStr}" was requested. Reschedule aborted so the panel and YouTube stay consistent.`);
+        }
       } else {
-        logFn('[Puppet] Warning: could not focus time input field.');
+        throw new Error('Could not find the schedule time field on the YouTube edit page; reschedule aborted to avoid leaving the time unchanged on YouTube.');
       }
       await new Promise(r => setTimeout(r, 800));
 

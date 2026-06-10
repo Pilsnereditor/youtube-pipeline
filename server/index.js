@@ -12,6 +12,7 @@ import { fileURLToPath } from 'url';
 import { initDb, queryOne } from './db/database.js';
 import { init as initScheduler } from './services/scheduler.js';
 import { sendPuppetClick, sendPuppetType, sendPuppetKey, resetPuppetSessionUrl } from './services/puppet.js';
+import { getVncPort } from './services/vnc.js';
 
 // Load routes
 import authRouter from './routes/auth.js';
@@ -180,22 +181,41 @@ wss.on('connection', (ws, request) => {
 server.on('upgrade', (request, socket, head) => {
   // Proxy /websockify to the local websockify (VNC) server
   if (request.url && request.url.startsWith('/websockify')) {
-    const target = net.createConnection({ host: '127.0.0.1', port: 6080 }, () => {
-      // Reconstruct the HTTP upgrade request and forward to websockify
-      let httpReq = `GET ${request.url} HTTP/${request.httpVersion}\r\n`;
-      for (let i = 0; i < request.rawHeaders.length; i += 2) {
-        httpReq += `${request.rawHeaders[i]}: ${request.rawHeaders[i + 1]}\r\n`;
+    // Resolve the requesting user and route them ONLY to their own VNC slot's
+    // websockify port, so a user can never reach another user's login screen.
+    const proxyRes = {
+      getHeader: () => {}, setHeader: () => {}, writeHead: () => {}, end: () => {}
+    };
+    sessionMiddleware(request, proxyRes, () => {
+      const userId = request.session && request.session.userId;
+      if (!userId) {
+        socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+        socket.destroy();
+        return;
       }
-      httpReq += '\r\n';
-      target.write(httpReq);
-      if (head && head.length > 0) target.write(head);
-      socket.pipe(target).pipe(socket);
+      const wsPort = getVncPort(userId);
+      if (!wsPort) {
+        socket.write('HTTP/1.1 503 Service Unavailable\r\n\r\n');
+        socket.destroy();
+        return;
+      }
+      const target = net.createConnection({ host: '127.0.0.1', port: wsPort }, () => {
+        // Reconstruct the HTTP upgrade request and forward to this user's websockify
+        let httpReq = `GET ${request.url} HTTP/${request.httpVersion}\r\n`;
+        for (let i = 0; i < request.rawHeaders.length; i += 2) {
+          httpReq += `${request.rawHeaders[i]}: ${request.rawHeaders[i + 1]}\r\n`;
+        }
+        httpReq += '\r\n';
+        target.write(httpReq);
+        if (head && head.length > 0) target.write(head);
+        socket.pipe(target).pipe(socket);
+      });
+      target.on('error', (err) => {
+        console.error('[VNC Proxy] Error:', err.message);
+        socket.destroy();
+      });
+      socket.on('error', () => target.destroy());
     });
-    target.on('error', (err) => {
-      console.error('[VNC Proxy] Error:', err.message);
-      socket.destroy();
-    });
-    socket.on('error', () => target.destroy());
     return;
   }
 

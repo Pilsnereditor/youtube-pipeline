@@ -177,8 +177,8 @@ router.get('/profiles', (req, res) => {
         const hasCookies = fs.existsSync(path.join(profilePath, 'Default', 'Cookies'))
           || fs.existsSync(path.join(profilePath, 'Cookies'));
         const hasData = fs.readdirSync(profilePath).length > 0;
-        // Extract label from folder name: profile_MyName -> MyName
-        const label = d.name.replace(/^profile_/, '');
+        // Extract label from folder name: profile_<userId>_MyName -> MyName
+        const label = d.name.replace(new RegExp('^profile_' + userId + '_'), '').replace(/^profile_/, '');
         // Find linked channel
         const channel = queryOne(
           'SELECT id, name, youtube_channel_id FROM channels WHERE profile_name = @pname AND user_id = @userId',
@@ -191,7 +191,10 @@ router.get('/profiles', (req, res) => {
           has_data: hasData,
           channel: channel || null
         };
-      });
+      })
+      // Only show this user's own profiles: per-user-prefixed dirs, or legacy dirs
+      // linked to a channel this user owns. Never reveal other users' profiles.
+      .filter(p => p.name.startsWith('profile_' + userId + '_') || p.channel);
 
     res.json({ profiles: dirs });
   } catch (err) {
@@ -203,11 +206,15 @@ router.get('/profiles', (req, res) => {
  * POST /api/channels/profiles/create — Create a new named Chrome profile
  */
 router.post('/profiles/create', (req, res) => {
+  const userId = req.session.userId;
   const { name, proxy_pool_id } = req.body;
   if (!name || !name.trim()) return res.status(400).json({ error: 'Profile name is required' });
 
   const safeName = name.trim().replace(/[^a-zA-Z0-9_-]/g, '_');
-  const profileDir = path.join(__dirname, '..', '..', 'data', 'profiles', `profile_${safeName}`);
+  // Namespace profiles per user so two users picking the same name never collide
+  // or end up pointed at each other's logged-in Chrome profile.
+  const fullName = `profile_${userId}_${safeName}`;
+  const profileDir = path.join(__dirname, '..', '..', 'data', 'profiles', fullName);
 
   if (fs.existsSync(profileDir)) {
     return res.status(409).json({ error: `Profile "${safeName}" already exists` });
@@ -220,14 +227,14 @@ router.post('/profiles/create', (req, res) => {
     try {
       run(
         "INSERT OR REPLACE INTO settings (key, value) VALUES (@key, @value)",
-        { key: `proxy_for_profile_profile_${safeName}`, value: String(proxy_pool_id) }
+        { key: `proxy_for_profile_${fullName}`, value: String(proxy_pool_id) }
       );
     } catch (err) {
       console.error('[DB] Error saving proxy setting for profile:', err);
     }
   }
 
-  res.json({ success: true, name: `profile_${safeName}` });
+  res.json({ success: true, name: fullName });
 });
 
 /**
@@ -273,8 +280,9 @@ router.post('/profiles/delete', (req, res) => {
  */
 router.post('/yt-setup/launch', async (req, res) => {
   try {
-    const profileName = req.body.profileName || 'yt_setup_new';
-    const result = await launchVncSession(profileName);
+    const userId = req.session.userId;
+    const profileName = req.body.profileName || `yt_setup_${userId}`;
+    const result = await launchVncSession(profileName, userId);
     res.json({ ...result, profileName });
   } catch (err) {
     console.error('[YT Setup] VNC launch error:', err);
@@ -286,10 +294,11 @@ router.post('/yt-setup/launch', async (req, res) => {
  * GET /api/channels/yt-setup/status — Check if VNC session is active
  */
 router.get('/yt-setup/status', (req, res) => {
+  const userId = req.session.userId;
   res.json({ 
-    active: isVncActive(), 
-    ws_port: getVncPort(),
-    is_local_chrome: isLocalChrome()
+    active: isVncActive(userId), 
+    ws_port: getVncPort(userId),
+    is_local_chrome: isLocalChrome(userId)
   });
 });
 
@@ -298,10 +307,10 @@ router.get('/yt-setup/status', (req, res) => {
  */
 router.post('/yt-setup/verify', async (req, res) => {
   const userId = req.session.userId;
-  const profileName = req.body && req.body.profileName ? req.body.profileName : getVncProfileName();
+  const profileName = req.body && req.body.profileName ? req.body.profileName : getVncProfileName(userId);
   
   try {
-    const result = await verifyVncChannels();
+    const result = await verifyVncChannels(userId);
     
     // Create or update channels in the database
     const channelsCreated = [];
@@ -375,7 +384,8 @@ router.post('/yt-setup/verify', async (req, res) => {
  */
 router.post('/yt-setup/close', async (req, res) => {
   try {
-    await stopVncSession();
+    const userId = req.session.userId;
+    await stopVncSession(userId);
     res.json({ success: true, message: 'Browser session saved and closed.' });
   } catch (err) {
     res.status(500).json({ error: err.message });

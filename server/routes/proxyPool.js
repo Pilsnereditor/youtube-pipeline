@@ -1,7 +1,57 @@
 import { Router } from 'express';
 import { queryAll, queryOne, run, insert } from '../db/database.js';
+import { requireAdmin } from './client.js';
 
 const router = Router();
+
+/**
+ * GET /api/proxy-pool/admin/all — Admin only: list ALL proxies across every user,
+ * with owner email and assigned-channel count, for distributing the pool.
+ */
+router.get('/admin/all', requireAdmin, (req, res) => {
+  try {
+    const proxies = queryAll(`
+      SELECT pp.*, u.email AS owner_email,
+             COUNT(c.id) AS assigned_channels
+      FROM proxy_pool pp
+      LEFT JOIN users u ON u.id = pp.user_id
+      LEFT JOIN channels c ON c.proxy_pool_id = pp.id
+      GROUP BY pp.id
+      ORDER BY pp.user_id ASC, pp.created_at DESC
+    `);
+    res.json(proxies);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * POST /api/proxy-pool/admin/assign — Admin only: reassign proxies to a user.
+ * Body: { proxyIds: number[], targetUserId: number }
+ * Also unlinks each reassigned proxy from any channel NOT owned by the new owner,
+ * so it never leaves a cross-user proxy reference behind.
+ */
+router.post('/admin/assign', requireAdmin, (req, res) => {
+  const { proxyIds, targetUserId } = req.body;
+  if (!Array.isArray(proxyIds) || proxyIds.length === 0 || !targetUserId) {
+    return res.status(400).json({ error: 'proxyIds (non-empty array) and targetUserId are required.' });
+  }
+  const user = queryOne('SELECT id FROM users WHERE id = @id', { id: targetUserId });
+  if (!user) return res.status(404).json({ error: 'Target user not found.' });
+  try {
+    let updated = 0;
+    for (const pid of proxyIds) {
+      const r = run('UPDATE proxy_pool SET user_id = @uid WHERE id = @id', { uid: targetUserId, id: Number(pid) });
+      if (r.changes) {
+        run('UPDATE channels SET proxy_pool_id = NULL WHERE proxy_pool_id = @id AND user_id != @uid', { id: Number(pid), uid: targetUserId });
+        updated += r.changes;
+      }
+    }
+    res.json({ success: true, updated });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 /** GET /api/proxy-pool — List all proxies with assigned channel count */
 router.get('/', (req, res) => {

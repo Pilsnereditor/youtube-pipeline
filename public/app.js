@@ -442,6 +442,7 @@ function switchTab(tabId) {
     renderUpcomingQueueTab();
   } else if (tabId === 'users') {
     loadUsers();
+    loadProxyDistribution();
   } else if (tabId === 'settings') {
     loadYtProfiles();
     loadProxyPool();
@@ -4276,6 +4277,82 @@ function renderUsersTable(users) {
         </td>
       </tr>`;
   }).join('');
+}
+
+// ---- Admin: Proxy Distribution ----
+async function loadProxyDistribution() {
+  const container = document.getElementById('proxyDistList');
+  if (!container) return; // panel only exists for admins
+  try {
+    const [pRes, uRes] = await Promise.all([
+      fetch(`${API_BASE}/proxy-pool/admin/all`),
+      fetch(`${API_BASE}/client/users`)
+    ]);
+    if (!pRes.ok || !uRes.ok) {
+      const sec = document.getElementById('proxyDistSection');
+      if (sec) sec.style.display = 'none';
+      return;
+    }
+    const proxies = await pRes.json();
+    const users = (await uRes.json()).users || [];
+    renderProxyDistribution(proxies, users);
+  } catch (err) {
+    // ignore — non-critical admin panel
+  }
+}
+
+function renderProxyDistribution(proxies, users) {
+  const container = document.getElementById('proxyDistList');
+  const sel = document.getElementById('proxyDistTargetUser');
+  if (!container) return;
+  if (sel) {
+    sel.innerHTML = users.map(u =>
+      `<option value="${u.id}">${escapeHTML(u.email)}${u.role === 'admin' ? ' (admin)' : ''}</option>`
+    ).join('');
+  }
+  if (!proxies.length) {
+    container.innerHTML = `<div style="color:var(--text-muted); padding:20px; text-align:center;">No proxies in the pool yet.</div>`;
+    return;
+  }
+  const byOwner = {};
+  for (const p of proxies) {
+    const key = p.owner_email || `User #${p.user_id}`;
+    (byOwner[key] = byOwner[key] || []).push(p);
+  }
+  container.innerHTML = Object.keys(byOwner).map(owner => {
+    const rows = byOwner[owner].map(p => `
+      <label style="display:flex; align-items:center; gap:10px; padding:8px 10px; border:1px solid rgba(255,255,255,0.05); border-radius:8px; cursor:pointer;">
+        <input type="checkbox" class="proxyDistCheck" value="${p.id}">
+        <span style="font-family:'JetBrains Mono',monospace; font-size:0.8rem;">${escapeHTML(p.host)}:${escapeHTML(String(p.port))}</span>
+        <span style="font-size:0.75rem; color:var(--text-muted);">${escapeHTML(p.label || p.protocol || '')}</span>
+        <span style="margin-left:auto; font-size:0.72rem; color:var(--text-muted);">${p.assigned_channels || 0} channels</span>
+      </label>`).join('');
+    return `
+      <div style="margin-bottom:14px;">
+        <div style="font-size:0.8rem; font-weight:600; color:var(--text-secondary); margin-bottom:6px;">${escapeHTML(owner)} — ${byOwner[owner].length} proxies</div>
+        <div style="display:flex; flex-direction:column; gap:6px;">${rows}</div>
+      </div>`;
+  }).join('');
+}
+
+async function assignSelectedProxies() {
+  const checked = Array.from(document.querySelectorAll('.proxyDistCheck:checked')).map(c => Number(c.value));
+  const targetUserId = Number(document.getElementById('proxyDistTargetUser')?.value);
+  if (!checked.length) { showToast('Select at least one proxy to assign.', 'warning'); return; }
+  if (!targetUserId) { showToast('Choose a user to assign to.', 'warning'); return; }
+  try {
+    const res = await fetch(`${API_BASE}/proxy-pool/admin/assign`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ proxyIds: checked, targetUserId })
+    });
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    showToast(`Reassigned ${data.updated} proxies.`, 'success');
+    loadProxyDistribution();
+  } catch (err) {
+    showToast('Failed to assign proxies: ' + err.message, 'error');
+  }
 }
 
 async function createUserProfile() {

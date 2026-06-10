@@ -5,7 +5,7 @@ import { fileURLToPath } from 'url';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import { queryOne, queryAll, run } from '../db/database.js';
-import { stopVncSession } from './vnc.js';
+import { stopVncSession, stopVncSessionForProfile } from './vnc.js';
 
 const execAsync = promisify(exec);
 
@@ -240,7 +240,7 @@ export async function setupBrowserSession(channelId, userId, broadcastFn) {
   await closeBrowserSession(channelId);
 
   // Auto-close VNC session if running — they share the same profile
-  try { await stopVncSession(); } catch (e) {}
+  try { await stopVncSessionForProfile(getProfilePath(channelId)); } catch (e) {}
   await new Promise(r => setTimeout(r, 1000));
 
   const profilePath = getProfilePath(channelId);
@@ -388,7 +388,7 @@ export async function closeBrowserSession(channelId) {
 
   // Also stop any VNC sessions running Chrome
   try {
-    await stopVncSession();
+    await stopVncSessionForProfile(getProfilePath(channelId));
   } catch (e) {}
 
   const profilePath = getProfilePath(channelId);
@@ -833,7 +833,7 @@ export async function uploadVideoBrowser(channelId, opts, logFn = console.log) {
   // Auto-close any active login window to release profile lock
   await closeBrowserSession(channelId);
   // Auto-close VNC session if running — they share the same profile
-  try { await stopVncSession(); } catch (e) {}
+  try { await stopVncSessionForProfile(getProfilePath(channelId)); } catch (e) {}
   await new Promise(r => setTimeout(r, 1000));
   const profilePath = getProfilePath(channelId);
   const chromePath = getChromePath();
@@ -2354,7 +2354,7 @@ export async function postCommentBrowser(channelId, videoId, text) {
     await closeBrowserSession(channelId);
   } catch (e) {}
   try {
-    await stopVncSession();
+    await stopVncSessionForProfile(getProfilePath(channelId));
   } catch (e) {}
   await new Promise(r => setTimeout(r, 1000));
 
@@ -2616,7 +2616,7 @@ export async function postCommentBrowser(channelId, videoId, text) {
  */
 export async function updateChannelBrandingBrowser(channelId, opts, logFn = console.log) {
   await closeBrowserSession(channelId);
-  try { await stopVncSession(); } catch (e) {}
+  try { await stopVncSessionForProfile(getProfilePath(channelId)); } catch (e) {}
   await new Promise(r => setTimeout(r, 1000));
 
   const profilePath = getProfilePath(channelId);
@@ -2848,7 +2848,7 @@ export async function updateChannelBrandingBrowser(channelId, opts, logFn = cons
  */
 export async function syncChannelWithYouTubeBrowser(channelId, logFn = console.log) {
   await closeBrowserSession(channelId);
-  try { await stopVncSession(); } catch (e) {}
+  try { await stopVncSessionForProfile(getProfilePath(channelId)); } catch (e) {}
   await new Promise(r => setTimeout(r, 1000));
 
   const profilePath = getProfilePath(channelId);

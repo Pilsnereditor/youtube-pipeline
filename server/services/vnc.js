@@ -1,15 +1,22 @@
 /**
  * VNC-based remote browser management for YouTube Login Setup.
- * 
- * Architecture:
- *   Xvfb (virtual display :99)
- *     └─ openbox (window manager)
- *         └─ Chrome (visible, with --remote-debugging-port=9222)
- *   x11vnc (shares display :99 over VNC on port 5999)
- *   websockify (bridges VNC:5999 → WebSocket:6080, serves noVNC web client)
  *
- * The frontend embeds an <iframe> pointing to noVNC on port 6080.
- * All keyboard/mouse interaction is handled natively by noVNC — no manual forwarding needed.
+ * Multi-user architecture (Solution A):
+ *   Each concurrent user login gets its own isolated "slot" — a unique virtual
+ *   display, x11vnc port, websockify port, and Chrome debugging port — so up to
+ *   SLOTS.length users can run interactive logins at the same time without ever
+ *   sharing a screen, cookies, or a session.
+ *
+ *   Per slot:
+ *     Xvfb (virtual display :99/:100/:101)
+ *       └─ openbox (window manager)
+ *           └─ Chrome (visible, --remote-debugging-port=92xx)
+ *     x11vnc (shares the display over VNC on port 59xx/60xx)
+ *     websockify (bridges VNC → WebSocket on port 608x, serves noVNC)
+ *
+ *   Sessions are tracked in a Map keyed by userId. The websockify proxy in
+ *   server/index.js resolves the requesting user and routes them only to their
+ *   own slot's websockify port.
  */
 
 import { spawn, execSync } from 'child_process';
@@ -22,17 +29,23 @@ import { queryOne } from '../db/database.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const DISPLAY = ':99';
-const VNC_PORT = 5999;
-const WS_PORT = 6080;
-const CDP_PORT = 9222;
 const PROFILES_DIR = path.join(__dirname, '..', '..', 'data', 'profiles');
 
 if (!fs.existsSync(PROFILES_DIR)) {
   fs.mkdirSync(PROFILES_DIR, { recursive: true });
 }
 
-let vncSession = null;
+// Fixed pool of isolated resource slots. One slot per concurrent interactive login.
+// Sized to the number of users expected to log in simultaneously.
+const SLOTS = [
+  { display: ':99',  vncPort: 5999, wsPort: 6080, cdpPort: 9222 },
+  { display: ':100', vncPort: 6000, wsPort: 6081, cdpPort: 9223 },
+  { display: ':101', vncPort: 6001, wsPort: 6082, cdpPort: 9224 },
+  { display: ':102', vncPort: 6002, wsPort: 6083, cdpPort: 9225 },
+];
+
+// userId -> session object (includes its allocated slot)
+const vncSessions = new Map();
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -52,6 +65,18 @@ function killProc(proc) {
 
 function execQuiet(cmd) {
   try { execSync(cmd, { stdio: 'ignore', timeout: 5000 }); } catch {}
+}
+
+/** Allocate a free slot, or null if all slots are in use. */
+function allocateSlot() {
+  const usedDisplays = new Set();
+  for (const s of vncSessions.values()) {
+    if (s.slot) usedDisplays.add(s.slot.display);
+  }
+  for (const slot of SLOTS) {
+    if (!usedDisplays.has(slot.display)) return slot;
+  }
+  return null;
 }
 
 /**
@@ -106,228 +131,27 @@ function checkVncDeps() {
   return { ok: missing.length === 0, missing, novncDir };
 }
 
-// ---------------------------------------------------------------------------
-// Session Management
-// ---------------------------------------------------------------------------
-
 /**
- * Launch a full VNC session: Xvfb → openbox → Chrome → x11vnc → websockify
- * Returns { ws_port, vnc_available, missing_deps }
+ * Resolve the proxy (if any) for a given profile name.
+ * Returns { proxyArg, needsAuth, proxyUser, proxyPass } or proxyArg=null.
  */
-export async function launchVncSession(profileName = 'yt_setup_global') {
-  // Kill any existing session first
-  await stopVncSession();
-
-  // Check dependencies
-  const depsCheck = checkVncDeps();
-  if (!depsCheck.ok) {
-    console.warn('[VNC] Missing dependencies:', depsCheck.missing);
-    return {
-      success: true,
-      mode: 'vnc',
-      vnc_available: false,
-      missing_deps: depsCheck.missing,
-      ws_port: WS_PORT
-    };
-  }
-
-  const profilePath = path.join(PROFILES_DIR, profileName);
-  
-  // For new channel logins, start with a completely fresh profile
-  if (profileName === 'yt_setup_new' && fs.existsSync(profilePath)) {
-    console.log('[VNC] Clearing fresh profile for new channel login...');
-    fs.rmSync(profilePath, { recursive: true, force: true });
-  }
-  if (!fs.existsSync(profilePath)) fs.mkdirSync(profilePath, { recursive: true });
-
-  // Clean Chrome lock files
-  for (const f of ['SingletonLock', 'SingletonSocket', 'SingletonCookie']) {
-    const p = path.join(profilePath, f);
-    try { if (fs.existsSync(p)) fs.unlinkSync(p); } catch {}
-  }
-
-  if (process.platform === 'win32') {
-    console.log('[VNC] Launching Chrome directly on Windows desktop...');
-    const chromePath = findChrome();
-    
-    // Resolve proxy
-    let proxyArg = null;
-    let activeProxyPoolId = null;
-    let needsAuth = false;
-    let proxyUser = '';
-    let proxyPass = '';
-    try {
-      const setting = queryOne("SELECT value FROM settings WHERE key = @key", { key: `proxy_for_profile_${profileName}` });
-      if (setting && setting.value) {
-        activeProxyPoolId = Number(setting.value);
-      }
-      if (!activeProxyPoolId) {
-        const channel = queryOne('SELECT * FROM channels WHERE profile_name = @profileName LIMIT 1', { profileName });
-        if (channel && channel.proxy_pool_id) {
-          activeProxyPoolId = channel.proxy_pool_id;
-        }
-      }
-      if (activeProxyPoolId) {
-        const proxy = queryOne('SELECT * FROM proxy_pool WHERE id = @id', { id: activeProxyPoolId });
-        if (proxy) {
-          proxyArg = `--proxy-server=${proxy.protocol}://${proxy.host}:${proxy.port}`;
-          console.log(`[VNC] Using proxy ${proxy.protocol}://${proxy.host}:${proxy.port} for setup profile "${profileName}"`);
-          if (proxy.username) {
-            needsAuth = true;
-            proxyUser = proxy.username;
-            proxyPass = proxy.password || '';
-          }
-        }
-      }
-    } catch (err) {
-      console.error('[VNC] Error resolving proxy for Windows setup session:', err);
-    }
-
-    const chromeArgs = [
-      `--user-data-dir=${profilePath}`,
-      `--remote-debugging-port=${CDP_PORT}`,
-      '--no-first-run',
-      '--no-default-browser-check',
-      '--disable-features=TranslateUI',
-      '--disable-blink-features=AutomationControlled',
-      '--lang=en-US',
-      '--window-size=1280,800',
-      '--window-position=0,0',
-      '--start-maximized',
-      '--password-store=basic',
-      '--use-mock-keychain'
-    ];
-
-    if (proxyArg) {
-      chromeArgs.push(proxyArg);
-    }
-
-    // WebRTC leak prevention
-    chromeArgs.push('--enforce-webrtc-ip-permission-check');
-    chromeArgs.push('--disable-webrtc-hw-decoding');
-    chromeArgs.push('--disable-webrtc-hw-encoding');
-    chromeArgs.push('--webrtc-ip-handling-policy=disable_non_proxied_udp');
-
-    if (needsAuth) {
-      chromeArgs.push('about:blank');
-    } else {
-      chromeArgs.push('https://studio.youtube.com?hl=en&persist_hl=1');
-    }
-
-    const chrome = spawn(chromePath, chromeArgs, {
-      detached: true, stdio: 'ignore'
-    });
-    chrome.unref();
-    await sleep(2500);
-
-    let cdpBrowser = null;
-    if (needsAuth) {
-      try {
-        console.log('[VNC] Connecting via CDP to authenticate proxy credentials...');
-        await sleep(1500);
-        cdpBrowser = await puppeteer.connect({
-          browserURL: `http://127.0.0.1:${CDP_PORT}`,
-          defaultViewport: null
-        });
-
-        const applyAuth = async (p) => {
-          try {
-            await p.authenticate({
-              username: proxyUser,
-              password: proxyPass
-            });
-            console.log('[VNC] Proxy credentials applied.');
-          } catch (e) {
-            console.error('[VNC] Failed to apply proxy credentials to page:', e);
-          }
-        };
-
-        const pages = await cdpBrowser.pages();
-        for (const p of pages) {
-          await applyAuth(p);
-        }
-
-        cdpBrowser.on('targetcreated', async (target) => {
-          if (target.type() === 'page') {
-            const p = await target.page();
-            if (p) {
-              await applyAuth(p);
-            }
-          }
-        });
-
-        if (pages.length > 0) {
-          const page = pages[0];
-          console.log('[VNC] Navigating page to YouTube Studio after auth setup...');
-          page.goto('https://studio.youtube.com?hl=en&persist_hl=1').catch(err => {
-            console.error('[VNC] Navigation error (expected if loading takes long):', err.message);
-          });
-        }
-      } catch (err) {
-        console.warn('[VNC] Failed to automate proxy credentials via CDP:', err.message);
-      }
-    }
-
-    vncSession = { chrome, profilePath, profileName, cdpBrowser, isLocalChrome: true };
-
-    return {
-      success: true,
-      mode: 'vnc',
-      vnc_available: true,
-      is_local_chrome: true,
-      ws_port: null,
-      missing_deps: []
-    };
-  }
-
-  // Kill any stale processes from previous runs
-  execQuiet('pkill -f "Xvfb :99"');
-  execQuiet('pkill -f "x11vnc.*5999"');
-  execQuiet('pkill -f "websockify.*6080"');
-  execQuiet('pkill -f "openbox.*DISPLAY=:99"');
-  await sleep(500);
-
-  const env = { ...process.env, DISPLAY };
-
-  console.log('[VNC] Starting Xvfb on display :99...');
-  const xvfb = spawn('Xvfb', [DISPLAY, '-screen', '0', '1280x800x24', '-ac'], {
-    detached: true, stdio: 'ignore'
-  });
-  xvfb.unref();
-  await sleep(1000);
-
-  console.log('[VNC] Starting openbox window manager...');
-  const openbox = spawn('openbox', [], {
-    detached: true, stdio: 'ignore', env
-  });
-  openbox.unref();
-  await sleep(500);
-
-  console.log('[VNC] Launching Chrome...');
-  const chromePath = findChrome();
-  
-  // Resolve proxy
+function resolveProxyForProfile(profileName) {
   let proxyArg = null;
   let activeProxyPoolId = null;
   let needsAuth = false;
   let proxyUser = '';
   let proxyPass = '';
   try {
-    
-    // Check if there is a temp proxy pool ID setting for this profile
     const setting = queryOne("SELECT value FROM settings WHERE key = @key", { key: `proxy_for_profile_${profileName}` });
     if (setting && setting.value) {
       activeProxyPoolId = Number(setting.value);
     }
-    
-    // If not found in settings, check if there's an existing channel linked to this profile
     if (!activeProxyPoolId) {
       const channel = queryOne('SELECT * FROM channels WHERE profile_name = @profileName LIMIT 1', { profileName });
       if (channel && channel.proxy_pool_id) {
         activeProxyPoolId = channel.proxy_pool_id;
       }
     }
-    
     if (activeProxyPoolId) {
       const proxy = queryOne('SELECT * FROM proxy_pool WHERE id = @id', { id: activeProxyPoolId });
       if (proxy) {
@@ -341,12 +165,171 @@ export async function launchVncSession(profileName = 'yt_setup_global') {
       }
     }
   } catch (err) {
-    console.error('[VNC] Error resolving proxy for VNC setup session:', err);
+    console.error('[VNC] Error resolving proxy for setup session:', err);
   }
+  return { proxyArg, needsAuth, proxyUser, proxyPass };
+}
+
+/** Apply proxy auth to all current and future pages of a CDP browser. */
+async function applyProxyAuth(cdpBrowser, proxyUser, proxyPass) {
+  const applyAuth = async (p) => {
+    try {
+      await p.authenticate({ username: proxyUser, password: proxyPass });
+      console.log('[VNC] Proxy credentials applied.');
+    } catch (e) {
+      console.error('[VNC] Failed to apply proxy credentials to page:', e);
+    }
+  };
+  const pages = await cdpBrowser.pages();
+  for (const p of pages) {
+    await applyAuth(p);
+  }
+  cdpBrowser.on('targetcreated', async (target) => {
+    if (target.type() === 'page') {
+      const p = await target.page();
+      if (p) await applyAuth(p);
+    }
+  });
+  if (pages.length > 0) {
+    const page = pages[0];
+    console.log('[VNC] Navigating page to YouTube Studio after auth setup...');
+    page.goto('https://studio.youtube.com?hl=en&persist_hl=1').catch(err => {
+      console.error('[VNC] Navigation error (expected if loading takes long):', err.message);
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Session Management
+// ---------------------------------------------------------------------------
+
+/**
+ * Launch a full VNC session for a specific user: Xvfb → openbox → Chrome → x11vnc → websockify
+ * Each user gets an isolated slot (display + ports). Returns { ws_port, vnc_available, ... }.
+ */
+export async function launchVncSession(profileName = 'yt_setup_new', userId = null) {
+  if (!userId) throw new Error('launchVncSession requires a userId for per-user isolation.');
+
+  // Stop only THIS user's existing session (never touch other users' sessions).
+  await stopVncSession(userId);
+
+  // Check dependencies
+  const depsCheck = checkVncDeps();
+  if (!depsCheck.ok) {
+    console.warn('[VNC] Missing dependencies:', depsCheck.missing);
+    return {
+      success: true,
+      mode: 'vnc',
+      vnc_available: false,
+      missing_deps: depsCheck.missing,
+      ws_port: null
+    };
+  }
+
+  // Allocate an isolated slot for this user.
+  const slot = allocateSlot();
+  if (!slot) {
+    throw new Error(`All ${SLOTS.length} login slots are currently in use. Please wait until another login finishes and try again.`);
+  }
+  const { display, vncPort, wsPort, cdpPort } = slot;
+
+  const profilePath = path.join(PROFILES_DIR, profileName);
+
+  // For fresh channel logins (profile name starting with "yt_setup_"), start clean.
+  if (profileName.startsWith('yt_setup_') && fs.existsSync(profilePath)) {
+    console.log(`[VNC] Clearing fresh profile "${profileName}" for new channel login...`);
+    fs.rmSync(profilePath, { recursive: true, force: true });
+  }
+  if (!fs.existsSync(profilePath)) fs.mkdirSync(profilePath, { recursive: true });
+
+  // Clean Chrome lock files
+  for (const f of ['SingletonLock', 'SingletonSocket', 'SingletonCookie']) {
+    const p = path.join(profilePath, f);
+    try { if (fs.existsSync(p)) fs.unlinkSync(p); } catch {}
+  }
+
+  if (process.platform === 'win32') {
+    console.log('[VNC] Launching Chrome directly on Windows desktop...');
+    const chromePath = findChrome();
+    const { proxyArg, needsAuth, proxyUser, proxyPass } = resolveProxyForProfile(profileName);
+
+    const chromeArgs = [
+      `--user-data-dir=${profilePath}`,
+      `--remote-debugging-port=${cdpPort}`,
+      '--no-first-run',
+      '--no-default-browser-check',
+      '--disable-features=TranslateUI',
+      '--disable-blink-features=AutomationControlled',
+      '--lang=en-US',
+      '--window-size=1280,800',
+      '--window-position=0,0',
+      '--start-maximized',
+      '--password-store=basic',
+      '--use-mock-keychain'
+    ];
+    if (proxyArg) chromeArgs.push(proxyArg);
+    chromeArgs.push('--enforce-webrtc-ip-permission-check');
+    chromeArgs.push('--disable-webrtc-hw-decoding');
+    chromeArgs.push('--disable-webrtc-hw-encoding');
+    chromeArgs.push('--webrtc-ip-handling-policy=disable_non_proxied_udp');
+    chromeArgs.push(needsAuth ? 'about:blank' : 'https://studio.youtube.com?hl=en&persist_hl=1');
+
+    const chrome = spawn(chromePath, chromeArgs, { detached: true, stdio: 'ignore' });
+    chrome.unref();
+    await sleep(2500);
+
+    let cdpBrowser = null;
+    if (needsAuth) {
+      try {
+        console.log('[VNC] Connecting via CDP to authenticate proxy credentials...');
+        await sleep(1500);
+        cdpBrowser = await puppeteer.connect({ browserURL: `http://127.0.0.1:${cdpPort}`, defaultViewport: null });
+        await applyProxyAuth(cdpBrowser, proxyUser, proxyPass);
+      } catch (err) {
+        console.warn('[VNC] Failed to automate proxy credentials via CDP:', err.message);
+      }
+    }
+
+    vncSessions.set(userId, { userId, slot, chrome, profilePath, profileName, cdpBrowser, isLocalChrome: true });
+
+    return {
+      success: true,
+      mode: 'vnc',
+      vnc_available: true,
+      is_local_chrome: true,
+      ws_port: null,
+      missing_deps: []
+    };
+  }
+
+  // Kill any stale processes for THIS slot only (never touch other slots/users).
+  execQuiet(`pkill -f "Xvfb ${display} "`);
+  execQuiet(`pkill -f "x11vnc.*${vncPort}"`);
+  execQuiet(`pkill -f "websockify.*${wsPort}"`);
+  execQuiet(`pkill -f "openbox.*DISPLAY=${display}"`);
+  await sleep(500);
+
+  const env = { ...process.env, DISPLAY: display };
+
+  console.log(`[VNC] Starting Xvfb on display ${display}...`);
+  const xvfb = spawn('Xvfb', [display, '-screen', '0', '1280x800x24', '-ac'], {
+    detached: true, stdio: 'ignore'
+  });
+  xvfb.unref();
+  await sleep(1000);
+
+  console.log('[VNC] Starting openbox window manager...');
+  const openbox = spawn('openbox', [], { detached: true, stdio: 'ignore', env });
+  openbox.unref();
+  await sleep(500);
+
+  console.log('[VNC] Launching Chrome...');
+  const chromePath = findChrome();
+  const { proxyArg, needsAuth, proxyUser, proxyPass } = resolveProxyForProfile(profileName);
 
   const chromeArgs = [
     `--user-data-dir=${profilePath}`,
-    `--remote-debugging-port=${CDP_PORT}`,
+    `--remote-debugging-port=${cdpPort}`,
     '--no-first-run',
     '--no-default-browser-check',
     '--disable-features=TranslateUI',
@@ -361,17 +344,11 @@ export async function launchVncSession(profileName = 'yt_setup_global') {
     '--password-store=basic',
     '--use-mock-keychain'
   ];
-
-  if (proxyArg) {
-    chromeArgs.push(proxyArg);
-  }
-
-  // WebRTC leak prevention
+  if (proxyArg) chromeArgs.push(proxyArg);
   chromeArgs.push('--enforce-webrtc-ip-permission-check');
   chromeArgs.push('--disable-webrtc-hw-decoding');
   chromeArgs.push('--disable-webrtc-hw-encoding');
   chromeArgs.push('--webrtc-ip-handling-policy=disable_non_proxied_udp');
-
   if (needsAuth) {
     chromeArgs.push('about:blank');
     console.log('[VNC] Proxy needs authentication. Starting Chrome on about:blank to configure auth first...');
@@ -379,37 +356,31 @@ export async function launchVncSession(profileName = 'yt_setup_global') {
     chromeArgs.push('https://studio.youtube.com?hl=en&persist_hl=1');
   }
 
-  const chrome = spawn(chromePath, chromeArgs, {
-    detached: true, stdio: 'ignore', env
-  });
+  const chrome = spawn(chromePath, chromeArgs, { detached: true, stdio: 'ignore', env });
   chrome.unref();
   await sleep(2500);
 
-  console.log('[VNC] Starting x11vnc...');
+  console.log(`[VNC] Starting x11vnc on port ${vncPort}...`);
   const x11vnc = spawn('x11vnc', [
-    '-display', DISPLAY,
+    '-display', display,
     '-nopw',
     '-forever',
     '-shared',
-    '-rfbport', String(VNC_PORT),
+    '-rfbport', String(vncPort),
     '-cursor', 'arrow',
     '-noxdamage',
     '-xkb',
     '-ncache', '0'
-  ], {
-    detached: true, stdio: 'ignore'
-  });
+  ], { detached: true, stdio: 'ignore' });
   x11vnc.unref();
   await sleep(1000);
 
-  console.log('[VNC] Starting websockify (noVNC bridge)...');
+  console.log(`[VNC] Starting websockify (noVNC bridge) on port ${wsPort}...`);
   const websockify = spawn('websockify', [
     '--web', depsCheck.novncDir,
-    String(WS_PORT),
-    `localhost:${VNC_PORT}`
-  ], {
-    detached: true, stdio: 'ignore'
-  });
+    String(wsPort),
+    `localhost:${vncPort}`
+  ], { detached: true, stdio: 'ignore' });
   websockify.unref();
   await sleep(1000);
 
@@ -418,107 +389,80 @@ export async function launchVncSession(profileName = 'yt_setup_global') {
   if (needsAuth) {
     try {
       console.log('[VNC] Connecting via CDP to authenticate proxy credentials...');
-      // Wait to ensure CDP port is active
       await sleep(1500);
-      cdpBrowser = await puppeteer.connect({
-        browserURL: `http://127.0.0.1:${CDP_PORT}`,
-        defaultViewport: null
-      });
-
-      const applyAuth = async (p) => {
-        try {
-          await p.authenticate({
-            username: proxyUser,
-            password: proxyPass
-          });
-          console.log('[VNC] Proxy credentials applied.');
-        } catch (e) {
-          console.error('[VNC] Failed to apply proxy credentials to page:', e);
-        }
-      };
-
-      const pages = await cdpBrowser.pages();
-      for (const p of pages) {
-        await applyAuth(p);
-      }
-
-      // Listen for new targets (tabs/windows)
-      cdpBrowser.on('targetcreated', async (target) => {
-        if (target.type() === 'page') {
-          const p = await target.page();
-          if (p) {
-            await applyAuth(p);
-          }
-        }
-      });
-
-      // Now navigate to YouTube Studio after authentication is set up
-      if (pages.length > 0) {
-        const page = pages[0];
-        console.log('[VNC] Navigating page to YouTube Studio after auth setup...');
-        page.goto('https://studio.youtube.com?hl=en&persist_hl=1').catch(err => {
-          console.error('[VNC] Navigation error (expected if loading takes long):', err.message);
-        });
-      }
+      cdpBrowser = await puppeteer.connect({ browserURL: `http://127.0.0.1:${cdpPort}`, defaultViewport: null });
+      await applyProxyAuth(cdpBrowser, proxyUser, proxyPass);
     } catch (err) {
       console.warn('[VNC] Failed to automate proxy credentials via CDP:', err.message);
     }
   }
 
-  vncSession = { xvfb, openbox, chrome, x11vnc, websockify, profilePath, profileName, cdpBrowser };
+  vncSessions.set(userId, { userId, slot, xvfb, openbox, chrome, x11vnc, websockify, profilePath, profileName, cdpBrowser });
 
-  console.log(`[VNC] Session ready. noVNC available at port ${WS_PORT}`);
+  console.log(`[VNC] Session ready for user ${userId}. noVNC available on port ${wsPort} (display ${display}).`);
 
   return {
     success: true,
     mode: 'vnc',
     vnc_available: true,
-    ws_port: WS_PORT,
+    ws_port: wsPort,
     missing_deps: []
   };
 }
 
 /**
- * Check if VNC session is active
+ * Check if a given user has an active VNC session.
  */
-export function isVncActive() {
-  return vncSession !== null;
+export function isVncActive(userId) {
+  return userId != null && vncSessions.has(userId);
 }
 
 /**
- * Get the websockify port for noVNC
+ * Get the websockify port for a user's noVNC session (null if none).
  */
-export function getVncPort() {
-  return WS_PORT;
+export function getVncPort(userId) {
+  const s = userId != null ? vncSessions.get(userId) : null;
+  return s && s.slot ? s.slot.wsPort : null;
 }
 
 /**
- * Get the current VNC session's profile name
+ * Get a user's VNC session profile name.
  */
-export function getVncProfileName() {
-  return vncSession ? vncSession.profileName : null;
+export function getVncProfileName(userId) {
+  const s = userId != null ? vncSessions.get(userId) : null;
+  return s ? s.profileName : null;
 }
 
 /**
- * Get the current VNC session's profile path
+ * Get a user's VNC session profile path.
  */
-export function getVncProfilePath() {
-  return vncSession ? vncSession.profilePath : null;
+export function getVncProfilePath(userId) {
+  const s = userId != null ? vncSessions.get(userId) : null;
+  return s ? s.profilePath : null;
 }
 
 /**
- * Verify channels by connecting to Chrome via CDP and scraping YouTube Studio
+ * Whether a user's active session is a local Chrome instance (Windows dev).
  */
-export async function verifyVncChannels() {
-  if (!vncSession) {
+export function isLocalChrome(userId) {
+  const s = userId != null ? vncSessions.get(userId) : null;
+  return s ? !!s.isLocalChrome : false;
+}
+
+/**
+ * Verify channels for a user by connecting to their Chrome via CDP and scraping YouTube Studio.
+ */
+export async function verifyVncChannels(userId) {
+  const session = userId != null ? vncSessions.get(userId) : null;
+  if (!session) {
     throw new Error('No active browser session. Please launch Chrome first.');
   }
+  const cdpPort = session.slot.cdpPort;
 
   let browser = null;
   try {
-    // Connect to the Chrome instance via CDP
     browser = await puppeteer.connect({
-      browserURL: `http://127.0.0.1:${CDP_PORT}`,
+      browserURL: `http://127.0.0.1:${cdpPort}`,
       defaultViewport: null
     });
 
@@ -528,12 +472,10 @@ export async function verifyVncChannels() {
 
     const url = page.url();
 
-    // Check if we're on Google login page
     if (url.includes('accounts.google.com')) {
       throw new Error('Not logged in yet. Please sign in to your Google account in the browser first.');
     }
 
-    // Navigate to YouTube Studio if not already there
     if (!url.includes('studio.youtube.com')) {
       await page.goto('https://studio.youtube.com?hl=en&persist_hl=1', {
         waitUntil: 'networkidle2',
@@ -542,13 +484,11 @@ export async function verifyVncChannels() {
       await sleep(5000);
     }
 
-    // --- Extract channel ID from URL (most reliable) ---
     const currentUrl = page.url();
     let ytChannelId = '';
     const cidMatch = currentUrl.match(/channel\/(UC[A-Za-z0-9_-]+)/);
     if (cidMatch) ytChannelId = cidMatch[1];
 
-    // If no channel ID in URL, try finding it in page links
     if (!ytChannelId) {
       ytChannelId = await page.evaluate(() => {
         const links = document.querySelectorAll('a[href*="channel/UC"]');
@@ -556,7 +496,6 @@ export async function verifyVncChannels() {
           const m = link.href.match(/channel\/(UC[A-Za-z0-9_-]+)/);
           if (m) return m[1];
         }
-        // Also check meta tags and canonical URLs
         const canonical = document.querySelector('link[rel="canonical"]');
         if (canonical) {
           const m = canonical.href.match(/channel\/(UC[A-Za-z0-9_-]+)/);
@@ -566,21 +505,14 @@ export async function verifyVncChannels() {
       });
     }
 
-    // --- Extract channel name ---
-    // Strategy: Use the YouTube API endpoint that Studio itself uses
     let channelName = '';
 
-    // Method 1: Try clicking the account avatar to open the account menu
     try {
-      // Click the avatar button in top-right to open account switcher
       const avatarBtn = await page.$('button#avatar-btn, img.channel-thumbnail-icon, #avatar-btn img, button[aria-label*="Account"], .ytcp-account-settings img');
       if (avatarBtn) {
         await avatarBtn.click();
         await sleep(1500);
-        
-        // Now look for channel name in the opened menu
         channelName = await page.evaluate(() => {
-          // The account menu shows channel name prominently
           const nameSelectors = [
             '.yt-spec-touch-feedback-shape__fill + div',
             '#channel-name',
@@ -594,8 +526,6 @@ export async function verifyVncChannels() {
           }
           return '';
         });
-        
-        // Close the menu by pressing Escape
         await page.keyboard.press('Escape');
         await sleep(500);
       }
@@ -603,28 +533,22 @@ export async function verifyVncChannels() {
       console.warn('[VNC Verify] Avatar click method failed:', e.message);
     }
 
-    // Method 2: Navigate to channel customization page to get the name
     if (!channelName) {
       try {
-        const customUrl = ytChannelId 
+        const customUrl = ytChannelId
           ? `https://studio.youtube.com/channel/${ytChannelId}/editing/details`
           : 'https://studio.youtube.com/channel/editing/details';
         await page.goto(customUrl, { waitUntil: 'networkidle2', timeout: 30000 });
         await sleep(3000);
-        
+
         channelName = await page.evaluate(() => {
-          // On the customization page, the channel name is in an input field
           const nameInput = document.querySelector('#name-input input, #channel-name-input input, [aria-label="Channel name"] input, #textbox[aria-label*="name"]');
           if (nameInput && nameInput.value) return nameInput.value.trim();
-          
-          // Or try the text content of the name area
           const nameArea = document.querySelector('#name-input #textbox, .channel-name-text');
           if (nameArea && nameArea.textContent.trim()) return nameArea.textContent.trim();
-          
           return '';
         });
 
-        // Navigate back to dashboard
         if (ytChannelId) {
           await page.goto(`https://studio.youtube.com/channel/${ytChannelId}?hl=en`, { waitUntil: 'domcontentloaded', timeout: 20000 });
         }
@@ -633,21 +557,16 @@ export async function verifyVncChannels() {
       }
     }
 
-    // Method 3: Broad DOM search — find text near "Your channel" label
     if (!channelName) {
       channelName = await page.evaluate(() => {
-        // Look for all text nodes and find channel-like text
-        const badNames = ['channel dashboard', 'channel content', 'channel analytics', 
+        const badNames = ['channel dashboard', 'channel content', 'channel analytics',
                           'your channel', 'youtube studio', 'dashboard', 'content',
                           'analytics', 'community', 'subtitles', 'settings'];
-        
-        // Try to find the channel name near the avatar/profile section
         const allElements = document.querySelectorAll('*');
         for (const el of allElements) {
-          if (el.children.length > 0) continue; // Only leaf nodes
+          if (el.children.length > 0) continue;
           const text = (el.textContent || '').trim();
           if (text.length >= 2 && text.length <= 60 && !badNames.includes(text.toLowerCase())) {
-            // Check if this element is near a channel avatar or "Your channel" text
             const parent = el.parentElement;
             const grandparent = parent ? parent.parentElement : null;
             const context = (parent?.textContent || '') + (grandparent?.textContent || '');
@@ -656,17 +575,13 @@ export async function verifyVncChannels() {
             }
           }
         }
-        
-        // Look for @handle
         const bodyText = document.body.innerText || '';
         const handleMatch = bodyText.match(/@[\w][\w.-]{1,30}/);
         if (handleMatch) return handleMatch[0];
-        
         return '';
       });
     }
 
-    // Method 4: Use channel ID as fallback name
     if (!channelName && ytChannelId) {
       channelName = ytChannelId;
     }
@@ -684,7 +599,6 @@ export async function verifyVncChannels() {
 
     return { channels, pageTitle: await page.title(), url: currentUrl };
   } finally {
-    // Disconnect (don't close — Chrome should keep running)
     if (browser) {
       try { browser.disconnect(); } catch {}
     }
@@ -692,36 +606,50 @@ export async function verifyVncChannels() {
 }
 
 /**
- * Stop VNC session and kill all processes
+ * Stop a specific user's VNC session and free its slot.
  */
-export async function stopVncSession() {
-  if (vncSession) {
-    console.log('[VNC] Stopping VNC session...');
-    if (vncSession.cdpBrowser) {
-      try { vncSession.cdpBrowser.disconnect(); } catch {}
+export async function stopVncSession(userId) {
+  const session = userId != null ? vncSessions.get(userId) : null;
+  if (session) {
+    console.log(`[VNC] Stopping VNC session for user ${userId}...`);
+    if (session.cdpBrowser) {
+      try { session.cdpBrowser.disconnect(); } catch {}
     }
-    killProc(vncSession.websockify);
-    killProc(vncSession.x11vnc);
-    killProc(vncSession.chrome);
-    killProc(vncSession.openbox);
-    killProc(vncSession.xvfb);
-    vncSession = null;
-  }
+    killProc(session.websockify);
+    killProc(session.x11vnc);
+    killProc(session.chrome);
+    killProc(session.openbox);
+    killProc(session.xvfb);
 
-  // Kill any remaining processes by name (safety net)
-  if (process.platform !== 'win32') {
-    execQuiet('pkill -f "Xvfb :99"');
-    execQuiet('pkill -f "x11vnc.*5999"');
-    execQuiet('pkill -f "websockify.*6080"');
-  }
-  await sleep(500);
+    // Safety net: kill any stragglers bound to THIS session's slot only.
+    if (process.platform !== 'win32' && session.slot) {
+      const { display, vncPort, wsPort } = session.slot;
+      execQuiet(`pkill -f "Xvfb ${display} "`);
+      execQuiet(`pkill -f "x11vnc.*${vncPort}"`);
+      execQuiet(`pkill -f "websockify.*${wsPort}"`);
+    }
 
-  console.log('[VNC] Session stopped.');
+    vncSessions.delete(userId);
+    await sleep(500);
+    console.log(`[VNC] Session for user ${userId} stopped.`);
+  }
 }
 
 /**
- * Check if the active session is a local Chrome instance
+ * Stop whichever user's VNC session (if any) is currently using a given profile path.
+ * Used by upload/reschedule/sync so they only close a login that is using the SAME
+ * profile they need — never another user's unrelated login.
+ * Returns true if a session was stopped.
  */
-export function isLocalChrome() {
-  return vncSession ? !!vncSession.isLocalChrome : false;
+export async function stopVncSessionForProfile(profilePath) {
+  if (!profilePath) return false;
+  const targetReal = (() => { try { return fs.realpathSync(profilePath); } catch { return path.resolve(profilePath); } })();
+  for (const [uid, session] of vncSessions.entries()) {
+    const sessReal = (() => { try { return fs.realpathSync(session.profilePath); } catch { return path.resolve(session.profilePath || ''); } })();
+    if (sessReal === targetReal) {
+      await stopVncSession(uid);
+      return true;
+    }
+  }
+  return false;
 }

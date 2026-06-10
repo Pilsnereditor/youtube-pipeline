@@ -61,6 +61,15 @@ export function init(broadcast) {
       console.log('[Scheduler] Running automatic 6-hour channel state synchronization...');
       const channels = queryAll('SELECT id, upload_mode, name FROM channels');
       for (const ch of channels) {
+        const activePost = queryOne(
+          `SELECT id FROM scheduled_posts WHERE channel_id = @id AND status = 'processing' LIMIT 1`,
+          { id: ch.id }
+        );
+        if (activePost) {
+          console.log(`[Scheduler] Skipping auto-sync for channel "${ch.name}" (${ch.id}) because an upload is currently processing.`);
+          continue;
+        }
+
         try {
           console.log(`[Scheduler] Auto-syncing channel "${ch.name}" (${ch.id}) in mode: ${ch.upload_mode}`);
           if (ch.upload_mode === 'browser') {

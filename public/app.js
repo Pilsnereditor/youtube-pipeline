@@ -4786,6 +4786,10 @@ async function updateDashboardScheduleSummary() {
     // Sort order
     if (oFilter === 'desc') {
       unused.sort((a, b) => b.id - a.id);
+    } else if (oFilter === 'title_asc') {
+      unused.sort((a, b) => (a.title || '').localeCompare(b.title || '', undefined, { numeric: true, sensitivity: 'base' }));
+    } else if (oFilter === 'filename_asc') {
+      unused.sort((a, b) => (a.original_filename || '').localeCompare(b.original_filename || '', undefined, { numeric: true, sensitivity: 'base' }));
     } else {
       unused.sort((a, b) => a.id - b.id);
     }

@@ -671,6 +671,14 @@ router.post('/:id/sync', async (req, res) => {
     return res.status(404).json({ error: 'Channel not found or does not belong to you.' });
   }
 
+  const activePost = queryOne(
+    `SELECT id FROM scheduled_posts WHERE channel_id = @id AND status = 'processing' LIMIT 1`,
+    { id }
+  );
+  if (activePost) {
+    return res.status(409).json({ error: 'Cannot perform sync operation while a video is currently uploading for this channel.' });
+  }
+
   const channel = queryOne('SELECT upload_mode FROM channels WHERE id = @id', { id });
 
   try {
@@ -700,6 +708,14 @@ router.post('/:id/sync-branding', async (req, res) => {
   const channel = verifyChannel(id, userId);
   if (!channel) {
     return res.status(404).json({ error: 'Channel not found or does not belong to you.' });
+  }
+
+  const activePost = queryOne(
+    `SELECT id FROM scheduled_posts WHERE channel_id = @id AND status = 'processing' LIMIT 1`,
+    { id }
+  );
+  if (activePost) {
+    return res.status(409).json({ error: 'Cannot perform branding sync while a video is currently uploading for this channel.' });
   }
 
   try {
@@ -751,6 +767,14 @@ router.post('/:id/browser-login', async (req, res) => {
   const { id } = req.params;
   if (!verifyChannel(id, userId)) {
     return res.status(404).json({ error: 'Channel not found.' });
+  }
+
+  const activePost = queryOne(
+    `SELECT id FROM scheduled_posts WHERE channel_id = @id AND status = 'processing' LIMIT 1`,
+    { id }
+  );
+  if (activePost) {
+    return res.status(409).json({ error: 'Cannot start setup browser session while a video is currently uploading for this channel.' });
   }
 
   try {

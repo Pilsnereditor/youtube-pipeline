@@ -671,6 +671,10 @@ router.post('/bulk', async (req, res) => {
               sql += ` ORDER BY v.id DESC`;
             } else if (videoOrder === 'random') {
               sql += ` ORDER BY RANDOM()`;
+            } else if (videoOrder === 'title_asc') {
+              sql += ` ORDER BY v.title ASC`;
+            } else if (videoOrder === 'filename_asc') {
+              sql += ` ORDER BY v.original_filename ASC`;
             } else {
               sql += ` ORDER BY v.id ASC`;
             }

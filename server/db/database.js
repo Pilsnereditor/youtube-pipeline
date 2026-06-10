@@ -293,6 +293,37 @@ export function initDb() {
     console.error('[DB Migration] Error seeding webshare_api_key:', err);
   }
 
+  // Self-healing: Reset any stuck 'processing' scheduled posts to 'error' status on startup
+  try {
+    const resetResult = db.prepare(`
+      UPDATE scheduled_posts
+      SET status = 'error',
+          error_message = 'Upload interrupted (server crashed or restarted)'
+      WHERE status = 'processing'
+    `).run();
+    if (resetResult.changes > 0) {
+      console.log(`[DB Startup] Reset ${resetResult.changes} stuck 'processing' scheduled posts to 'error' status.`);
+    }
+  } catch (err) {
+    console.error('[DB Startup] Error resetting stuck processing posts:', err);
+  }
+
+  // Self-healing: Reset any stuck active pipeline runs on startup
+  try {
+    const resetPipeline = db.prepare(`
+      UPDATE pipeline_runs
+      SET status = 'error',
+          completed_at = datetime('now'),
+          log = log || '\n[System] Pipeline run interrupted (server crashed or restarted)'
+      WHERE status IN ('preparing', 'uploading', 'commenting')
+    `).run();
+    if (resetPipeline.changes > 0) {
+      console.log(`[DB Startup] Reset ${resetPipeline.changes} stuck active pipeline runs to 'error' status.`);
+    }
+  } catch (err) {
+    console.error('[DB Startup] Error resetting stuck pipeline runs:', err);
+  }
+
   console.log('[DB] Database initialized at', DB_PATH);
   return db;
 }

@@ -3317,6 +3317,11 @@ function openEditScheduledPostModal(postId) {
     banner.style.borderColor = 'rgba(99, 102, 241, 0.25)';
     banner.style.color = '#a5b4fc';
     statusText.textContent = 'Status: PENDING (Scheduled Upload)';
+  } else if (post.status === 'processing') {
+    banner.style.background = 'rgba(245, 158, 11, 0.08)';
+    banner.style.borderColor = 'rgba(245, 158, 11, 0.25)';
+    banner.style.color = '#fde68a';
+    statusText.textContent = 'Status: PROCESSING (Uploading to YouTube...)';
   } else if (post.status === 'complete') {
     banner.style.background = 'rgba(16, 185, 129, 0.08)';
     banner.style.borderColor = 'rgba(16, 185, 129, 0.25)';
@@ -3360,8 +3365,9 @@ function openEditScheduledPostModal(postId) {
   }
 
   // Toggle buttons
+  const canCancel = ['pending', 'error', 'processing'].includes(post.status);
   document.getElementById('btnSaveSchedPostChanges').style.display = canReschedule ? 'inline-block' : 'none';
-  document.getElementById('btnCancelSchedPost').style.display = isEditable ? 'inline-block' : 'none';
+  document.getElementById('btnCancelSchedPost').style.display = canCancel ? 'inline-block' : 'none';
 
   // Toggle link section
   const publishedSec = document.getElementById('viewSchedPublishedSection');

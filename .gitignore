@@ -9,3 +9,4 @@ sessions.db
 sessions.db-journal
 check_settings.js
 check_settings_new.js
+data/.session_secret

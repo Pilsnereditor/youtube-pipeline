@@ -1,6 +1,7 @@
 import express from 'express';
 import http from 'http';
 import net from 'net';
+import crypto from 'crypto';
 import { WebSocketServer } from 'ws';
 import path from 'path';
 import fs from 'fs';
@@ -50,6 +51,9 @@ initDb();
 
 
 const app = express();
+// Behind nginx in production: trust the first proxy so HTTPS detection and secure
+// cookies work correctly (relies on nginx forwarding X-Forwarded-Proto / Host).
+app.set('trust proxy', 1);
 const server = http.createServer(app);
 server.timeout = 3600000;
 server.headersTimeout = 3600000;
@@ -70,12 +74,40 @@ const sessionStore = new SQLiteStore({
   table: 'sessions'
 });
 
+// Resolve a strong session secret. Use SESSION_SECRET if provided; otherwise generate
+// one and persist it to data/.session_secret so sessions survive restarts. Never fall
+// back to a guessable hardcoded string (which would let an attacker forge logins).
+function resolveSessionSecret() {
+  if (process.env.SESSION_SECRET && process.env.SESSION_SECRET.length >= 16) {
+    return process.env.SESSION_SECRET;
+  }
+  const secretFile = path.join(__dirname, '..', 'data', '.session_secret');
+  try {
+    if (fs.existsSync(secretFile)) {
+      const existing = fs.readFileSync(secretFile, 'utf8').trim();
+      if (existing) return existing;
+    }
+    const generated = crypto.randomBytes(48).toString('hex');
+    fs.writeFileSync(secretFile, generated, { mode: 0o600 });
+    console.warn('[Server] No SESSION_SECRET set — generated and persisted a random secret to data/.session_secret');
+    return generated;
+  } catch (e) {
+    console.error('[Server] Could not persist session secret; using an ephemeral one:', e.message);
+    return crypto.randomBytes(48).toString('hex');
+  }
+}
+
 const sessionMiddleware = session({
   store: sessionStore,
-  secret: process.env.SESSION_SECRET || 'youtube-pipeline-secret',
+  secret: resolveSessionSecret(),
   resave: false,
   saveUninitialized: false,
-  cookie: { secure: false, maxAge: 30 * 24 * 60 * 60 * 1000 } // 30 days
+  cookie: {
+    secure: 'auto',   // mark cookie Secure automatically when served over HTTPS (via nginx)
+    httpOnly: true,   // not readable by client-side JS (mitigates XSS session theft)
+    sameSite: 'lax',  // CSRF mitigation
+    maxAge: 30 * 24 * 60 * 60 * 1000 // 30 days
+  }
 });
 
 app.use(sessionMiddleware);

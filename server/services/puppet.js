@@ -2060,10 +2060,41 @@ export async function rescheduleVideoBrowser(channelId, youtubeVideoId, schedule
         await new Promise(r => setTimeout(r, 100));
 
         await page.keyboard.type(targetTimeStr, { delay: 50 });
-        await page.keyboard.press('Enter');
-        await new Promise(r => setTimeout(r, 500));
-        await page.keyboard.press('Escape');
-        await new Promise(r => setTimeout(r, 500));
+        await new Promise(r => setTimeout(r, 700));
+
+        // The schedule time field is a dropdown/combobox: typing only filters the list, it does
+        // not commit the value. Select the matching option from the open dropdown. (Pressing
+        // Escape here would revert the field back to its original time, which was the bug.)
+        const timeOptionPicked = await page.evaluate((target) => {
+          function queryAllShadow(selector, root = document) {
+            const elements = Array.from(root.querySelectorAll(selector));
+            const children = Array.from(root.querySelectorAll('*'));
+            for (const child of children) {
+              if (child.shadowRoot) {
+                elements.push(...queryAllShadow(selector, child.shadowRoot));
+              }
+            }
+            return elements;
+          }
+          const norm = (s) => (s || '').replace(/\s+/g, '').toLowerCase();
+          const options = queryAllShadow('tp-yt-paper-item, ytcp-text-menu tp-yt-paper-item, [role="option"], ytcp-time-of-day-picker tp-yt-paper-item');
+          const visible = options.filter(o => o.offsetParent !== null);
+          let match = visible.find(o => norm(o.textContent) === norm(target));
+          if (!match) match = visible.find(o => norm(o.textContent).includes(norm(target)));
+          if (match) {
+            match.scrollIntoView({ block: 'center', inline: 'nearest' });
+            match.click();
+            return 'clicked:' + (match.textContent || '').trim();
+          }
+          return 'no-option';
+        }, targetTimeStr);
+        logFn(`[Puppet] Time dropdown option selection: ${timeOptionPicked}`);
+
+        if (timeOptionPicked === 'no-option') {
+          // Fallback: commit the typed value with Enter (no Escape, which would revert it).
+          await page.keyboard.press('Enter');
+        }
+        await new Promise(r => setTimeout(r, 600));
 
         // Save debug screenshot of reschedule visibility popup
         try {

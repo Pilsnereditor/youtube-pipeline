@@ -499,12 +499,29 @@ export async function resetPuppetSessionUrl(channelId) {
 async function detectPageLanguage(page) {
   try {
     return await page.evaluate(() => {
+      // 1. Check HTML lang attribute first (most reliable)
       const langAttr = (document.documentElement.lang || '').toLowerCase();
       if (langAttr.startsWith('tr')) return 'tr';
       if (langAttr.startsWith('en')) return 'en';
-      
-      const bodyText = document.body.textContent || '';
-      if (bodyText.includes('Görünürlük') || bodyText.includes('Kaydet') || bodyText.includes('İptal') || bodyText.includes('Planla') || bodyText.includes('Planlayın')) {
+
+      // 2. Recursive text search in shadow roots
+      function findTextInShadow(textList, root = document) {
+        const elements = Array.from(root.querySelectorAll('*'));
+        for (const el of elements) {
+          const t = (el.textContent || '').trim();
+          if (textList.some(txt => t.includes(txt))) {
+            return true;
+          }
+          if (el.shadowRoot) {
+            if (findTextInShadow(textList, el.shadowRoot)) {
+              return true;
+            }
+          }
+        }
+        return false;
+      }
+
+      if (findTextInShadow(['Görünürlük', 'Kaydet', 'İptal', 'Planlayın', 'Planla'])) {
         return 'tr';
       }
       return 'en';
@@ -515,40 +532,275 @@ async function detectPageLanguage(page) {
 }
 
 /**
+ * Formats publish date adaptively based on the initial value's format and language
+ */
+export function formatPublishDateSelfAdaptive(dateIso, initialValue, lang = 'en') {
+  const date = new Date(dateIso);
+  const dd = String(date.getDate());
+  const ddpadded = String(date.getDate()).padStart(2, '0');
+  const mm = String(date.getMonth() + 1).padStart(2, '0');
+  const yyyy = date.getFullYear();
+
+  if (initialValue && initialValue !== 'not_found' && initialValue.trim() !== '') {
+    const val = initialValue.trim();
+    
+    // Check for dot-separated format (e.g. "10.06.2026")
+    if (val.includes('.')) {
+      const parts = val.split('.');
+      if (parts.length === 3) {
+        if (parts[0].length === 4) {
+          return `${yyyy}.${mm}.${ddpadded}`;
+        } else {
+          return `${ddpadded}.${mm}.${yyyy}`;
+        }
+      }
+    }
+    
+    // Check for slash-separated format (e.g. "10/06/2026" or "06/10/2026")
+    if (val.includes('/')) {
+      const parts = val.split('/');
+      if (parts.length === 3) {
+        if (parts[0].length === 4) {
+          return `${yyyy}/${mm}/${ddpadded}`;
+        } else {
+          if (lang === 'tr') {
+            return `${ddpadded}/${mm}/${yyyy}`;
+          } else {
+            return `${mm}/${ddpadded}/${yyyy}`;
+          }
+        }
+      }
+    }
+
+    // Check for dash-separated format (e.g. "2026-06-10")
+    if (val.includes('-')) {
+      const parts = val.split('-');
+      if (parts.length === 3) {
+        if (parts[0].length === 4) {
+          return `${yyyy}-${mm}-${ddpadded}`;
+        } else {
+          return `${ddpadded}-${mm}-${yyyy}`;
+        }
+      }
+    }
+
+    // Check if it's space-separated with a month name (e.g., "12 Haz 2026" or "Jun 12, 2026")
+    if (val.includes(' ')) {
+      const trMonths = ['Oca', 'Şub', 'Mar', 'Nis', 'May', 'Haz', 'Tem', 'Ağu', 'Eyl', 'Eki', 'Kas', 'Ara'];
+      const enMonths = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+      
+      const hasTrMonth = trMonths.some(m => val.toLowerCase().includes(m.toLowerCase()));
+      const hasEnMonth = enMonths.some(m => val.toLowerCase().includes(m.toLowerCase()));
+
+      if (hasTrMonth || lang === 'tr') {
+        const monthName = trMonths[date.getMonth()];
+        return `${dd} ${monthName} ${yyyy}`;
+      } else if (hasEnMonth || lang === 'en') {
+        const monthName = enMonths[date.getMonth()];
+        return `${monthName} ${dd}, ${yyyy}`;
+      }
+    }
+  }
+
+  // Fallback based on language
+  if (lang === 'tr') {
+    const months = ['Oca', 'Şub', 'Mar', 'Nis', 'May', 'Haz', 'Tem', 'Ağu', 'Eyl', 'Eki', 'Kas', 'Ara'];
+    const mmName = months[date.getMonth()];
+    return `${dd} ${mmName} ${yyyy}`;
+  } else {
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const mmName = months[date.getMonth()];
+    return `${mmName} ${dd}, ${yyyy}`;
+  }
+}
+
+/**
+ * Formats publish time adaptively based on the initial value's format and language
+ */
+export function formatPublishTimeSelfAdaptive(dateIso, initialValue, lang = 'en') {
+  const date = new Date(dateIso);
+  const hours = date.getHours();
+  const minutes = String(date.getMinutes()).padStart(2, '0');
+  
+  if (initialValue && initialValue !== 'not_found' && initialValue.trim() !== '') {
+    const val = initialValue.trim().toLowerCase();
+    const hasAmPm = val.includes('am') || val.includes('pm') || val.includes('a.m.') || val.includes('p.m.');
+    if (!hasAmPm) {
+      const hh = String(hours).padStart(2, '0');
+      return `${hh}:${minutes}`;
+    } else {
+      let h = hours % 12;
+      h = h ? h : 12;
+      const ampm = hours >= 12 ? 'PM' : 'AM';
+      return `${h}:${minutes} ${ampm}`;
+    }
+  }
+
+  if (lang === 'tr') {
+    const hh = String(hours).padStart(2, '0');
+    return `${hh}:${minutes}`;
+  } else {
+    let h = hours % 12;
+    h = h ? h : 12;
+    const ampm = hours >= 12 ? 'PM' : 'AM';
+    return `${h}:${minutes} ${ampm}`;
+  }
+}
+
+/**
  * Formats publish date to YouTube-accepted text based on locale: "May 31, 2026" or "31 May 2026"
  */
 export function formatPublishDate(dateIso, lang = 'en') {
-  const date = new Date(dateIso);
-  if (lang === 'tr') {
-    const months = ['Oca', 'Şub', 'Mar', 'Nis', 'May', 'Haz', 'Tem', 'Ağu', 'Eyl', 'Eki', 'Kas', 'Ara'];
-    const mm = months[date.getMonth()];
-    const dd = String(date.getDate());
-    const yyyy = date.getFullYear();
-    return `${dd} ${mm} ${yyyy}`;
-  } else {
-    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-    const mm = months[date.getMonth()];
-    const dd = String(date.getDate()); // No padding (e.g. "Jun 5, 2026")
-    const yyyy = date.getFullYear();
-    return `${mm} ${dd}, ${yyyy}`;
-  }
+  return formatPublishDateSelfAdaptive(dateIso, null, lang);
 }
 
 /**
  * Formats publish time to YouTube-accepted text based on locale: "7:00 PM" or "19:00"
  */
 export function formatPublishTime(dateIso, lang = 'en') {
-  const date = new Date(dateIso);
-  const hours = date.getHours();
-  const minutes = String(date.getMinutes()).padStart(2, '0');
-  if (lang === 'tr') {
-    const hh = String(hours).padStart(2, '0');
-    return `${hh}:${minutes}`;
-  } else {
-    let h = hours % 12;
-    h = h ? h : 12; // Hour 0 becomes 12
-    const ampm = hours >= 12 ? 'PM' : 'AM';
-    return `${h}:${minutes} ${ampm}`;
+  return formatPublishTimeSelfAdaptive(dateIso, null, lang);
+}
+
+/**
+ * Formats a target date matching the locale/format pattern detected from the input's initial value.
+ */
+export function formatDateLikeInitial(initialValue, targetDateIso) {
+  try {
+    const date = new Date(targetDateIso);
+    if (isNaN(date.getTime())) return initialValue;
+    const day = date.getDate();
+    const month = date.getMonth(); // 0-11
+    const year = date.getFullYear();
+
+    // English month names
+    const enMonths = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    // Turkish month names
+    const trMonths = ['Oca', 'Şub', 'Mar', 'Nis', 'May', 'Haz', 'Tem', 'Ağu', 'Eyl', 'Eki', 'Kas', 'Ara'];
+
+    const initialClean = (initialValue || '').trim();
+    if (!initialClean) {
+      return `${enMonths[month]} ${day}, ${year}`;
+    }
+
+    // 1. Detect if it's like "Jun 12, 2026" (Month Day, Year)
+    if (/[a-zA-Z]{3,9}\s+\d{1,2},\s+\d{4}/.test(initialClean)) {
+      const mm = enMonths[month];
+      return `${mm} ${day}, ${year}`;
+    }
+
+    // 2. Detect if it's like "12 Haz 2026" or "12 June 2026"
+    if (/\d{1,2}\s+[a-zA-ZğüşıöçĞÜŞİÖÇ]{3,9}\s+\d{4}/.test(initialClean)) {
+      const isTurkish = /[a-zA-ZğüşıöçĞÜŞİÖÇ]/.test(initialClean) && 
+                        (initialClean.includes('Oca') || initialClean.includes('Şub') || initialClean.includes('Mar') ||
+                         initialClean.includes('Nis') || initialClean.includes('May') || initialClean.includes('Haz') ||
+                         initialClean.includes('Tem') || initialClean.includes('Ağu') || initialClean.includes('Eyl') ||
+                         initialClean.includes('Eki') || initialClean.includes('Kas') || initialClean.includes('Ara'));
+      const months = isTurkish ? trMonths : enMonths;
+      const mm = months[month];
+      return `${day} ${mm} ${year}`;
+    }
+
+    // 3. Detect numeric formats (e.g. 12.06.2026, 12/06/2026, 2026-06-12)
+    let separator = null;
+    if (initialClean.includes('.')) separator = '.';
+    else if (initialClean.includes('/')) separator = '/';
+    else if (initialClean.includes('-')) separator = '-';
+
+    if (separator) {
+      const parts = initialClean.split(separator);
+      if (parts.length === 3) {
+        const yearIdx = parts.findIndex(p => p.trim().length === 4);
+        if (yearIdx === 0) {
+          const mm = String(month + 1).padStart(2, '0');
+          const dd = String(day).padStart(2, '0');
+          return `${year}${separator}${mm}${separator}${dd}`;
+        } else if (yearIdx === 2) {
+          const p0 = parseInt(parts[0], 10);
+          const p1 = parseInt(parts[1], 10);
+          
+          let dayFirst = true; // Default to Day first (Turkish / European)
+          
+          // Calibrate based on current date
+          const today = new Date();
+          const tomorrow = new Date(today.getTime() + 24 * 60 * 60 * 1000);
+          const dayAfter = new Date(today.getTime() + 2 * 24 * 60 * 60 * 1000);
+          
+          const matchDate = (d) => {
+            const ddStr = String(d.getDate()).padStart(2, '0');
+            const mmStr = String(d.getMonth() + 1).padStart(2, '0');
+            const dStr = String(d.getDate());
+            const mStr = String(d.getMonth() + 1);
+            
+            if ((parts[0] === ddStr || parts[0] === dStr) && (parts[1] === mmStr || parts[1] === mStr)) {
+              dayFirst = true;
+              return true;
+            }
+            if ((parts[1] === ddStr || parts[1] === dStr) && (parts[0] === mmStr || parts[0] === mStr)) {
+              dayFirst = false;
+              return true;
+            }
+            return false;
+          };
+
+          const matched = matchDate(today) || matchDate(tomorrow) || matchDate(dayAfter);
+          
+          const dd = String(day).padStart(2, '0');
+          const mm = String(month + 1).padStart(2, '0');
+          
+          if (matched) {
+            return dayFirst ? `${dd}${separator}${mm}${separator}${year}` : `${mm}${separator}${dd}${separator}${year}`;
+          } else {
+            // Default to Turkish DD.MM.YYYY
+            return `${dd}${separator}${mm}${separator}${year}`;
+          }
+        }
+      }
+    }
+    
+    // Fallback to standard English
+    return `${enMonths[month]} ${day}, ${year}`;
+  } catch (err) {
+    return initialValue;
+  }
+}
+
+/**
+ * Formats a target time matching the locale/format pattern detected from the input's initial value.
+ */
+export function formatTimeLikeInitial(initialValue, targetDateIso) {
+  try {
+    const date = new Date(targetDateIso);
+    if (isNaN(date.getTime())) return initialValue;
+    const hours = date.getHours();
+    const minutes = String(date.getMinutes()).padStart(2, '0');
+    
+    const initialClean = (initialValue || '').trim().toUpperCase();
+    if (!initialClean) {
+      // Fallback: format to standard English 12h
+      let h = hours % 12;
+      h = h ? h : 12;
+      const ampm = hours >= 12 ? 'PM' : 'AM';
+      return `${h}:${minutes} ${ampm}`;
+    }
+    
+    const is12Hour = initialClean.includes('AM') || initialClean.includes('PM');
+    
+    if (is12Hour) {
+      let h = hours % 12;
+      h = h ? h : 12; // Hour 0 becomes 12
+      const ampm = hours >= 12 ? 'PM' : 'AM';
+      // Check if initial value has leading zero for hours (e.g. "07:30 PM")
+      const hourPart = initialClean.match(/^\d+/);
+      const hasLeadingZero = hourPart && hourPart[0].startsWith('0') && hourPart[0].length === 2;
+      const hStr = hasLeadingZero ? String(h).padStart(2, '0') : String(h);
+      return `${hStr}:${minutes} ${ampm}`;
+    } else {
+      // 24-hour format
+      const hh = String(hours).padStart(2, '0');
+      return `${hh}:${minutes}`;
+    }
+  } catch (err) {
+    return initialValue;
   }
 }
 
@@ -873,13 +1125,6 @@ export async function uploadVideoBrowser(channelId, opts, logFn = console.log) {
 
       // The date is shown as a dropdown button like "May 30, 2026 ▼"
       // Click the dropdown trigger to open calendar picker, then type the date
-      const pageLang = await detectPageLanguage(page);
-      logFn(`[Puppet] Detected page language: ${pageLang}`);
-
-      const dateStr = formatPublishDate(opts.scheduledAt, pageLang);
-      const timeStr = formatPublishTime(opts.scheduledAt, pageLang);
-
-      // 1. Enter Date using robust shadow DOM selector
       const dateTriggerClicked = await page.evaluate(() => {
         function queryAllShadow(selector, root = document) {
           const elements = Array.from(root.querySelectorAll(selector));
@@ -902,7 +1147,9 @@ export async function uploadVideoBrowser(channelId, opts, logFn = console.log) {
 
       if (dateTriggerClicked) {
         await new Promise(r => setTimeout(r, 1000));
-        const dateInputFocused = await page.evaluate(() => {
+        
+        // Read initial value of the date input
+        const dateInputDetails = await page.evaluate(() => {
           function queryAllShadow(selector, root = document) {
             const elements = Array.from(root.querySelectorAll(selector));
             const children = Array.from(root.querySelectorAll('*'));
@@ -916,22 +1163,56 @@ export async function uploadVideoBrowser(channelId, opts, logFn = console.log) {
           const calInput = queryAllShadow('#datepicker-trigger input, ytcp-date-picker input, input[placeholder*="date" i], input[aria-label*="date" i]')[0];
           if (calInput) {
             calInput.scrollIntoView({ block: 'center', inline: 'nearest' });
+            calInput.click();
             calInput.focus();
-            calInput.value = '';
-            calInput.dispatchEvent(new Event('input', { bubbles: true }));
-            return true;
+            return {
+              initialValue: calInput.value || '',
+              exists: true
+            };
           }
-          return false;
+          return { exists: false };
         });
 
-        if (dateInputFocused) {
-          await new Promise(r => setTimeout(r, 200));
-          await page.keyboard.type(dateStr, { delay: 50 });
+        if (dateInputDetails.exists) {
+          const initialValue = dateInputDetails.initialValue;
+          const targetDateStr = formatDateLikeInitial(initialValue, opts.scheduledAt);
+          logFn(`[Puppet] Date Input - Initial Value: "${initialValue}", Formatted Target: "${targetDateStr}"`);
+
+          // Clear and enter date using native Ctrl+A and Backspace sequence
+          await page.keyboard.down('Control');
+          await page.keyboard.press('A');
+          await page.keyboard.up('Control');
+          await page.keyboard.press('Backspace');
+          await new Promise(r => setTimeout(r, 100));
+
+          // Robust fallback clearing loop
+          for (let i = 0; i < 25; i++) {
+            await page.keyboard.press('Backspace');
+          }
+          await new Promise(r => setTimeout(r, 100));
+
+          await page.keyboard.type(targetDateStr, { delay: 50 });
           await page.keyboard.press('Enter');
           await new Promise(r => setTimeout(r, 500));
           await page.keyboard.press('Escape');
           await new Promise(r => setTimeout(r, 500));
-          logFn(`[Puppet] Entered date: ${dateStr}`);
+
+          // Read final value for verification/logging
+          const finalDateVal = await page.evaluate(() => {
+            function queryAllShadow(selector, root = document) {
+              const elements = Array.from(root.querySelectorAll(selector));
+              const children = Array.from(root.querySelectorAll('*'));
+              for (const child of children) {
+                if (child.shadowRoot) {
+                  elements.push(...queryAllShadow(selector, child.shadowRoot));
+                }
+              }
+              return elements;
+            }
+            const calInput = queryAllShadow('#datepicker-trigger input, ytcp-date-picker input, input[placeholder*="date" i], input[aria-label*="date" i]')[0];
+            return calInput ? calInput.value : '';
+          });
+          logFn(`[Puppet] Date Input - Final Value after typing: "${finalDateVal}"`);
         } else {
           logFn('[Puppet] Warning: could not focus date input field.');
         }
@@ -942,8 +1223,8 @@ export async function uploadVideoBrowser(channelId, opts, logFn = console.log) {
       await new Promise(r => setTimeout(r, 800));
 
       // 2. Enter Time using robust shadow DOM selector
-      logFn(`[Puppet] Entering scheduled time: ${timeStr}...`);
-      const timeInputFocused = await page.evaluate(() => {
+      logFn('[Puppet] Entering scheduled time...');
+      const timeInputDetails = await page.evaluate(() => {
         function queryAllShadow(selector, root = document) {
           const elements = Array.from(root.querySelectorAll(selector));
           const children = Array.from(root.querySelectorAll('*'));
@@ -955,7 +1236,7 @@ export async function uploadVideoBrowser(channelId, opts, logFn = console.log) {
           return elements;
         }
         const container = queryAllShadow('ytcp-datetime-picker, ytcp-visibility-scheduler, ytcp-video-visibility-select')[0];
-        if (!container) return false;
+        if (!container) return { exists: false };
         
         const inputs = Array.from(container.querySelectorAll('input'));
         const timeInput = inputs.find(input => {
@@ -965,22 +1246,73 @@ export async function uploadVideoBrowser(channelId, opts, logFn = console.log) {
         
         if (timeInput) {
           timeInput.scrollIntoView({ block: 'center', inline: 'nearest' });
+          timeInput.click();
           timeInput.focus();
-          timeInput.value = '';
-          timeInput.dispatchEvent(new Event('input', { bubbles: true }));
-          return true;
+          return {
+            initialValue: timeInput.value || '',
+            exists: true
+          };
         }
-        return false;
+        return { exists: false };
       });
 
-      if (timeInputFocused) {
-        await new Promise(r => setTimeout(r, 200));
-        await page.keyboard.type(timeStr, { delay: 50 });
+      if (timeInputDetails.exists) {
+        const initialValue = timeInputDetails.initialValue;
+        const targetTimeStr = formatTimeLikeInitial(initialValue, opts.scheduledAt);
+        logFn(`[Puppet] Time Input - Initial Value: "${initialValue}", Formatted Target: "${targetTimeStr}"`);
+
+        // Clear and enter time using native Ctrl+A and Backspace sequence
+        await page.keyboard.down('Control');
+        await page.keyboard.press('A');
+        await page.keyboard.up('Control');
+        await page.keyboard.press('Backspace');
+        await new Promise(r => setTimeout(r, 100));
+
+        // Robust fallback clearing loop
+        for (let i = 0; i < 25; i++) {
+          await page.keyboard.press('Backspace');
+        }
+        await new Promise(r => setTimeout(r, 100));
+
+        await page.keyboard.type(targetTimeStr, { delay: 50 });
         await page.keyboard.press('Enter');
         await new Promise(r => setTimeout(r, 500));
         await page.keyboard.press('Escape');
         await new Promise(r => setTimeout(r, 500));
-        logFn(`[Puppet] Entered time: ${timeStr}`);
+
+        // Save debug screenshot of upload visibility popup
+        try {
+          const debugScreenshotPath = path.join(profilePath, 'puppet_upload_debug.png');
+          await page.screenshot({ path: debugScreenshotPath });
+          logFn(`[Puppet] Saved debug screenshot of visibility popup to: ${debugScreenshotPath}`);
+        } catch (e) {
+          logFn(`[Puppet] Warning: failed to save debug screenshot: ${e.message}`);
+        }
+
+        // Read final value for verification/logging
+        const finalTimeVal = await page.evaluate(() => {
+          function queryAllShadow(selector, root = document) {
+            const elements = Array.from(root.querySelectorAll(selector));
+            const children = Array.from(root.querySelectorAll('*'));
+            for (const child of children) {
+              if (child.shadowRoot) {
+                elements.push(...queryAllShadow(selector, child.shadowRoot));
+              }
+            }
+            return elements;
+          }
+          const container = queryAllShadow('ytcp-datetime-picker, ytcp-visibility-scheduler, ytcp-video-visibility-select')[0];
+          if (container) {
+            const inputs = Array.from(container.querySelectorAll('input'));
+            const timeInput = inputs.find(input => {
+              const val = input.value || '';
+              return val.includes(':') || /\d+:\d+/.test(val);
+            }) || inputs[inputs.length - 1];
+            return timeInput ? timeInput.value : '';
+          }
+          return '';
+        });
+        logFn(`[Puppet] Time Input - Final Value after typing: "${finalTimeVal}"`);
       } else {
         logFn('[Puppet] Warning: could not focus time input field.');
       }
@@ -1547,14 +1879,6 @@ export async function rescheduleVideoBrowser(channelId, youtubeVideoId, schedule
         logFn('[Puppet] Warning: datetime picker wait timed out: ' + err.message);
       });
 
-      const pageLang = await detectPageLanguage(page);
-      logFn(`[Puppet] Detected page language: ${pageLang}`);
-
-      const dateStr = formatPublishDate(scheduledAt, pageLang);
-      const timeStr = formatPublishTime(scheduledAt, pageLang);
-
-      // 1. Enter Date using robust shadow DOM selector
-      logFn(`[Puppet] Entering scheduled date: ${dateStr}...`);
       const dateTriggerClicked = await page.evaluate(() => {
         function queryAllShadow(selector, root = document) {
           const elements = Array.from(root.querySelectorAll(selector));
@@ -1577,7 +1901,9 @@ export async function rescheduleVideoBrowser(channelId, youtubeVideoId, schedule
 
       if (dateTriggerClicked) {
         await new Promise(r => setTimeout(r, 1000));
-        const dateInputFocused = await page.evaluate(() => {
+        
+        // Read initial value of the date input
+        const dateInputDetails = await page.evaluate(() => {
           function queryAllShadow(selector, root = document) {
             const elements = Array.from(root.querySelectorAll(selector));
             const children = Array.from(root.querySelectorAll('*'));
@@ -1591,22 +1917,56 @@ export async function rescheduleVideoBrowser(channelId, youtubeVideoId, schedule
           const calInput = queryAllShadow('#datepicker-trigger input, ytcp-date-picker input, input[placeholder*="date" i], input[aria-label*="date" i]')[0];
           if (calInput) {
             calInput.scrollIntoView({ block: 'center', inline: 'nearest' });
+            calInput.click();
             calInput.focus();
-            calInput.value = '';
-            calInput.dispatchEvent(new Event('input', { bubbles: true }));
-            return true;
+            return {
+              initialValue: calInput.value || '',
+              exists: true
+            };
           }
-          return false;
+          return { exists: false };
         });
 
-        if (dateInputFocused) {
-          await new Promise(r => setTimeout(r, 200));
-          await page.keyboard.type(dateStr, { delay: 50 });
+        if (dateInputDetails.exists) {
+          const initialValue = dateInputDetails.initialValue;
+          const targetDateStr = formatDateLikeInitial(initialValue, scheduledAt);
+          logFn(`[Puppet] Date Input - Initial Value: "${initialValue}", Formatted Target: "${targetDateStr}"`);
+
+          // Clear and enter date using native Ctrl+A and Backspace sequence
+          await page.keyboard.down('Control');
+          await page.keyboard.press('A');
+          await page.keyboard.up('Control');
+          await page.keyboard.press('Backspace');
+          await new Promise(r => setTimeout(r, 100));
+
+          // Robust fallback clearing loop
+          for (let i = 0; i < 25; i++) {
+            await page.keyboard.press('Backspace');
+          }
+          await new Promise(r => setTimeout(r, 100));
+
+          await page.keyboard.type(targetDateStr, { delay: 50 });
           await page.keyboard.press('Enter');
           await new Promise(r => setTimeout(r, 500));
           await page.keyboard.press('Escape');
           await new Promise(r => setTimeout(r, 500));
-          logFn(`[Puppet] Entered date: ${dateStr}`);
+
+          // Read final value for verification/logging
+          const finalDateVal = await page.evaluate(() => {
+            function queryAllShadow(selector, root = document) {
+              const elements = Array.from(root.querySelectorAll(selector));
+              const children = Array.from(root.querySelectorAll('*'));
+              for (const child of children) {
+                if (child.shadowRoot) {
+                  elements.push(...queryAllShadow(selector, child.shadowRoot));
+                }
+              }
+              return elements;
+            }
+            const calInput = queryAllShadow('#datepicker-trigger input, ytcp-date-picker input, input[placeholder*="date" i], input[aria-label*="date" i]')[0];
+            return calInput ? calInput.value : '';
+          });
+          logFn(`[Puppet] Date Input - Final Value after typing: "${finalDateVal}"`);
         } else {
           logFn('[Puppet] Warning: could not focus date input field.');
         }
@@ -1617,8 +1977,8 @@ export async function rescheduleVideoBrowser(channelId, youtubeVideoId, schedule
       await new Promise(r => setTimeout(r, 800));
 
       // 2. Enter Time using robust shadow DOM selector
-      logFn(`[Puppet] Entering scheduled time: ${timeStr}...`);
-      const timeInputFocused = await page.evaluate(() => {
+      logFn('[Puppet] Entering scheduled time...');
+      const timeInputDetails = await page.evaluate(() => {
         function queryAllShadow(selector, root = document) {
           const elements = Array.from(root.querySelectorAll(selector));
           const children = Array.from(root.querySelectorAll('*'));
@@ -1630,7 +1990,7 @@ export async function rescheduleVideoBrowser(channelId, youtubeVideoId, schedule
           return elements;
         }
         const container = queryAllShadow('ytcp-datetime-picker, ytcp-visibility-scheduler, ytcp-video-visibility-select')[0];
-        if (!container) return false;
+        if (!container) return { exists: false };
         
         const inputs = Array.from(container.querySelectorAll('input'));
         const timeInput = inputs.find(input => {
@@ -1640,22 +2000,73 @@ export async function rescheduleVideoBrowser(channelId, youtubeVideoId, schedule
         
         if (timeInput) {
           timeInput.scrollIntoView({ block: 'center', inline: 'nearest' });
+          timeInput.click();
           timeInput.focus();
-          timeInput.value = '';
-          timeInput.dispatchEvent(new Event('input', { bubbles: true }));
-          return true;
+          return {
+            initialValue: timeInput.value || '',
+            exists: true
+          };
         }
-        return false;
+        return { exists: false };
       });
 
-      if (timeInputFocused) {
-        await new Promise(r => setTimeout(r, 200));
-        await page.keyboard.type(timeStr, { delay: 50 });
+      if (timeInputDetails.exists) {
+        const initialValue = timeInputDetails.initialValue;
+        const targetTimeStr = formatTimeLikeInitial(initialValue, scheduledAt);
+        logFn(`[Puppet] Time Input - Initial Value: "${initialValue}", Formatted Target: "${targetTimeStr}"`);
+
+        // Clear and enter time using native Ctrl+A and Backspace sequence
+        await page.keyboard.down('Control');
+        await page.keyboard.press('A');
+        await page.keyboard.up('Control');
+        await page.keyboard.press('Backspace');
+        await new Promise(r => setTimeout(r, 100));
+
+        // Robust fallback clearing loop
+        for (let i = 0; i < 25; i++) {
+          await page.keyboard.press('Backspace');
+        }
+        await new Promise(r => setTimeout(r, 100));
+
+        await page.keyboard.type(targetTimeStr, { delay: 50 });
         await page.keyboard.press('Enter');
         await new Promise(r => setTimeout(r, 500));
         await page.keyboard.press('Escape');
         await new Promise(r => setTimeout(r, 500));
-        logFn(`[Puppet] Entered time: ${timeStr}`);
+
+        // Save debug screenshot of reschedule visibility popup
+        try {
+          const debugScreenshotPath = path.join(profilePath, 'puppet_reschedule_debug.png');
+          await page.screenshot({ path: debugScreenshotPath });
+          logFn(`[Puppet] Saved debug screenshot of visibility popup to: ${debugScreenshotPath}`);
+        } catch (e) {
+          logFn(`[Puppet] Warning: failed to save debug screenshot: ${e.message}`);
+        }
+
+        // Read final value for verification/logging
+        const finalTimeVal = await page.evaluate(() => {
+          function queryAllShadow(selector, root = document) {
+            const elements = Array.from(root.querySelectorAll(selector));
+            const children = Array.from(root.querySelectorAll('*'));
+            for (const child of children) {
+              if (child.shadowRoot) {
+                elements.push(...queryAllShadow(selector, child.shadowRoot));
+              }
+            }
+            return elements;
+          }
+          const container = queryAllShadow('ytcp-datetime-picker, ytcp-visibility-scheduler, ytcp-video-visibility-select')[0];
+          if (container) {
+            const inputs = Array.from(container.querySelectorAll('input'));
+            const timeInput = inputs.find(input => {
+              const val = input.value || '';
+              return val.includes(':') || /\d+:\d+/.test(val);
+            }) || inputs[inputs.length - 1];
+            return timeInput ? timeInput.value : '';
+          }
+          return '';
+        });
+        logFn(`[Puppet] Time Input - Final Value after typing: "${finalTimeVal}"`);
       } else {
         logFn('[Puppet] Warning: could not focus time input field.');
       }
@@ -1687,6 +2098,15 @@ export async function rescheduleVideoBrowser(channelId, youtubeVideoId, schedule
         logFn(`[Puppet] Warning: failed to toggle premiere checkbox: ${e.message}`);
       }
       await new Promise(r => setTimeout(r, 800));
+
+      // Save a debug screenshot of the visibility popup before clicking Done
+      try {
+        const debugScreenshotPath = path.join(profilePath, 'puppet_reschedule_debug.png');
+        await page.screenshot({ path: debugScreenshotPath });
+        logFn(`[Puppet] Saved debug visibility screenshot to: ${debugScreenshotPath}`);
+      } catch (e) {
+        logFn(`[Puppet] Warning: failed to save debug screenshot: ${e.message}`);
+      }
 
       logFn('[Puppet] Clicking Done in Visibility dialog...');
       await page.waitForFunction(() => {

@@ -842,107 +842,112 @@ export async function uploadVideoBrowser(channelId, opts, logFn = console.log) {
       const dateStr = formatPublishDate(opts.scheduledAt);
       const timeStr = formatPublishTime(opts.scheduledAt);
 
-      // Try clicking the date dropdown trigger to open the calendar
-      const dateTrigger = await page.waitForSelector(
-        '#datepicker-trigger, ytcp-datetime-picker ytcp-dropdown-trigger, ytcp-date-picker, [id*="datepicker"] [role="button"]',
-        { timeout: 5000 }
-      ).catch(() => null);
+      // 1. Enter Date using robust shadow DOM selector
+      const dateTriggerClicked = await page.evaluate(() => {
+        function queryAllShadow(selector, root = document) {
+          const elements = Array.from(root.querySelectorAll(selector));
+          const children = Array.from(root.querySelectorAll('*'));
+          for (const child of children) {
+            if (child.shadowRoot) {
+              elements.push(...queryAllShadow(selector, child.shadowRoot));
+            }
+          }
+          return elements;
+        }
+        const dateTrigger = queryAllShadow('#datepicker-trigger, ytcp-datetime-picker ytcp-dropdown-trigger, ytcp-date-picker, [id*="datepicker"] [role="button"]')[0];
+        if (dateTrigger) {
+          dateTrigger.scrollIntoView({ block: 'center', inline: 'nearest' });
+          dateTrigger.click();
+          return true;
+        }
+        return false;
+      });
 
-      if (dateTrigger) {
-        await safeClick(page, dateTrigger, { scroll: true });
+      if (dateTriggerClicked) {
         await new Promise(r => setTimeout(r, 1000));
-        // Type the date into the input that appears
-        const calInput = await page.waitForSelector(
-          '#datepicker-trigger input, ytcp-date-picker input, input[placeholder*="date" i], input[aria-label*="date" i]',
-          { timeout: 3000 }
-        ).catch(() => null);
-        if (calInput) {
-          await safeClick(page, calInput, { scroll: true, focus: true });
+        const dateInputFocused = await page.evaluate(() => {
+          function queryAllShadow(selector, root = document) {
+            const elements = Array.from(root.querySelectorAll(selector));
+            const children = Array.from(root.querySelectorAll('*'));
+            for (const child of children) {
+              if (child.shadowRoot) {
+                elements.push(...queryAllShadow(selector, child.shadowRoot));
+              }
+            }
+            return elements;
+          }
+          const calInput = queryAllShadow('#datepicker-trigger input, ytcp-date-picker input, input[placeholder*="date" i], input[aria-label*="date" i]')[0];
+          if (calInput) {
+            calInput.scrollIntoView({ block: 'center', inline: 'nearest' });
+            calInput.focus();
+            calInput.select();
+            return true;
+          }
+          return false;
+        });
+
+        if (dateInputFocused) {
           await new Promise(r => setTimeout(r, 200));
-          await page.keyboard.down('Control');
-          await page.keyboard.press('A');
-          await page.keyboard.up('Control');
           await page.keyboard.press('Backspace');
           await new Promise(r => setTimeout(r, 200));
-          await calInput.type(dateStr, { delay: 50 });
+          await page.keyboard.type(dateStr, { delay: 50 });
           await page.keyboard.press('Enter');
           await new Promise(r => setTimeout(r, 500));
           await page.keyboard.press('Escape');
           await new Promise(r => setTimeout(r, 500));
           logFn(`[Puppet] Entered date: ${dateStr}`);
         } else {
-          logFn('[Puppet] No date text input found after opening trigger, date may already be correct');
+          logFn('[Puppet] Warning: could not focus date input field.');
         }
       } else {
-        // Try direct text input
-        const directDateInput = await page.waitForSelector(
-          'input[aria-label="Publish date"], input[placeholder*="date" i]',
-          { timeout: 3000 }
-        ).catch(() => null);
-        if (directDateInput) {
-          await safeClick(page, directDateInput, { scroll: true, focus: true });
-          await new Promise(r => setTimeout(r, 200));
-          await page.keyboard.down('Control');
-          await page.keyboard.press('A');
-          await page.keyboard.up('Control');
-          await page.keyboard.press('Backspace');
-          await new Promise(r => setTimeout(r, 200));
-          await directDateInput.type(dateStr, { delay: 50 });
-          await page.keyboard.press('Enter');
-          await new Promise(r => setTimeout(r, 500));
-          await page.keyboard.press('Escape');
-          await new Promise(r => setTimeout(r, 500));
-          logFn(`[Puppet] Entered date via direct input: ${dateStr}`);
-        } else {
-          logFn('[Puppet] Warning: could not find date input, skipping (date may already be set)');
-        }
+        logFn('[Puppet] Warning: could not locate or click date trigger.');
       }
+
       await new Promise(r => setTimeout(r, 800));
 
-      logFn('[Puppet] Entering scheduled time...');
-      // The time input shows "12:00 AM" — it's an <input> inside the scheduler, after the date dropdown
-      const timeInput = await page.waitForSelector(
-        '#time-of-day-trigger input, ytcp-time-of-day-picker input, input[aria-label*="time" i], input[aria-label="Publish time"], ytcp-visibility-scheduler input[type="text"]:last-of-type, ytcp-datetime-picker input',
-        { timeout: 5000 }
-      ).catch(() => null);
-      if (timeInput) {
-        await safeClick(page, timeInput, { scroll: true, focus: true });
+      // 2. Enter Time using robust shadow DOM selector
+      logFn(`[Puppet] Entering scheduled time: ${timeStr}...`);
+      const timeInputFocused = await page.evaluate(() => {
+        function queryAllShadow(selector, root = document) {
+          const elements = Array.from(root.querySelectorAll(selector));
+          const children = Array.from(root.querySelectorAll('*'));
+          for (const child of children) {
+            if (child.shadowRoot) {
+              elements.push(...queryAllShadow(selector, child.shadowRoot));
+            }
+          }
+          return elements;
+        }
+        const container = queryAllShadow('ytcp-datetime-picker, ytcp-visibility-scheduler, ytcp-video-visibility-select')[0];
+        if (!container) return false;
+        
+        const inputs = Array.from(container.querySelectorAll('input'));
+        const timeInput = inputs.find(input => {
+          const val = input.value || '';
+          return val.includes(':') || /\d+:\d+/.test(val);
+        }) || inputs[inputs.length - 1];
+        
+        if (timeInput) {
+          timeInput.scrollIntoView({ block: 'center', inline: 'nearest' });
+          timeInput.focus();
+          timeInput.select();
+          return true;
+        }
+        return false;
+      });
+
+      if (timeInputFocused) {
         await new Promise(r => setTimeout(r, 200));
-        await page.keyboard.down('Control');
-        await page.keyboard.press('A');
-        await page.keyboard.up('Control');
         await page.keyboard.press('Backspace');
         await new Promise(r => setTimeout(r, 200));
-        await timeInput.type(timeStr, { delay: 50 });
+        await page.keyboard.type(timeStr, { delay: 50 });
         await page.keyboard.press('Enter');
         await new Promise(r => setTimeout(r, 500));
         await page.keyboard.press('Escape');
         await new Promise(r => setTimeout(r, 500));
         logFn(`[Puppet] Entered time: ${timeStr}`);
       } else {
-        // Fallback: find any input inside the datetime area by evaluating DOM
-        const timeSet = await page.evaluate((t) => {
-          // Find inputs in datetime picker area
-          const dtPicker = document.querySelector('ytcp-datetime-picker, ytcp-visibility-scheduler');
-          if (!dtPicker) return false;
-          const inputs = Array.from(dtPicker.querySelectorAll('input'));
-          // The time input is usually the second one (after date)
-          const timeInput = inputs.find(inp => {
-            const val = (inp.value || '').toLowerCase();
-            return val.includes('am') || val.includes('pm') || /\d+:\d+/.test(val);
-          }) || inputs[inputs.length - 1];
-          if (timeInput) {
-            timeInput.focus();
-            timeInput.select();
-            document.execCommand('selectAll');
-            document.execCommand('insertText', false, t);
-            timeInput.dispatchEvent(new Event('input', { bubbles: true }));
-            timeInput.dispatchEvent(new Event('change', { bubbles: true }));
-            return true;
-          }
-          return false;
-        }, timeStr);
-        logFn(`[Puppet] Time set via evaluate: ${timeSet}`);
+        logFn('[Puppet] Warning: could not focus time input field.');
       }
       await new Promise(r => setTimeout(r, 800));
 
@@ -1494,62 +1499,113 @@ export async function rescheduleVideoBrowser(channelId, youtubeVideoId, schedule
       const dateStr = formatPublishDate(scheduledAt);
       const timeStr = formatPublishTime(scheduledAt);
 
+      // 1. Enter Date using robust shadow DOM selector
       logFn(`[Puppet] Entering scheduled date: ${dateStr}...`);
-      const dateTrigger = await page.waitForSelector('#datepicker-trigger, ytcp-datetime-picker ytcp-dropdown-trigger, ytcp-date-picker, [id*="datepicker"] [role="button"]', { timeout: 5000 }).catch(() => null);
-      if (dateTrigger) {
-        await safeClick(page, dateTrigger, { scroll: true });
+      const dateTriggerClicked = await page.evaluate(() => {
+        function queryAllShadow(selector, root = document) {
+          const elements = Array.from(root.querySelectorAll(selector));
+          const children = Array.from(root.querySelectorAll('*'));
+          for (const child of children) {
+            if (child.shadowRoot) {
+              elements.push(...queryAllShadow(selector, child.shadowRoot));
+            }
+          }
+          return elements;
+        }
+        const dateTrigger = queryAllShadow('#datepicker-trigger, ytcp-datetime-picker ytcp-dropdown-trigger, ytcp-date-picker, [id*="datepicker"] [role="button"]')[0];
+        if (dateTrigger) {
+          dateTrigger.scrollIntoView({ block: 'center', inline: 'nearest' });
+          dateTrigger.click();
+          return true;
+        }
+        return false;
+      });
+
+      if (dateTriggerClicked) {
         await new Promise(r => setTimeout(r, 1000));
-        const calInput = await page.waitForSelector('#datepicker-trigger input, ytcp-date-picker input, input[placeholder*="date" i], input[aria-label*="date" i]', { timeout: 3000 }).catch(() => null);
-        if (calInput) {
-          await safeClick(page, calInput, { scroll: true, focus: true });
+        const dateInputFocused = await page.evaluate(() => {
+          function queryAllShadow(selector, root = document) {
+            const elements = Array.from(root.querySelectorAll(selector));
+            const children = Array.from(root.querySelectorAll('*'));
+            for (const child of children) {
+              if (child.shadowRoot) {
+                elements.push(...queryAllShadow(selector, child.shadowRoot));
+              }
+            }
+            return elements;
+          }
+          const calInput = queryAllShadow('#datepicker-trigger input, ytcp-date-picker input, input[placeholder*="date" i], input[aria-label*="date" i]')[0];
+          if (calInput) {
+            calInput.scrollIntoView({ block: 'center', inline: 'nearest' });
+            calInput.focus();
+            calInput.select();
+            return true;
+          }
+          return false;
+        });
+
+        if (dateInputFocused) {
           await new Promise(r => setTimeout(r, 200));
-          await page.keyboard.down('Control');
-          await page.keyboard.press('A');
-          await page.keyboard.up('Control');
           await page.keyboard.press('Backspace');
           await new Promise(r => setTimeout(r, 200));
-          await calInput.type(dateStr, { delay: 50 });
+          await page.keyboard.type(dateStr, { delay: 50 });
           await page.keyboard.press('Enter');
           await new Promise(r => setTimeout(r, 500));
           await page.keyboard.press('Escape');
           await new Promise(r => setTimeout(r, 500));
+          logFn(`[Puppet] Entered date: ${dateStr}`);
+        } else {
+          logFn('[Puppet] Warning: could not focus date input field.');
         }
+      } else {
+        logFn('[Puppet] Warning: could not locate or click date trigger.');
       }
+
       await new Promise(r => setTimeout(r, 800));
 
+      // 2. Enter Time using robust shadow DOM selector
       logFn(`[Puppet] Entering scheduled time: ${timeStr}...`);
-      const timeInputSelector = await page.evaluate(() => {
-        const container = document.querySelector('ytcp-datetime-picker, ytcp-visibility-scheduler, ytcp-video-visibility-select');
-        if (!container) return null;
+      const timeInputFocused = await page.evaluate(() => {
+        function queryAllShadow(selector, root = document) {
+          const elements = Array.from(root.querySelectorAll(selector));
+          const children = Array.from(root.querySelectorAll('*'));
+          for (const child of children) {
+            if (child.shadowRoot) {
+              elements.push(...queryAllShadow(selector, child.shadowRoot));
+            }
+          }
+          return elements;
+        }
+        const container = queryAllShadow('ytcp-datetime-picker, ytcp-visibility-scheduler, ytcp-video-visibility-select')[0];
+        if (!container) return false;
+        
         const inputs = Array.from(container.querySelectorAll('input'));
         const timeInput = inputs.find(input => {
           const val = input.value || '';
           return val.includes(':') || /\d+:\d+/.test(val);
-        }) || inputs[inputs.length - 1]; // fallback to last input in the container
+        }) || inputs[inputs.length - 1];
         
         if (timeInput) {
-          timeInput.setAttribute('id', 'temp-time-input-target');
-          return '#temp-time-input-target';
+          timeInput.scrollIntoView({ block: 'center', inline: 'nearest' });
+          timeInput.focus();
+          timeInput.select();
+          return true;
         }
-        return null;
+        return false;
       });
 
-      if (timeInputSelector) {
-        const timeInput = await page.waitForSelector(timeInputSelector, { timeout: 5000 }).catch(() => null);
-        if (timeInput) {
-          await safeClick(page, timeInput, { scroll: true, focus: true });
-          await new Promise(r => setTimeout(r, 200));
-          await page.keyboard.down('Control');
-          await page.keyboard.press('A');
-          await page.keyboard.up('Control');
-          await page.keyboard.press('Backspace');
-          await new Promise(r => setTimeout(r, 200));
-          await timeInput.type(timeStr, { delay: 50 });
-          await page.keyboard.press('Enter');
-          await new Promise(r => setTimeout(r, 500));
-          await page.keyboard.press('Escape');
-          await new Promise(r => setTimeout(r, 500));
-        }
+      if (timeInputFocused) {
+        await new Promise(r => setTimeout(r, 200));
+        await page.keyboard.press('Backspace');
+        await new Promise(r => setTimeout(r, 200));
+        await page.keyboard.type(timeStr, { delay: 50 });
+        await page.keyboard.press('Enter');
+        await new Promise(r => setTimeout(r, 500));
+        await page.keyboard.press('Escape');
+        await new Promise(r => setTimeout(r, 500));
+        logFn(`[Puppet] Entered time: ${timeStr}`);
+      } else {
+        logFn('[Puppet] Warning: could not focus time input field.');
       }
       await new Promise(r => setTimeout(r, 800));
 

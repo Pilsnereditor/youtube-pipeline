@@ -1014,21 +1014,59 @@ export async function uploadVideoBrowser(channelId, opts, logFn = console.log) {
           return { done: false, reason: 'dialog_not_found' };
         }
         
-        const text = (uploadDialog.textContent || '').toLowerCase();
+        // Locate the specific upload progress container
+        const progressEl = uploadDialog.querySelector('ytcp-video-upload-progress, .progress-label, #progress-label');
+        const progressText = progressEl ? (progressEl.textContent || '').toLowerCase() : '';
+        const entireText = (uploadDialog.textContent || '').toLowerCase();
         
-        const isDone = 
-          text.includes('upload complete') || 
-          text.includes('processing') || 
-          text.includes('checks') || 
-          text.includes('uploaded successfully') || 
-          text.includes('finished') ||
-          text.includes('yükleme tamamlandı') ||
-          text.includes('işleniyor') ||
-          text.includes('kontroller') ||
-          text.includes('başarıyla yüklendi') ||
-          text.includes('bitti');
+        if (progressText) {
+          // If progress bar/label explicitly says it's uploading or showing %, it's not done
+          const isUploadingText = 
+            progressText.includes('uploading') || 
+            progressText.includes('%') || 
+            progressText.includes('yükleniyor') ||
+            progressText.includes('yüklendi');
+            
+          if (isUploadingText) {
+            return { done: false, text: 'Progress label: ' + progressText };
+          }
           
-        return { done: isDone, text: text.slice(0, 100) };
+          // If it says complete, checking, or processing, it is done uploading
+          const isDoneText = 
+            progressText.includes('complete') || 
+            progressText.includes('processing') || 
+            progressText.includes('checks') || 
+            progressText.includes('finished') ||
+            progressText.includes('tamamlandı') ||
+            progressText.includes('işleniyor') ||
+            progressText.includes('kontroller') ||
+            progressText.includes('bitti');
+            
+          if (isDoneText) {
+            return { done: true, text: 'Progress label complete: ' + progressText };
+          }
+        }
+        
+        // Fallback: Check the entire dialog text, but avoid matching tab headers if upload is still running
+        const isStillUploading = 
+          entireText.includes('uploading') || 
+          entireText.includes('%') || 
+          entireText.includes('yükleniyor') ||
+          entireText.includes('yüklendi');
+          
+        if (isStillUploading) {
+          return { done: false, text: 'Entire dialog still uploading...' };
+        }
+        
+        const isDoneFallback = 
+          entireText.includes('upload complete') || 
+          entireText.includes('uploaded successfully') || 
+          entireText.includes('processing') || 
+          entireText.includes('yükleme tamamlandı') ||
+          entireText.includes('başarıyla yüklendi') ||
+          entireText.includes('işleniyor');
+          
+        return { done: isDoneFallback, text: 'Fallback: ' + entireText.slice(0, 100) };
       });
 
       if (status.done) {

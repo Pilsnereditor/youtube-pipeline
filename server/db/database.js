@@ -285,12 +285,18 @@ export function initDb() {
     console.error('[DB Migration] Error adding branding columns to channels:', err);
   }
 
-  // Seed webshare_api_key setting
+  // Webshare API key is PER-USER (user_settings), never a shared global key.
+  // Seed the default into the admin's own settings, migrate any legacy global key to the
+  // admin, then remove the global copy so it can never be shared across users again.
   try {
-    db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('webshare_api_key', 'grts0ygdwgzh971s0iblqmssqogisrc04adyjm4d')").run();
-    db.prepare("UPDATE settings SET value = 'grts0ygdwgzh971s0iblqmssqogisrc04adyjm4d' WHERE key = 'webshare_api_key' AND (value IS NULL OR value = '')").run();
+    db.prepare("INSERT OR IGNORE INTO user_settings (user_id, key, value) VALUES (1, 'webshare_api_key', 'grts0ygdwgzh971s0iblqmssqogisrc04adyjm4d')").run();
+    const legacy = db.prepare("SELECT value FROM settings WHERE key = 'webshare_api_key'").get();
+    if (legacy && legacy.value) {
+      db.prepare("INSERT INTO user_settings (user_id, key, value) VALUES (1, 'webshare_api_key', @v) ON CONFLICT(user_id, key) DO UPDATE SET value = @v").run({ v: legacy.value });
+      db.prepare("DELETE FROM settings WHERE key = 'webshare_api_key'").run();
+    }
   } catch (err) {
-    console.error('[DB Migration] Error seeding webshare_api_key:', err);
+    console.error('[DB Migration] Error migrating webshare_api_key to per-user settings:', err);
   }
 
   // Self-healing: Reset any stuck 'processing' scheduled posts to 'error' status on startup

@@ -145,16 +145,16 @@ router.post('/bulk', (req, res) => {
 router.post('/sync-webshare', async (req, res) => {
   const userId = req.session.userId;
   
-  // Get API key from request body or settings
+  // Get API key from request body or THIS user's own settings (never a shared global key).
   let apiKey = req.body.api_key;
   if (!apiKey) {
-    const setting = queryOne("SELECT value FROM settings WHERE key = 'webshare_api_key'");
+    const setting = queryOne("SELECT value FROM user_settings WHERE user_id = @userId AND key = 'webshare_api_key'", { userId });
     apiKey = setting?.value;
   }
   if (!apiKey) return res.status(400).json({ error: 'Webshare API key not configured.' });
   
-  // Save API key to settings
-  run("INSERT OR REPLACE INTO settings (key, value) VALUES ('webshare_api_key', @apiKey)", { apiKey });
+  // Save API key to this user's own per-user settings.
+  run("INSERT INTO user_settings (user_id, key, value) VALUES (@userId, 'webshare_api_key', @apiKey) ON CONFLICT(user_id, key) DO UPDATE SET value = @apiKey", { userId, apiKey });
   
   try {
     let allProxies = [];

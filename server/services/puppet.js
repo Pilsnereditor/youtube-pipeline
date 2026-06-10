@@ -493,29 +493,63 @@ export async function resetPuppetSessionUrl(channelId) {
 }
 
 /**
- * Formats publish date to YouTube-accepted text: "May 31, 2026"
+ * Detects the language of YouTube Studio: 'en' or 'tr'
+ * @param {object} page Puppeteer Page object
  */
-function formatPublishDate(dateIso) {
-  const date = new Date(dateIso);
-  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-  const mm = months[date.getMonth()];
-  const dd = String(date.getDate()); // No padding (e.g. "Jun 5, 2026")
-  const yyyy = date.getFullYear();
-  return `${mm} ${dd}, ${yyyy}`;
+async function detectPageLanguage(page) {
+  try {
+    return await page.evaluate(() => {
+      const langAttr = (document.documentElement.lang || '').toLowerCase();
+      if (langAttr.startsWith('tr')) return 'tr';
+      if (langAttr.startsWith('en')) return 'en';
+      
+      const bodyText = document.body.textContent || '';
+      if (bodyText.includes('Görünürlük') || bodyText.includes('Kaydet') || bodyText.includes('İptal') || bodyText.includes('Planla') || bodyText.includes('Planlayın')) {
+        return 'tr';
+      }
+      return 'en';
+    });
+  } catch (e) {
+    return 'en';
+  }
 }
 
 /**
- * Formats publish time to YouTube-accepted text: "7:00 PM"
+ * Formats publish date to YouTube-accepted text based on locale: "May 31, 2026" or "31 May 2026"
  */
-function formatPublishTime(dateIso) {
+export function formatPublishDate(dateIso, lang = 'en') {
   const date = new Date(dateIso);
-  let hours = date.getHours();
+  if (lang === 'tr') {
+    const months = ['Oca', 'Şub', 'Mar', 'Nis', 'May', 'Haz', 'Tem', 'Ağu', 'Eyl', 'Eki', 'Kas', 'Ara'];
+    const mm = months[date.getMonth()];
+    const dd = String(date.getDate());
+    const yyyy = date.getFullYear();
+    return `${dd} ${mm} ${yyyy}`;
+  } else {
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const mm = months[date.getMonth()];
+    const dd = String(date.getDate()); // No padding (e.g. "Jun 5, 2026")
+    const yyyy = date.getFullYear();
+    return `${mm} ${dd}, ${yyyy}`;
+  }
+}
+
+/**
+ * Formats publish time to YouTube-accepted text based on locale: "7:00 PM" or "19:00"
+ */
+export function formatPublishTime(dateIso, lang = 'en') {
+  const date = new Date(dateIso);
+  const hours = date.getHours();
   const minutes = String(date.getMinutes()).padStart(2, '0');
-  const ampm = hours >= 12 ? 'PM' : 'AM';
-  hours = hours % 12;
-  hours = hours ? hours : 12; // Hour 0 becomes 12
-  const hoursStr = String(hours); // No padding (e.g. "7:00 PM")
-  return `${hoursStr}:${minutes} ${ampm}`;
+  if (lang === 'tr') {
+    const hh = String(hours).padStart(2, '0');
+    return `${hh}:${minutes}`;
+  } else {
+    let h = hours % 12;
+    h = h ? h : 12; // Hour 0 becomes 12
+    const ampm = hours >= 12 ? 'PM' : 'AM';
+    return `${h}:${minutes} ${ampm}`;
+  }
 }
 
 /**
@@ -839,8 +873,11 @@ export async function uploadVideoBrowser(channelId, opts, logFn = console.log) {
 
       // The date is shown as a dropdown button like "May 30, 2026 ▼"
       // Click the dropdown trigger to open calendar picker, then type the date
-      const dateStr = formatPublishDate(opts.scheduledAt);
-      const timeStr = formatPublishTime(opts.scheduledAt);
+      const pageLang = await detectPageLanguage(page);
+      logFn(`[Puppet] Detected page language: ${pageLang}`);
+
+      const dateStr = formatPublishDate(opts.scheduledAt, pageLang);
+      const timeStr = formatPublishTime(opts.scheduledAt, pageLang);
 
       // 1. Enter Date using robust shadow DOM selector
       const dateTriggerClicked = await page.evaluate(() => {
@@ -880,15 +917,14 @@ export async function uploadVideoBrowser(channelId, opts, logFn = console.log) {
           if (calInput) {
             calInput.scrollIntoView({ block: 'center', inline: 'nearest' });
             calInput.focus();
-            calInput.select();
+            calInput.value = '';
+            calInput.dispatchEvent(new Event('input', { bubbles: true }));
             return true;
           }
           return false;
         });
 
         if (dateInputFocused) {
-          await new Promise(r => setTimeout(r, 200));
-          await page.keyboard.press('Backspace');
           await new Promise(r => setTimeout(r, 200));
           await page.keyboard.type(dateStr, { delay: 50 });
           await page.keyboard.press('Enter');
@@ -930,15 +966,14 @@ export async function uploadVideoBrowser(channelId, opts, logFn = console.log) {
         if (timeInput) {
           timeInput.scrollIntoView({ block: 'center', inline: 'nearest' });
           timeInput.focus();
-          timeInput.select();
+          timeInput.value = '';
+          timeInput.dispatchEvent(new Event('input', { bubbles: true }));
           return true;
         }
         return false;
       });
 
       if (timeInputFocused) {
-        await new Promise(r => setTimeout(r, 200));
-        await page.keyboard.press('Backspace');
         await new Promise(r => setTimeout(r, 200));
         await page.keyboard.type(timeStr, { delay: 50 });
         await page.keyboard.press('Enter');
@@ -1512,8 +1547,11 @@ export async function rescheduleVideoBrowser(channelId, youtubeVideoId, schedule
         logFn('[Puppet] Warning: datetime picker wait timed out: ' + err.message);
       });
 
-      const dateStr = formatPublishDate(scheduledAt);
-      const timeStr = formatPublishTime(scheduledAt);
+      const pageLang = await detectPageLanguage(page);
+      logFn(`[Puppet] Detected page language: ${pageLang}`);
+
+      const dateStr = formatPublishDate(scheduledAt, pageLang);
+      const timeStr = formatPublishTime(scheduledAt, pageLang);
 
       // 1. Enter Date using robust shadow DOM selector
       logFn(`[Puppet] Entering scheduled date: ${dateStr}...`);
@@ -1554,15 +1592,14 @@ export async function rescheduleVideoBrowser(channelId, youtubeVideoId, schedule
           if (calInput) {
             calInput.scrollIntoView({ block: 'center', inline: 'nearest' });
             calInput.focus();
-            calInput.select();
+            calInput.value = '';
+            calInput.dispatchEvent(new Event('input', { bubbles: true }));
             return true;
           }
           return false;
         });
 
         if (dateInputFocused) {
-          await new Promise(r => setTimeout(r, 200));
-          await page.keyboard.press('Backspace');
           await new Promise(r => setTimeout(r, 200));
           await page.keyboard.type(dateStr, { delay: 50 });
           await page.keyboard.press('Enter');
@@ -1604,15 +1641,14 @@ export async function rescheduleVideoBrowser(channelId, youtubeVideoId, schedule
         if (timeInput) {
           timeInput.scrollIntoView({ block: 'center', inline: 'nearest' });
           timeInput.focus();
-          timeInput.select();
+          timeInput.value = '';
+          timeInput.dispatchEvent(new Event('input', { bubbles: true }));
           return true;
         }
         return false;
       });
 
       if (timeInputFocused) {
-        await new Promise(r => setTimeout(r, 200));
-        await page.keyboard.press('Backspace');
         await new Promise(r => setTimeout(r, 200));
         await page.keyboard.type(timeStr, { delay: 50 });
         await page.keyboard.press('Enter');

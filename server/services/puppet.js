@@ -1493,8 +1493,24 @@ export async function rescheduleVideoBrowser(channelId, youtubeVideoId, schedule
         }
       }
 
-      // Wait for the datetime picker
-      await page.waitForSelector('ytcp-datetime-picker, #datepicker-trigger', { timeout: 10000 });
+      // Wait for the datetime picker inside shadow DOM
+      logFn('[Puppet] Waiting for datetime picker inside shadow DOM...');
+      await page.waitForFunction(() => {
+        function queryAllShadow(selector, root = document) {
+          const elements = Array.from(root.querySelectorAll(selector));
+          const children = Array.from(root.querySelectorAll('*'));
+          for (const child of children) {
+            if (child.shadowRoot) {
+              elements.push(...queryAllShadow(selector, child.shadowRoot));
+            }
+          }
+          return elements;
+        }
+        const el = queryAllShadow('#datepicker-trigger, ytcp-datetime-picker ytcp-dropdown-trigger, ytcp-date-picker')[0];
+        return el && el.offsetParent !== null;
+      }, { timeout: 15000 }).catch(err => {
+        logFn('[Puppet] Warning: datetime picker wait timed out: ' + err.message);
+      });
 
       const dateStr = formatPublishDate(scheduledAt);
       const timeStr = formatPublishTime(scheduledAt);
@@ -1637,8 +1653,41 @@ export async function rescheduleVideoBrowser(channelId, youtubeVideoId, schedule
       await new Promise(r => setTimeout(r, 800));
 
       logFn('[Puppet] Clicking Done in Visibility dialog...');
-      const doneBtn = await page.waitForSelector('ytcp-video-visibility-edit-popup #save-button, ytcp-video-visibility-edit-popup ytcp-button[id="save-button"], #done-button, ytcp-button[id*="done"]', { timeout: 10000 });
-      await safeClick(page, doneBtn, { scroll: true });
+      await page.waitForFunction(() => {
+        function queryAllShadow(selector, root = document) {
+          const elements = Array.from(root.querySelectorAll(selector));
+          const children = Array.from(root.querySelectorAll('*'));
+          for (const child of children) {
+            if (child.shadowRoot) {
+              elements.push(...queryAllShadow(selector, child.shadowRoot));
+            }
+          }
+          return elements;
+        }
+        const el = queryAllShadow('#save-button, ytcp-button[id="save-button"], #done-button, ytcp-button[id*="done"]')[0];
+        return el && el.offsetParent !== null;
+      }, { timeout: 10000 }).catch(() => null);
+
+      const doneBtnClicked = await page.evaluate(() => {
+        function queryAllShadow(selector, root = document) {
+          const elements = Array.from(root.querySelectorAll(selector));
+          const children = Array.from(root.querySelectorAll('*'));
+          for (const child of children) {
+            if (child.shadowRoot) {
+              elements.push(...queryAllShadow(selector, child.shadowRoot));
+            }
+          }
+          return elements;
+        }
+        const doneBtn = queryAllShadow('#save-button, ytcp-button[id="save-button"], #done-button, ytcp-button[id*="done"]')[0];
+        if (doneBtn) {
+          doneBtn.scrollIntoView({ block: 'center', inline: 'nearest' });
+          doneBtn.click();
+          return true;
+        }
+        return false;
+      });
+      logFn(`[Puppet] Done button clicked status: ${doneBtnClicked}`);
       await new Promise(r => setTimeout(r, 2000));
     }
 

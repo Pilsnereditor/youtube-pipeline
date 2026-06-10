@@ -4863,8 +4863,15 @@ async function updateDashboardScheduleSummary() {
         
         let indexLabel = '';
         if (orderFilter === 'none') {
-          const isChecked = state.dashManuallySelectedVideoIds.includes(v.id);
-          indexLabel = `<input type="checkbox" style="cursor: pointer; width: 14px; height: 14px; margin: 0; display: inline-block; vertical-align: middle;" onchange="toggleManualVideoSelection(${v.id}, this)" ${isChecked ? 'checked' : ''}>`;
+          const clickIndex = state.dashManuallySelectedVideoIds.indexOf(v.id);
+          const isChecked = clickIndex !== -1;
+          const orderBadge = isChecked ? `<span style="margin-left: 4px; font-size: 0.68rem; background: var(--accent-blue); color: white; border-radius: 50%; width: 15px; height: 15px; display: inline-flex; align-items: center; justify-content: center; font-weight: bold; line-height: 1; vertical-align: middle;">${clickIndex + 1}</span>` : '';
+          indexLabel = `
+            <div style="display: inline-flex; align-items: center; gap: 2px;">
+              <input type="checkbox" style="cursor: pointer; width: 14px; height: 14px; margin: 0; display: inline-block; vertical-align: middle;" onchange="toggleManualVideoSelection(${v.id}, this)" ${isChecked ? 'checked' : ''}>
+              ${orderBadge}
+            </div>
+          `;
         } else {
           indexLabel = orderFilter === 'random' ? `🎲` : `${idx + 1}.`;
         }

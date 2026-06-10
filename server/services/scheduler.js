@@ -212,6 +212,15 @@ export async function processPost(post) {
   };
 
   try {
+    // Check if there is already another post uploading/processing for this channel
+    const otherActivePost = queryOne(
+      `SELECT id FROM scheduled_posts WHERE channel_id = @channelId AND status = 'processing' AND id != @id LIMIT 1`,
+      { channelId: post.channel_id, id: post.id }
+    );
+    if (otherActivePost) {
+      throw new Error(`Another upload is already actively processing for this channel (Post ID: ${otherActivePost.id}). Deferring upload.`);
+    }
+
     run(`UPDATE scheduled_posts SET status = 'processing' WHERE id = @id`, { id: post.id });
     notify(`Processing scheduled post ${post.id}: "${post.title}"`);
 

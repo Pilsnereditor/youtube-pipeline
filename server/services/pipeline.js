@@ -117,6 +117,9 @@ export async function launchPipeline({ userId, channelIds, videosPerChannel = 1 
           }
 
           try {
+            // Set scheduled post status to 'processing' to prevent the scheduler from picking it up
+            run(`UPDATE scheduled_posts SET status = 'processing' WHERE id = @id`, { id: scheduledPost.id });
+
             appendLog(runId, `Uploading "${title.text}" to channel "${channel.name}"...`);
             broadcast({ status: 'uploading', channel: channel.name, title: title.text });
 

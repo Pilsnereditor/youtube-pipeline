@@ -241,18 +241,37 @@ router.put('/:id', async (req, res) => {
           return res.status(500).json({ error: 'Failed to update video details on YouTube: ' + err.message });
         }
       } else if (channel) {
-        // Use Puppeteer to update details (browser automation)
-        try {
-          await rescheduleVideoBrowser(
-            existing.channel_id,
-            existing.youtube_video_id,
-            hasScheduleChanged ? (scheduledAt || existing.scheduled_at) : null,
-            resolvedIsPremiere,
-            hasTitleChanged ? title : null
-          );
-        } catch (err) {
-          console.error('[Scheduler] Failed to update video details on YouTube via Browser:', err);
-          return res.status(500).json({ error: 'Failed to update video details on YouTube via Browser: ' + err.message });
+        // Use Puppeteer to update details (browser automation). Reschedule is user-triggered
+        // and synchronous, so it has no scheduler retry safety net. Transient browser errors
+        // (a detached frame from YouTube re-rendering, a closed target, a navigation race) are
+        // retried here with a fresh browser. Genuine failures (e.g. our date/time verification
+        // aborts, or "not logged in") are NOT transient and fail immediately without retrying.
+        const isTransientBrowserErr = (m) => /detached frame|execution context was destroyed|target closed|target\.createcdpsession|navigation|frame (got|was) detached|session closed|protocol error|connection closed/i.test(m || '');
+        let rescheduleErr = null;
+        for (let attempt = 1; attempt <= 3; attempt++) {
+          try {
+            await rescheduleVideoBrowser(
+              existing.channel_id,
+              existing.youtube_video_id,
+              hasScheduleChanged ? (scheduledAt || existing.scheduled_at) : null,
+              resolvedIsPremiere,
+              hasTitleChanged ? title : null
+            );
+            rescheduleErr = null;
+            break;
+          } catch (err) {
+            rescheduleErr = err;
+            if (attempt < 3 && isTransientBrowserErr(err.message)) {
+              console.warn(`[Scheduler] Reschedule attempt ${attempt} hit a transient browser error, retrying with a fresh browser: ${err.message}`);
+              await new Promise(r => setTimeout(r, 2500));
+              continue;
+            }
+            break;
+          }
+        }
+        if (rescheduleErr) {
+          console.error('[Scheduler] Failed to update video details on YouTube via Browser:', rescheduleErr);
+          return res.status(500).json({ error: 'Failed to update video details on YouTube via Browser: ' + rescheduleErr.message });
         }
       }
     }

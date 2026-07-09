@@ -101,6 +101,7 @@ async function checkDuePosts() {
   const duePosts = queryAll(
     `SELECT * FROM scheduled_posts 
      WHERE (status = 'pending' AND scheduled_at <= @now)
+        OR (status = 'pending' AND next_retry_at IS NOT NULL AND next_retry_at <= @now)
         OR (status = 'error' AND retry_count < 3 AND next_retry_at <= @now)
      ORDER BY scheduled_at ASC`,
     { now },
@@ -212,16 +213,41 @@ export async function processPost(post) {
   };
 
   try {
-    // Check if there is already another post uploading/processing for this channel
-    const otherActivePost = queryOne(
-      `SELECT id FROM scheduled_posts WHERE channel_id = @channelId AND status = 'processing' AND id != @id LIMIT 1`,
-      { channelId: post.channel_id, id: post.id }
+    // Atomically claim this post for processing: flip it to 'processing' ONLY if no other
+    // post for the same channel is already processing. Doing the check and the update in a
+    // single conditional statement closes the race where the bulk loop and the per-minute
+    // cron could both pass a separate check and launch two browsers on the same channel
+    // profile at once — which corrupts the session and causes "detached Frame" failures.
+    const claim = run(
+      `UPDATE scheduled_posts SET status = 'processing'
+       WHERE id = @id
+         AND status != 'processing'
+         AND NOT EXISTS (
+           SELECT 1 FROM scheduled_posts
+           WHERE channel_id = @channelId AND status = 'processing' AND id != @id
+         )`,
+      { id: post.id, channelId: post.channel_id }
     );
-    if (otherActivePost) {
-      throw new Error(`Another upload is already actively processing for this channel (Post ID: ${otherActivePost.id}). Deferring upload.`);
+    if (!claim.changes) {
+      // Channel is busy with another upload. This is NOT a failure — re-queue this post to try
+      // again shortly WITHOUT marking it failed or consuming a retry attempt, so a busy channel
+      // can never cause a permanent failure. It stays 'pending'; the per-minute scheduler picks
+      // it up again (via the next_retry_at clause) once the channel is free.
+      const tzOff = new Date().getTimezoneOffset() * 60000;
+      const retryAt = new Date(Date.now() + 60 * 1000 - tzOff).toISOString().slice(0, 19);
+      run(
+        `UPDATE scheduled_posts
+            SET status = 'pending', next_retry_at = @retryAt,
+                error_message = 'Waiting for the channel to finish another upload — continuing automatically.'
+          WHERE id = @id`,
+        { id: post.id, retryAt }
+      );
+      notify(`Post ${post.id} deferred: channel busy. Re-queued to continue automatically (no retry consumed).`);
+      if (broadcastFn) {
+        broadcastFn({ type: 'schedule:status', postId: post.id, message: 'Waiting for the channel to be free…' }, post.user_id);
+      }
+      return { deferred: true };
     }
-
-    run(`UPDATE scheduled_posts SET status = 'processing' WHERE id = @id`, { id: post.id });
     notify(`Processing scheduled post ${post.id}: "${post.title}"`);
 
     // --- Resolve video path ---

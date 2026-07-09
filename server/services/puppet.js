@@ -1214,12 +1214,16 @@ export async function uploadVideoBrowser(channelId, opts, logFn = console.log) {
           });
           logFn(`[Puppet] Date Input - Final Value after typing: "${finalDateVal}"`);
 
-          // Verify the date actually changed. If the field still shows the old value while a
-          // different date was requested, the entry silently failed — abort rather than report
-          // a false success that leaves YouTube out of sync with the panel.
-          const normDate = (s) => (s || '').toString().replace(/\s+/g, '').toLowerCase();
-          if (normDate(finalDateVal) === normDate(initialValue) && normDate(initialValue) !== normDate(targetDateStr)) {
-            throw new Error(`Schedule date did not apply: the date field still shows "${finalDateVal}" but "${targetDateStr}" was requested. Aborted so the panel and YouTube stay consistent.`);
+          // Verify the field now shows the REQUESTED date (day, month AND year) — not merely
+          // that it changed. YouTube Studio formats dates by the account locale; if the typed
+          // format is misread it can silently land on a DIFFERENT (often much later) date.
+          // Comparing the tokens of what we typed against what the field shows catches that and
+          // aborts, instead of scheduling the video to the wrong date.
+          const _dtok = (s) => ((s || '').toLowerCase().match(/[a-zçğıöşü]+|\d+/g) || []).map(t => t.replace(/^0+(\d)/, '$1'));
+          const _dwant = _dtok(targetDateStr);
+          const _dgot = new Set(_dtok(finalDateVal));
+          if (finalDateVal && _dwant.length && !_dwant.every(t => _dgot.has(t))) {
+            throw new Error(`Schedule date did not apply correctly: the date field shows "${finalDateVal}" but "${targetDateStr}" was requested. Aborted to avoid scheduling the video to the wrong date.`);
           }
         } else {
           logFn('[Puppet] Warning: could not focus date input field.');
@@ -1984,12 +1988,16 @@ export async function rescheduleVideoBrowser(channelId, youtubeVideoId, schedule
           });
           logFn(`[Puppet] Date Input - Final Value after typing: "${finalDateVal}"`);
 
-          // Verify the date actually changed. If the field still shows the old value while a
-          // different date was requested, the entry silently failed — abort rather than report
-          // a false success that leaves YouTube out of sync with the panel.
-          const normDate = (s) => (s || '').toString().replace(/\s+/g, '').toLowerCase();
-          if (normDate(finalDateVal) === normDate(initialValue) && normDate(initialValue) !== normDate(targetDateStr)) {
-            throw new Error(`Schedule date did not apply: the date field still shows "${finalDateVal}" but "${targetDateStr}" was requested. Aborted so the panel and YouTube stay consistent.`);
+          // Verify the field now shows the REQUESTED date (day, month AND year) — not merely
+          // that it changed. YouTube Studio formats dates by the account locale; if the typed
+          // format is misread it can silently land on a DIFFERENT (often much later) date.
+          // Comparing the tokens of what we typed against what the field shows catches that and
+          // aborts, instead of scheduling the video to the wrong date.
+          const _dtok = (s) => ((s || '').toLowerCase().match(/[a-zçğıöşü]+|\d+/g) || []).map(t => t.replace(/^0+(\d)/, '$1'));
+          const _dwant = _dtok(targetDateStr);
+          const _dgot = new Set(_dtok(finalDateVal));
+          if (finalDateVal && _dwant.length && !_dwant.every(t => _dgot.has(t))) {
+            throw new Error(`Schedule date did not apply correctly: the date field shows "${finalDateVal}" but "${targetDateStr}" was requested. Aborted to avoid scheduling the video to the wrong date.`);
           }
         } else {
           logFn('[Puppet] Warning: could not focus date input field.');

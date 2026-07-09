@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { queryAll, queryOne, run, getDb } from '../db/database.js';
 import { schedulePost, cancelPost, getUpcoming, processPost, reclaimPostAssets } from '../services/scheduler.js';
 import { syncChannelWithYouTube, updateVideoSchedule, updateOrAddComment, setThumbnail, updateVideoMetadataAPI } from '../services/youtube.js';
-import { rescheduleVideoBrowser, postCommentBrowser, updateThumbnailBrowser } from '../services/puppet.js';
+import { rescheduleVideoBrowser, postCommentBrowser, updateThumbnailBrowser, withChannelLock } from '../services/puppet.js';
 
 const router = Router();
 
@@ -248,27 +248,31 @@ router.put('/:id', async (req, res) => {
         // aborts, or "not logged in") are NOT transient and fail immediately without retrying.
         const isTransientBrowserErr = (m) => /detached frame|execution context was destroyed|target closed|target\.createcdpsession|navigation|frame (got|was) detached|session closed|protocol error|connection closed/i.test(m || '');
         let rescheduleErr = null;
-        for (let attempt = 1; attempt <= 3; attempt++) {
-          try {
-            await rescheduleVideoBrowser(
-              existing.channel_id,
-              existing.youtube_video_id,
-              hasScheduleChanged ? (scheduledAt || existing.scheduled_at) : null,
-              resolvedIsPremiere,
-              hasTitleChanged ? title : null
-            );
-            rescheduleErr = null;
-            break;
-          } catch (err) {
-            rescheduleErr = err;
-            if (attempt < 3 && isTransientBrowserErr(err.message)) {
-              console.warn(`[Scheduler] Reschedule attempt ${attempt} hit a transient browser error, retrying with a fresh browser: ${err.message}`);
-              await new Promise(r => setTimeout(r, 2500));
-              continue;
+        // Serialize per channel: if another edit/upload for THIS channel is in progress, wait
+        // in line instead of launching a second browser on the same profile (which collides).
+        await withChannelLock(existing.channel_id, async () => {
+          for (let attempt = 1; attempt <= 3; attempt++) {
+            try {
+              await rescheduleVideoBrowser(
+                existing.channel_id,
+                existing.youtube_video_id,
+                hasScheduleChanged ? (scheduledAt || existing.scheduled_at) : null,
+                resolvedIsPremiere,
+                hasTitleChanged ? title : null
+              );
+              rescheduleErr = null;
+              return;
+            } catch (err) {
+              rescheduleErr = err;
+              if (attempt < 3 && isTransientBrowserErr(err.message)) {
+                console.warn(`[Scheduler] Reschedule attempt ${attempt} hit a transient browser error, retrying with a fresh browser: ${err.message}`);
+                await new Promise(r => setTimeout(r, 2500));
+                continue;
+              }
+              return;
             }
-            break;
           }
-        }
+        });
         if (rescheduleErr) {
           console.error('[Scheduler] Failed to update video details on YouTube via Browser:', rescheduleErr);
           return res.status(500).json({ error: 'Failed to update video details on YouTube via Browser: ' + rescheduleErr.message });

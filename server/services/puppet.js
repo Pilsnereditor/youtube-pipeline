@@ -52,6 +52,21 @@ if (!fs.existsSync(PROFILES_DIR)) {
 // Map to track active login browser instances: channelId -> browser
 export const activeSetupSessions = new Map();
 
+// ── Per-channel operation lock ──────────────────────────────────────────────
+// Serializes browser operations (reschedule / upload / etc.) for the SAME channel, so two
+// never run against the same Chrome profile at the same time (which causes "detached Frame"
+// crashes). Callers on the same channel queue and run one after another; different channels
+// stay fully independent and run in parallel.
+const channelOpQueues = new Map();
+export function withChannelLock(channelId, fn) {
+  const key = String(channelId);
+  const prev = channelOpQueues.get(key) || Promise.resolve();
+  const run = prev.then(() => fn(), () => fn());
+  // Store a tail that never rejects, so one failed op doesn't break the queue for the next.
+  channelOpQueues.set(key, run.then(() => {}, () => {}));
+  return run;
+}
+
 // Location mapping for NordVPN SOCKS5 server endpoints
 const NORDVPN_SERVERS = {
   'us-atlanta': 'atlanta.us.socks.nordhold.net',

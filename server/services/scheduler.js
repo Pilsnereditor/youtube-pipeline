@@ -1,7 +1,7 @@
 import cron from 'node-cron';
 import { queryAll, queryOne, run, insert } from '../db/database.js';
 import { uploadVideo, setThumbnail, addComment, syncChannelWithYouTube } from './youtube.js';
-import { uploadVideoBrowser, postCommentBrowser, syncChannelWithYouTubeBrowser } from './puppet.js';
+import { uploadVideoBrowser, postCommentBrowser, syncChannelWithYouTubeBrowser, withChannelLock } from './puppet.js';
 import { runWeeklyCleanup } from './videoCleanup.js';
 
 let broadcastFn = null;
@@ -292,7 +292,7 @@ export async function processPost(post) {
 
     let videoId = '';
     if (channel.upload_mode === 'browser') {
-      const result = await uploadVideoBrowser(post.channel_id, {
+      const result = await withChannelLock(post.channel_id, () => uploadVideoBrowser(post.channel_id, {
         videoPath,
         title: post.title,
         description: post.description || '',
@@ -302,7 +302,7 @@ export async function processPost(post) {
         scheduledAt: post.scheduled_at,
         thumbnailPath: thumbnailPath || null,
         isPremiere: post.is_premiere || 0,
-      }, (msg) => notify(msg));
+      }, (msg) => notify(msg)));
       videoId = result.videoId;
     } else {
       const result = await uploadVideo(post.channel_id, {

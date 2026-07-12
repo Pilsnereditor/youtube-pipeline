@@ -6,6 +6,11 @@ import { rescheduleVideoBrowser, postCommentBrowser, updateThumbnailBrowser, wit
 
 const router = Router();
 
+// Broadcast is injected from index.js so background browser jobs (e.g. pushing a new
+// thumbnail to YouTube) can report success/failure back to the dashboard.
+let broadcast = () => {};
+export function setScheduleBroadcast(fn) { broadcast = fn; }
+
 // Helper to verify channel ownership
 function verifyChannel(channelId, userId) {
   const channel = queryOne('SELECT id FROM channels WHERE id = @id AND user_id = @userId', { id: channelId, userId });
@@ -296,11 +301,16 @@ router.put('/:id', async (req, res) => {
             return res.status(500).json({ error: 'Failed to update thumbnail on YouTube: ' + err.message });
           }
         } else if (channel && channel.upload_mode === 'browser') {
+          // Runs in the background (can take 30-60s). Serialize with other browser jobs on
+          // the same channel, and report the outcome to the dashboard so a silent failure
+          // no longer looks like success.
           (async () => {
             try {
-              await updateThumbnailBrowser(existing.channel_id, existing.youtube_video_id, thumbnail.filepath);
+              await withChannelLock(existing.channel_id, () => updateThumbnailBrowser(existing.channel_id, existing.youtube_video_id, thumbnail.filepath));
+              broadcast({ type: 'thumbnail:updated', postId: existing.id, videoId: existing.youtube_video_id, ok: true, message: 'New thumbnail applied on YouTube.' }, userId);
             } catch (err) {
               console.error('[Scheduler] Background browser thumbnail update failed:', err);
+              broadcast({ type: 'thumbnail:updated', postId: existing.id, videoId: existing.youtube_video_id, ok: false, message: 'Thumbnail update on YouTube failed: ' + err.message }, userId);
             }
           })();
         }
@@ -320,20 +330,32 @@ router.put('/:id', async (req, res) => {
       
       if (channel && channel.upload_mode === 'browser') {
         commentStatus = targetComment.trim() ? 'pending' : 'none';
-        
-        // Run browser commenting asynchronously to prevent Express route blocking
-        (async () => {
-          try {
-            await postCommentBrowser(existing.channel_id, existing.youtube_video_id, targetComment);
-            const finalStatus = targetComment.trim() ? 'posted' : 'none';
-            run(`UPDATE scheduled_posts SET comment_status = @finalStatus WHERE id = @id`, { finalStatus, id });
-          } catch (err) {
-            console.error(`[Scheduler] Background browser comment update failed for video ${existing.youtube_video_id}:`, err);
-            if (targetComment.trim()) {
-              run(`UPDATE scheduled_posts SET comment_status = 'pending' WHERE id = @id`, { id });
+
+        // Only try to post right now if the video is already live/public. For a scheduled video
+        // or an un-aired Premiere the watch page has no comment box yet, so an immediate attempt
+        // just fails silently. In that case leave it 'pending' — checkPendingComments posts it
+        // automatically once the video airs.
+        const airMs = existing.scheduled_at ? new Date(existing.scheduled_at).getTime() : 0;
+        const isLiveNow = !existing.scheduled_at || airMs <= Date.now();
+
+        if (isLiveNow) {
+          // Run browser commenting asynchronously to prevent Express route blocking
+          (async () => {
+            try {
+              await withChannelLock(existing.channel_id, () => postCommentBrowser(existing.channel_id, existing.youtube_video_id, targetComment));
+              const finalStatus = targetComment.trim() ? 'posted' : 'none';
+              run(`UPDATE scheduled_posts SET comment_status = @finalStatus, comment_retry_count = 0, comment_next_retry_at = NULL WHERE id = @id`, { finalStatus, id });
+              if (targetComment.trim()) broadcast({ type: 'comment:updated', postId: existing.id, videoId: existing.youtube_video_id, ok: true, message: 'Pinned comment posted on YouTube.' }, userId);
+            } catch (err) {
+              console.error(`[Scheduler] Background browser comment update failed for video ${existing.youtube_video_id}:`, err);
+              if (targetComment.trim()) {
+                run(`UPDATE scheduled_posts SET comment_status = 'pending' WHERE id = @id`, { id });
+                broadcast({ type: 'comment:updated', postId: existing.id, videoId: existing.youtube_video_id, ok: false, message: 'Could not post the comment yet — it will be retried automatically once the video is live.' }, userId);
+              }
             }
-          }
-        })();
+          })();
+        }
+        // Not live yet: comment_status stays 'pending' for checkPendingComments to handle at air time.
       } else {
         // API mode can run synchronously
         if (targetComment.trim()) {

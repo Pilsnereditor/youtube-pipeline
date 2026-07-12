@@ -126,7 +126,10 @@ export async function checkPendingComments() {
      LEFT JOIN channels c ON c.id = sp.channel_id
      WHERE sp.status = 'complete' 
        AND sp.comment_status = 'pending' 
-       AND (sp.scheduled_at <= @now OR sp.is_premiere = 1)
+       AND sp.scheduled_at <= @now
+       -- NOTE: premieres are NOT special-cased here. A premiere only becomes
+       -- commentable once it airs at scheduled_at; trying earlier used to burn the
+       -- retry budget on the pre-air countdown page and the comment never landed.
        AND sp.youtube_video_id IS NOT NULL
        AND (sp.comment_next_retry_at IS NULL OR sp.comment_next_retry_at <= @now)`,
     { now }
@@ -154,6 +157,7 @@ export async function checkPendingComments() {
 
       run(`UPDATE scheduled_posts SET comment_status = 'posted', comment_retry_count = 0, comment_next_retry_at = NULL WHERE id = @id`, { id: post.id });
       console.log(`[Scheduler] Successfully posted pending comment on video ${post.youtube_video_id}`);
+      if (broadcastFn) broadcastFn({ type: 'comment:updated', postId: post.id, videoId: post.youtube_video_id, ok: true, message: 'Pinned comment posted on YouTube.' }, post.user_id);
     } catch (err) {
       console.error(`[Scheduler] Failed to post pending comment on video ${post.youtube_video_id}:`, err.message);
       
@@ -164,6 +168,7 @@ export async function checkPendingComments() {
         // Stop retrying if comments are turned off on YouTube
         run(`UPDATE scheduled_posts SET comment_status = 'disabled', comment_retry_count = @nextAttempt, comment_next_retry_at = NULL WHERE id = @id`, { nextAttempt, id: post.id });
         console.warn(`[Scheduler] Commenting disabled on video ${post.youtube_video_id}. Marked as disabled.`);
+        if (broadcastFn) broadcastFn({ type: 'comment:updated', postId: post.id, videoId: post.youtube_video_id, ok: false, message: 'Comments are turned off on this video, so the pinned comment could not be posted.' }, post.user_id);
       } else if (nextAttempt <= 3) {
         // Exponential backoff: 5 mins, 30 mins, 2 hours
         let backoffMinutes = 5;
@@ -189,6 +194,7 @@ export async function checkPendingComments() {
           { id: post.id }
         );
         console.error(`[Scheduler] Max retries reached for comment on video ${post.youtube_video_id}.`);
+        if (broadcastFn) broadcastFn({ type: 'comment:updated', postId: post.id, videoId: post.youtube_video_id, ok: false, message: 'Could not post the pinned comment on YouTube after several attempts.' }, post.user_id);
       }
     }
   }
@@ -429,7 +435,10 @@ export async function processPost(post) {
       );
       notify(`Post ${post.id} deferred: video still processing on YouTube — will keep retrying to apply the schedule (no retry consumed).`);
       if (broadcastFn) {
-        broadcastFn({ type: 'schedule:status', postId: post.id, message: 'Video uploaded — waiting for YouTube processing to apply the schedule…' }, post.user_id);
+        // schedule:deferred tells the dashboard the file finished uploading and we're now
+        // waiting on YouTube processing, so the "Uploading…" bar is cleared instead of
+        // hanging forever. (schedule:status only appends a log line.)
+        broadcastFn({ type: 'schedule:deferred', postId: post.id, title: post.title, message: 'Video uploaded — waiting for YouTube processing to apply the schedule…' }, post.user_id);
       }
       return;
     }

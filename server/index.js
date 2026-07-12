@@ -19,7 +19,7 @@ import { getVncPort } from './services/vnc.js';
 import authRouter from './routes/auth.js';
 import channelsRouter, { setBroadcast as setChannelsBroadcast } from './routes/channels.js';
 import mediaRouter, { setBroadcast as setMediaBroadcast } from './routes/media.js';
-import scheduleRouter from './routes/schedule.js';
+import scheduleRouter, { setScheduleBroadcast } from './routes/schedule.js';
 import settingsRouter from './routes/settings.js';
 import aiRouter from './routes/ai.js';
 import commentsRouter from './routes/comments.js';
@@ -291,6 +291,7 @@ function broadcast(data, targetUserId) {
 initScheduler(broadcast);
 setMediaBroadcast(broadcast);
 setChannelsBroadcast(broadcast);
+setScheduleBroadcast(broadcast);
 const pipelineRouter = createPipelineRouter(broadcast);
 
 // Register routes

@@ -4066,6 +4066,25 @@ function handleWSMessage(data) {
       document.getElementById('activeUploadSection').classList.add('hidden');
     }, 5000);
     loadAllData();
+  } else if (data.type === 'schedule:deferred') {
+    // The file finished uploading; we're now waiting on YouTube to finish processing so the
+    // schedule can be applied. Clear the misleading "Uploading…" bar instead of leaving it stuck.
+    const sec = document.getElementById('activeUploadSection');
+    if (sec && !sec.classList.contains('hidden')) {
+      document.getElementById('activeUploadProgress').style.width = '100%';
+      document.getElementById('activeUploadPct').textContent = 'Uploaded ✓ — waiting for YouTube to apply the schedule…';
+    }
+    setTimeout(() => {
+      const s = document.getElementById('activeUploadSection');
+      if (s) s.classList.add('hidden');
+    }, 8000);
+    loadAllData();
+  } else if (data.type === 'comment:updated') {
+    showToast(data.message || (data.ok ? 'Comment posted on YouTube.' : 'Comment update failed.'), data.ok ? 'success' : 'error');
+    if (data.ok) loadAllData();
+  } else if (data.type === 'thumbnail:updated') {
+    showToast(data.message || (data.ok ? 'Thumbnail updated on YouTube.' : 'Thumbnail update failed.'), data.ok ? 'success' : 'error');
+    if (data.ok) loadAllData();
   } else if (data.type === 'schedule:status') {
     appendTerminalLog(`[Scheduler] Post ${data.postId}: ${data.message}`);
   } else if (data.type === 'pipeline:update') {

@@ -1,0 +1,100 @@
+# Session Handover — youtube-pipeline (gageditor.com)
+
+Drop this into a fresh conversation to continue cheaply. It captures everything done, what's live vs pending, the open issue, and how to work in this repo.
+
+---
+
+## The one open issue (start here)
+
+A single scheduled **browser-mode** upload keeps failing to get **scheduled** on YouTube (it uploads as a private draft, but the schedule doesn't apply). Latest error was: "The video edit page did not load the visibility editor in time."
+
+Two expert code audits found the likely root causes, now fixed in code:
+- The video-ID reader accepted 6–20 chars; real YouTube IDs are exactly **11**, so it could grab a wrong/partial ID → edit page pointed at a nonexistent video → editor never loads. **Fixed:** now requires exactly 11 chars (`extractVideoId` in `server/services/puppet.js`).
+- "Still processing" was a hard failure that burned the 3-retry budget. **Fixed:** now *defers and keeps retrying automatically* until YouTube finishes processing (`processPost` catch in `server/services/scheduler.js`).
+
+**Still needed to confirm for certain:** the real failure screenshot from the VPS at `data/profiles/<profile>/puppet_reschedule_error.png` (or `puppet_upload_error.png`). Nobody can verify live-YouTube DOM behavior from the Claude sandbox — that screenshot is the ground truth.
+
+**Recovery for the current stuck video:** delete its private draft in YouTube Studio → Cancel the failed row in gageditor → re-schedule fresh (so it runs the fixed code).
+
+---
+
+## Session update — 2026-07-12 (bugs 1–3 + thumbnail feedback)
+
+Three user-reported issues (all on **user 2 / browser mode**; user 1 "pilsner" unaffected). Fixes are **logic- and syntax-verified only** — not run against live YouTube. The new toasts will surface any real failure on the first live run after deploy. **Not deployed yet** (needs push + `git pull` + `pm2 restart`).
+
+**Bug 1 — Upload queue stuck on "Uploading…" forever.**
+Root cause: the file uploaded fine (100%), but when the in-dialog schedule didn't stick, the enforce-schedule step defers + auto-retries every 3 min until YouTube finishes processing — and that deferral path only sent `schedule:status` (a log line), never `schedule:complete`/`error`, so the frontend's fixed 20% "Uploading…" bar never cleared.
+Fix: scheduler now broadcasts a new `schedule:deferred` message; frontend (`handleWSMessage`) flips the bar to "Uploaded ✓ — waiting for YouTube to apply the schedule…" and hides it, then reloads. Files: `server/services/scheduler.js`, `public/app.js`.
+NOTE: this fixes the *display*. Whether the schedule actually applies on user 2 still needs the live `puppet_reschedule_error.png` + pm2 logs to confirm the underlying DOM issue.
+
+**Bug 2 — Premiere auto-comment shows "saved" but never appears on YouTube.**
+Root cause (timing, not DOM): `checkPendingComments` had `OR sp.is_premiere = 1`, so it tried to comment immediately after upload — but a premiere isn't commentable until it airs (pre-air page is a countdown/live-chat, no comment box). With only 3 retries over ~2.5h, the budget was exhausted long before a premiere scheduled days out aired → marked `error`, comment never posted. The edit modal (PUT route) also fired the comment on save with no feedback.
+Fix: (a) scheduler gates premiere comments on air time (`scheduled_at <= @now`) like normal videos; (b) PUT route only posts immediately if the video is already live (`isLiveNow`), else leaves it `pending` for the scheduler to post at air time; (c) comments now report back via `comment:updated` WS toast (success / disabled / failed). Browser comment/thumbnail posts now run under `withChannelLock`. Files: `server/services/scheduler.js`, `server/routes/schedule.js`, `public/app.js`.
+
+**Bug 3 — Change thumbnail on a published video from Publishing Details modal.**
+Was already implemented (clickable thumbnail → upload → Save Changes → PUT route pushes to YouTube via `updateThumbnailBrowser`). Only gap: browser-mode push was fire-and-forget/silent. Fix: wrapped it in `withChannelLock` and added a `thumbnail:updated` WS toast (success/fail). Added a `setScheduleBroadcast(broadcast)` injector to the schedule route, wired in `server/index.js`. Files: `server/routes/schedule.js`, `server/index.js`, `public/app.js`.
+
+**New WS message types** (frontend handles all three in `handleWSMessage`): `schedule:deferred`, `comment:updated` `{ok, message}`, `thumbnail:updated` `{ok, message}`.
+
+**⚠️ Mounted-folder write hazard confirmed again:** the Read/Write/Edit file tools **truncated** app.js and scheduler.js mid-write this session. Recovered from git. Reliable method: edit a copy in `/tmp`, `node --check` (`--input-type=module` for ES modules), then `cat /tmp/x > dest` in bash with a line-count + marker-grep + syntax verify/retry loop. Do NOT trust a bare Edit/Write on this mount.
+
+---
+
+## Hard environment constraints (important)
+
+- **Cannot test against live YouTube Studio / VNC / real Google login from the Claude sandbox.** All browser-automation fixes are reasoned + unit-tested for *logic* only. Do NOT claim "100% fixed" for browser-DOM behavior — say "logic verified, needs a live run."
+- **The mounted project folder is unreliable for writes** (it truncated a file once). Always write via: build in `/tmp`, `node --check --input-type=module`, then `cat /tmp/x > dest` with a verify+retry loop (byte count + parse + marker grep). Git index also got corrupted once.
+- **Sandbox can't reach GitHub or the VPS** (proxy blocks it). Push happens via antigravity on the user's machine; deploy is manual on the VPS.
+- `better-sqlite3` is Windows-native → can't `require` it in the Linux sandbox. Test DB logic with Python's `sqlite3` against `server/db/schema.sql` instead (see `scratch/test_*.py`).
+
+## Deploy (user does this)
+1. antigravity: "Commit and push my changes to GitHub."
+2. VPS (when queue is quiet): `cd /var/www/youtube-pipeline && git pull origin main && pm2 restart youtube-pipeline`
+- Latest commit as of handover: `7ceb11d` (11-char ID + defer/requeue).
+- Optional nginx (prevents 502 on long reschedules): add `proxy_read_timeout 300s;` `proxy_send_timeout 300s;` in the `location /` block, then `sudo nginx -t && sudo systemctl reload nginx`.
+
+---
+
+## What was done this session (all committed)
+
+**Reschedule reliability (browser mode):**
+- Time field is a dropdown — now selects the matching option instead of typing+Escape (which reverted it).
+- Date verification now checks the field shows the requested day+month+year (catches the "scheduled to a wrong/later date" bug), not just "changed".
+- Reschedule retries transient browser errors (detached frame etc.) with a fresh browser.
+- Visibility-editor wait is patient: pierces shadow DOM + reloads a few times.
+
+**Scheduler robustness (`server/services/scheduler.js`):**
+- Atomic per-channel claim (two uploads can't start on one channel → prevents detached-frame collisions).
+- Per-channel lock (`withChannelLock` in puppet.js) serializes same-channel reschedules/uploads; different channels stay parallel.
+- Deferrals (channel busy / still processing) re-queue as **pending** without burning retries.
+- After upload, if it wasn't actually scheduled, it enforces the schedule on the edit page — and never re-uploads a duplicate (uses saved `youtube_video_id`).
+
+**Multi-user isolation (3 users, must not see each other):**
+- Per-user parallel VNC login sessions with a slot pool (`server/services/vnc.js`), websockify routed per user (`server/index.js`), per-user profile namespacing (`channels.js`), VNC teardown scoped to the channel's profile.
+- Admin **Proxy Distribution** UI (Users tab) + endpoints (`proxyPool.js`) to assign proxies per user (e.g. 10/5/5).
+- Webshare API key is now per-user (was globally shared).
+
+**Security:**
+- C1: localhost auto-login backdoor now off unless `ALLOW_LOCAL_ADMIN=true`.
+- C2: `/api/channels/debug-db` locked to admins.
+- H4: strong auto-generated+persisted session secret, `trust proxy`, `httpOnly`/`sameSite`/auto-secure cookies.
+
+**Cosmetic:** "Refined Aurora" theme (deeper desaturated purple, card depth, softer glow) — `public/index.css` tokens only.
+
+**Tests (re-runnable):** `scratch/test_*.mjs` (node) and `scratch/test_*.py` (python) — slot allocation, proxy distribution/isolation, profile naming, webshare per-user, atomic claim, defer re-queue, channel lock, 11-char ID extraction. ~45 checks, all passing.
+
+## Still pending (lower priority, from BUG_REPORT.md)
+- M1: `user_id INTEGER DEFAULT 1` footgun across schema.
+- M2/M3: API-mode timezone shift + premiere-forced-private (only bite if a channel uses API mode; current channels are browser mode).
+- M4: startup self-heal resets all users' in-flight posts (benign).
+- Optional: make reschedule fully asynchronous (removes 502-on-timeout fragility) — bigger backend+frontend change.
+
+## Key files
+- `server/services/puppet.js` — all Puppeteer/browser automation (upload, reschedule, VNC, sync).
+- `server/services/scheduler.js` — cron processing, retries, per-channel claim/lock, enforce-schedule.
+- `server/services/vnc.js` — per-user VNC login sessions.
+- `server/routes/schedule.js` — schedule CRUD + reschedule trigger.
+- `server/routes/proxyPool.js` — proxies + admin distribution.
+- `server/index.js` — auth, session, websockify routing.
+- `public/app.js` + `public/index.html` + `public/index.css` — frontend.
+- `PROJECT_HANDOVER.md`, `BUG_REPORT.md`, `SOLUTION_A_NOTES.md` — prior context.

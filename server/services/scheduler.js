@@ -1,7 +1,7 @@
 import cron from 'node-cron';
 import { queryAll, queryOne, run, insert } from '../db/database.js';
 import { uploadVideo, setThumbnail, addComment, syncChannelWithYouTube } from './youtube.js';
-import { uploadVideoBrowser, postCommentBrowser, syncChannelWithYouTubeBrowser, withChannelLock } from './puppet.js';
+import { uploadVideoBrowser, rescheduleVideoBrowser, postCommentBrowser, syncChannelWithYouTubeBrowser, withChannelLock } from './puppet.js';
 import { runWeeklyCleanup } from './videoCleanup.js';
 
 let broadcastFn = null;
@@ -292,18 +292,44 @@ export async function processPost(post) {
 
     let videoId = '';
     if (channel.upload_mode === 'browser') {
-      const result = await withChannelLock(post.channel_id, () => uploadVideoBrowser(post.channel_id, {
-        videoPath,
-        title: post.title,
-        description: post.description || '',
-        tags,
-        privacy: post.privacy || channel.upload_privacy || 'private',
-        category: channel.category,
-        scheduledAt: post.scheduled_at,
-        thumbnailPath: thumbnailPath || null,
-        isPremiere: post.is_premiere || 0,
-      }, (msg) => notify(msg)));
-      videoId = result.videoId;
+      const wantsSchedule = post.scheduled_at && new Date(post.scheduled_at).getTime() > Date.now() + 60 * 1000;
+
+      if (post.youtube_video_id) {
+        // A previous attempt already uploaded this video. Do NOT upload it again (that would
+        // create a duplicate on YouTube). Just (re)apply the schedule on the edit page.
+        videoId = post.youtube_video_id;
+        if (wantsSchedule) {
+          notify(`Video ${videoId} was already uploaded — applying the schedule on the edit page...`);
+          await withChannelLock(post.channel_id, () => rescheduleVideoBrowser(post.channel_id, videoId, post.scheduled_at, post.is_premiere || 0));
+        }
+      } else {
+        const result = await withChannelLock(post.channel_id, () => uploadVideoBrowser(post.channel_id, {
+          videoPath,
+          title: post.title,
+          description: post.description || '',
+          tags,
+          privacy: post.privacy || channel.upload_privacy || 'private',
+          category: channel.category,
+          scheduledAt: post.scheduled_at,
+          thumbnailPath: thumbnailPath || null,
+          isPremiere: post.is_premiere || 0,
+        }, (msg) => notify(msg)));
+        videoId = result.videoId;
+
+        // Persist the video ID immediately, so if anything below fails and this post is retried,
+        // it takes the "already uploaded" branch above instead of re-uploading a duplicate.
+        if (videoId) {
+          run(`UPDATE scheduled_posts SET youtube_video_id = @vid WHERE id = @id`, { vid: videoId, id: post.id });
+        }
+
+        // If the in-dialog scheduling didn't take (YouTube saved the video as a private draft —
+        // this can happen when YouTube shows "Processing delayed"), enforce the schedule on the
+        // edit page so the video still publishes at the intended time once processing finishes.
+        if (videoId && wantsSchedule && result.scheduled === false) {
+          notify(`Upload saved without a schedule — enforcing the schedule on the edit page...`);
+          await withChannelLock(post.channel_id, () => rescheduleVideoBrowser(post.channel_id, videoId, post.scheduled_at, post.is_premiere || 0));
+        }
+      }
     } else {
       const result = await uploadVideo(post.channel_id, {
         videoPath,

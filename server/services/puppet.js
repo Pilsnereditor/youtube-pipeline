@@ -1494,6 +1494,15 @@ export async function uploadVideoBrowser(channelId, opts, logFn = console.log) {
       '#schedule-button, #done-button, #publish-button, #save-button, ytcp-button[id*="schedule"], ytcp-button[id*="done"], ytcp-button[id*="save"]',
       { timeout: 10000 }
     );
+    // YouTube only shows the "Schedule" button when a schedule is actually set. If we instead
+    // land on "Done"/"Save", the video was saved WITHOUT a schedule (private draft). Report this
+    // back so the caller can enforce the schedule on the edit page afterwards.
+    let scheduledOk = false;
+    try {
+      const finalBtnId = await page.evaluate(el => (el && (el.id || (el.getAttribute && el.getAttribute('id')))) || '', doneBtn);
+      scheduledOk = /schedule/i.test(finalBtnId || '');
+      logFn(`[Puppet] Final button: "${finalBtnId}" (scheduled=${scheduledOk})`);
+    } catch (e) {}
     await safeClick(page, doneBtn, { scroll: true });
     await new Promise(r => setTimeout(r, 5000));
 
@@ -1513,7 +1522,7 @@ export async function uploadVideoBrowser(channelId, opts, logFn = console.log) {
 
     logFn('[Puppet] Upload task complete.');
     await browser.close();
-    return { videoId: youtubeVideoId };
+    return { videoId: youtubeVideoId, scheduled: scheduledOk };
   } catch (err) {
     logFn(`[Puppet] Error during automated upload: ${err.message}`);
     try {

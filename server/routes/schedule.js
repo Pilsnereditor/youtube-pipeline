@@ -293,14 +293,11 @@ router.put('/:id', async (req, res) => {
       const thumbnail = queryOne('SELECT filepath FROM thumbnails WHERE id = @id AND user_id = @userId', { id: thumbnailId, userId });
 
       if (thumbnail) {
-        if (hasToken) {
-          try {
-            await setThumbnail(existing.channel_id, existing.youtube_video_id, thumbnail.filepath);
-          } catch (err) {
-            console.error('[Scheduler] Failed to update thumbnail on YouTube via API:', err);
-            return res.status(500).json({ error: 'Failed to update thumbnail on YouTube: ' + err.message });
-          }
-        } else if (channel && channel.upload_mode === 'browser') {
+        // Choose the path by the channel's upload_mode FIRST, not by whether an oauth token row
+        // happens to exist. A browser-mode channel can still have a stale/expired oauth token from
+        // a previous API setup; routing it to the API path would 500 on a video the browser path
+        // could have updated fine. (Mirrors the comment path and the scheduler convention.)
+        if (channel && channel.upload_mode === 'browser') {
           // Runs in the background (can take 30-60s). Serialize with other browser jobs on
           // the same channel, and report the outcome to the dashboard so a silent failure
           // no longer looks like success.
@@ -313,6 +310,13 @@ router.put('/:id', async (req, res) => {
               broadcast({ type: 'thumbnail:updated', postId: existing.id, videoId: existing.youtube_video_id, ok: false, message: 'Thumbnail update on YouTube failed: ' + err.message }, userId);
             }
           })();
+        } else if (hasToken) {
+          try {
+            await setThumbnail(existing.channel_id, existing.youtube_video_id, thumbnail.filepath);
+          } catch (err) {
+            console.error('[Scheduler] Failed to update thumbnail on YouTube via API:', err);
+            return res.status(500).json({ error: 'Failed to update thumbnail on YouTube: ' + err.message });
+          }
         }
       }
     }

@@ -38,6 +38,12 @@ Was already implemented (clickable thumbnail → upload → Save Changes → PUT
 
 **⚠️ Mounted-folder write hazard confirmed again:** the Read/Write/Edit file tools **truncated** app.js and scheduler.js mid-write this session. Recovered from git. Reliable method: edit a copy in `/tmp`, `node --check` (`--input-type=module` for ES modules), then `cat /tmp/x > dest` in bash with a line-count + marker-grep + syntax verify/retry loop. Do NOT trust a bare Edit/Write on this mount.
 
+**Review follow-ups (two independent AI reviews + test run).** All 25 sandbox-safe unit tests pass (defer-requeue, atomic-claim, channel-lock, extract-id, date-verify, isolation slots/profiles/proxy/webshare). Reviews found no critical/major defects in the new logic. Two review-driven fixes applied on top:
+- `server/routes/schedule.js` — thumbnail update now routes on **`upload_mode === 'browser'` FIRST**, then falls back to `hasToken` (API). Previously it checked `hasToken` first, so a browser-mode channel with a stale/expired oauth token would wrongly hit the API path and 500. (Same `hasToken`-first pattern still exists in the reschedule/details block ~line 234 — pre-existing, not yet changed.)
+- `server/services/puppet.js` `updateThumbnailBrowser` — added a **conservative save check**: after clicking Save it throws only if YouTube shows a visible error dialog (too large / invalid / failed). It does NOT require a positive "saved" signal (avoids false failures), but stops the `thumbnail:updated {ok:true}` toast from firing on a rejected save.
+
+Known minor items left (low priority): (a) a premiere longer than ~2.5h could still exhaust the 3-retry comment budget (retries key off premiere START, not END); (b) clearing a comment posts no toast; (c) `comment_next_retry_at` isn't reset when a comment is re-edited; (d) `schedule:deferred` lacks the channel-filter guard that `schedule:uploading` has.
+
 ---
 
 ## Hard environment constraints (important)

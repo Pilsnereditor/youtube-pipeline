@@ -2383,6 +2383,31 @@ export async function updateThumbnailBrowser(channelId, youtubeVideoId, thumbnai
     await safeClick(page, saveBtn, { scroll: true });
     await new Promise(r => setTimeout(r, 5000));
 
+    // Conservative verification: only fail if YouTube actually surfaced an error dialog
+    // (e.g. thumbnail too large / wrong format). We do NOT require a positive "saved" signal,
+    // to avoid false failures — but this stops us reporting success when the save was rejected.
+    const saveError = await page.evaluate(() => {
+      function qAll(sel, root = document) {
+        const els = Array.from(root.querySelectorAll(sel));
+        for (const c of root.querySelectorAll('*')) { if (c.shadowRoot) els.push(...qAll(sel, c.shadowRoot)); }
+        return els;
+      }
+      const dialogs = qAll('tp-yt-paper-dialog, ytcp-dialog, ytcp-uploads-still-processing-dialog, .error-message, #error-message');
+      for (const d of dialogs) {
+        if (d && d.offsetParent !== null) {
+          const t = (d.textContent || '').toLowerCase();
+          if (t.includes('error') || t.includes('too large') || t.includes("couldn't") || t.includes('could not') ||
+              t.includes('failed') || t.includes('invalid') || t.includes('hata') || t.includes('boyut') || t.includes('geçersiz')) {
+            return (d.textContent || '').trim().slice(0, 200);
+          }
+        }
+      }
+      return null;
+    }).catch(() => null);
+    if (saveError) {
+      throw new Error('YouTube rejected the thumbnail save: ' + saveError);
+    }
+
     logFn('[Puppet] Thumbnail update complete.');
     await browser.close();
   } catch (err) {

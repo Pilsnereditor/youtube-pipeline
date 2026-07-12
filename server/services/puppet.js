@@ -1622,7 +1622,28 @@ export async function rescheduleVideoBrowser(channelId, youtubeVideoId, schedule
     // 2. Update Video Schedule if provided
     if (scheduledAt) {
       logFn('[Puppet] Finding Visibility select dropdown...');
-      await page.waitForSelector('ytcp-video-metadata-visibility', { timeout: 30000 });
+      // A just-uploaded / still-processing video sometimes hasn't rendered the visibility editor
+      // yet. Wait for it (piercing shadow DOM); if it doesn't appear, reload the edit page and try
+      // again a couple of times before giving up, instead of hard-failing on the first timeout.
+      let visReady = false;
+      for (let vAttempt = 1; vAttempt <= 3 && !visReady; vAttempt++) {
+        visReady = await page.waitForFunction(() => {
+          function q(sel, root = document) {
+            const els = Array.from(root.querySelectorAll(sel));
+            for (const c of root.querySelectorAll('*')) { if (c.shadowRoot) els.push(...q(sel, c.shadowRoot)); }
+            return els;
+          }
+          return q('ytcp-video-metadata-visibility, ytcp-video-visibility-select, #visibility-select').some(el => el && el.offsetParent !== null);
+        }, { timeout: 20000 }).then(() => true).catch(() => false);
+        if (!visReady && vAttempt < 3) {
+          logFn(`[Puppet] Visibility editor not ready (attempt ${vAttempt}); reloading edit page...`);
+          await page.goto(`https://studio.youtube.com/video/${youtubeVideoId}/edit?hl=en&persist_hl=1`, { waitUntil: 'networkidle2', timeout: 60000 });
+          await new Promise(r => setTimeout(r, 4000));
+        }
+      }
+      if (!visReady) {
+        throw new Error('The video edit page did not load the visibility editor in time (the video may still be processing) — will retry automatically.');
+      }
       logFn('[Puppet] Clicking Visibility select dropdown trigger...');
       const visTriggerResult = await page.evaluate(() => {
         function queryAllShadow(selector, root = document) {

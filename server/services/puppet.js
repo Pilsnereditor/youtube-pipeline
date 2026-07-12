@@ -882,6 +882,9 @@ export async function uploadVideoBrowser(channelId, opts, logFn = console.log) {
   logFn(`[Puppet] Starting browser upload for "${opts.title}" (headless: ${runHeadless})`);
   const browser = await launchBrowserWithRetry(chromePath, profilePath, runHeadless, 3, 3000, proxyUrl);
 
+  // Optional progress reporter: (percent 0-100, label) -> void
+  const onProgress = typeof opts.onProgress === 'function' ? opts.onProgress : () => {};
+
   let page;
   try {
     page = await browser.newPage();
@@ -962,6 +965,7 @@ export async function uploadVideoBrowser(channelId, opts, logFn = console.log) {
     const fileChooser = await fileChooserPromise;
     await fileChooser.accept([opts.videoPath]);
     logFn('[Puppet] Video file submitted, waiting for upload details to load...');
+    onProgress(10, 'Uploading video…');
 
     // Wait for the title input box to appear (confirms upload dialog loaded)
     const titleInput = await page.waitForSelector('#title-textarea #textbox', { timeout: 30000 });
@@ -1411,101 +1415,42 @@ export async function uploadVideoBrowser(channelId, opts, logFn = console.log) {
       await new Promise(r => setTimeout(r, 500));
     }
 
-    // Wait for the video to complete uploading so we don't abort it (checks run BEFORE clicking Save/Schedule)
-    logFn('[Puppet] Monitoring upload completion progress inside dialog (do not close)...');
-    let isUploading = true;
-    let checksCount = 0;
-    while (isUploading && checksCount < 720) {
-      const status = await page.evaluate(() => {
-        const uploadDialog = document.querySelector('ytcp-uploads-dialog');
-        if (!uploadDialog) {
-          return { done: false, reason: 'dialog_not_found' };
-        }
-        
-        // Locate the specific upload progress container
-        const progressEl = uploadDialog.querySelector('ytcp-video-upload-progress, .progress-label, #progress-label');
-        const progressText = progressEl ? (progressEl.textContent || '').toLowerCase() : '';
-        const entireText = (uploadDialog.textContent || '').toLowerCase();
-        
-        if (progressText) {
-          // If progress bar/label explicitly says it's uploading or showing %, it's not done
-          const isUploadingText = 
-            progressText.includes('uploading') || 
-            progressText.includes('%') || 
-            progressText.includes('yükleniyor') ||
-            progressText.includes('yüklendi');
-            
-          if (isUploadingText) {
-            return { done: false, text: 'Progress label: ' + progressText };
-          }
-          
-          // If it says complete, checking, or processing, it is done uploading
-          const isDoneText = 
-            progressText.includes('complete') || 
-            progressText.includes('processing') || 
-            progressText.includes('checks') || 
-            progressText.includes('finished') ||
-            progressText.includes('tamamlandı') ||
-            progressText.includes('işleniyor') ||
-            progressText.includes('kontroller') ||
-            progressText.includes('bitti');
-            
-          if (isDoneText) {
-            return { done: true, text: 'Progress label complete: ' + progressText };
-          }
-        }
-        
-        // Fallback: Check the entire dialog text, but avoid matching tab headers if upload is still running
-        const isStillUploading = 
-          entireText.includes('uploading') || 
-          entireText.includes('%') || 
-          entireText.includes('yükleniyor') ||
-          entireText.includes('yüklendi');
-          
-        if (isStillUploading) {
-          return { done: false, text: 'Entire dialog still uploading...' };
-        }
-        
-        const isDoneFallback = 
-          entireText.includes('upload complete') || 
-          entireText.includes('uploaded successfully') || 
-          entireText.includes('processing') || 
-          entireText.includes('yükleme tamamlandı') ||
-          entireText.includes('başarıyla yüklendi') ||
-          entireText.includes('işleniyor');
-          
-        return { done: isDoneFallback, text: 'Fallback: ' + entireText.slice(0, 100) };
-      });
-
-      if (status.done) {
-        logFn(`[Puppet] Video upload complete or processing/checks started inside dialog: ${status.text}`);
-        isUploading = false;
-      } else {
-        await new Promise(r => setTimeout(r, 5000));
-        checksCount++;
-        if (checksCount % 12 === 0) {
-          logFn(`[Puppet] Uploading in progress... (${checksCount * 5}s elapsed)`);
-        }
-      }
-    }
-
-    logFn('[Puppet] Finalizing upload (clicking Schedule/Save button)...');
-    // YouTube shows "Schedule" button when scheduling, "Save" or "Done" otherwise
+    // ── Commit the schedule MID-UPLOAD, then keep the browser open until bytes finish ────────────
+    // We no longer wait for the byte-upload to reach 100% before clicking Schedule. YouTube lets you
+    // schedule/publish while the video is still uploading (it then shows as "Pending / Uploading NN%"
+    // in Content). We click as soon as the button is enabled (checks passed), which commits the
+    // schedule immediately. Right after, we KEEP THE BROWSER OPEN (see the background-upload monitor
+    // further below) until the bytes finish — closing the tab mid-upload would abort the transfer.
+    logFn('[Puppet] Waiting for the Schedule/Save button to become enabled (checks passing)...');
     const doneBtn = await page.waitForSelector(
       '#schedule-button, #done-button, #publish-button, #save-button, ytcp-button[id*="schedule"], ytcp-button[id*="done"], ytcp-button[id*="save"]',
-      { timeout: 10000 }
+      { timeout: 120000 }
     );
-    // YouTube only shows the "Schedule" button when a schedule is actually set. If we instead
-    // land on "Done"/"Save", the video was saved WITHOUT a schedule (private draft). Report this
-    // back so the caller can enforce the schedule on the edit page afterwards.
+    // The button stays disabled until YouTube's checks pass. Wait (up to ~4 min) for it to enable.
+    await page.waitForFunction(() => {
+      const b = document.querySelector('#schedule-button, #done-button, #publish-button, #save-button') ||
+                document.querySelector('ytcp-button[id*="schedule"], ytcp-button[id*="done"], ytcp-button[id*="save"]');
+      if (!b) return false;
+      const disabled = b.disabled === true || b.hasAttribute('disabled') || b.getAttribute('aria-disabled') === 'true';
+      return !disabled;
+    }, { timeout: 240000 }).catch(() => {
+      logFn('[Puppet] Warning: Schedule button still looks disabled after waiting; attempting the click anyway.');
+    });
+
+    // YouTube only shows the "Schedule" button when a schedule is actually set. If we instead land on
+    // "Done"/"Save", the video was saved WITHOUT a schedule (private draft) — report that back so the
+    // caller can enforce the schedule on the edit page afterwards.
     let scheduledOk = false;
     try {
       const finalBtnId = await page.evaluate(el => (el && (el.id || (el.getAttribute && el.getAttribute('id')))) || '', doneBtn);
       scheduledOk = /schedule/i.test(finalBtnId || '');
       logFn(`[Puppet] Final button: "${finalBtnId}" (scheduled=${scheduledOk})`);
     } catch (e) {}
+
+    onProgress(15, 'Scheduling on YouTube…');
     await safeClick(page, doneBtn, { scroll: true });
-    await new Promise(r => setTimeout(r, 5000));
+    await new Promise(r => setTimeout(r, 4000));
+    logFn('[Puppet] Schedule/Save clicked mid-upload — video committed. Keeping browser open until bytes finish.');
 
     // Try to get video ID again if we couldn't get it earlier
     if (!youtubeVideoId) {
@@ -1521,6 +1466,42 @@ export async function uploadVideoBrowser(channelId, opts, logFn = console.log) {
       }
     }
 
+    // Keep the browser open until the background byte-upload finishes, so we NEVER abort the
+    // transfer by closing the tab early. We only conclude "done" when confident; otherwise we keep
+    // waiting (up to the cap) — worst case it is just slower, never a killed upload. Note: while the
+    // uploads dialog is still open it also shows "Uploading NN%", so this same check safely covers
+    // the case where the Schedule click did not take.
+    logFn('[Puppet] Monitoring background upload until bytes finish (browser stays open)...');
+    {
+      let sawUploading = false;
+      let goneStreak = 0;
+      for (let i = 0; i < 720; i++) {
+        const bg = await page.evaluate(() => {
+          const t = (document.body.innerText || document.body.textContent || '').toLowerCase();
+          const m = t.match(/uploading\s*(\d{1,3})\s*%/) || t.match(/y[u\u00fc]kleniyor[^\d]*(\d{1,3})\s*%/);
+          const uploadingVisible = /uploading\s*\d{1,3}\s*%/.test(t) || /y[u\u00fc]kleniyor[^\d]*\d{1,3}\s*%/.test(t);
+          return { uploadingVisible, pct: m ? Math.min(100, parseInt(m[1], 10)) : null };
+        }).catch(() => ({ uploadingVisible: false, pct: null }));
+
+        if (bg.uploadingVisible) {
+          sawUploading = true;
+          goneStreak = 0;
+          if (bg.pct != null) onProgress(Math.min(78, 15 + Math.round(bg.pct * 0.63)), `Scheduled \u2713 \u2014 uploading ${bg.pct}%`);
+        } else {
+          goneStreak++;
+        }
+
+        // Confident-done: we saw the indicator and it has been gone for 3 consecutive polls (~15s).
+        if (sawUploading && goneStreak >= 3) { logFn('[Puppet] Background upload finished.'); break; }
+        // Fallback if we NEVER detect an indicator (upload already done, or text not matched): wait a
+        // conservative 5 min before assuming done, so we don't close early on a large upload.
+        if (!sawUploading && i >= 60) { logFn('[Puppet] No upload indicator seen after 5 min; assuming the upload already finished.'); break; }
+
+        await new Promise(r => setTimeout(r, 5000));
+        if (i > 0 && i % 12 === 0) logFn(`[Puppet] Still waiting for background upload... (${i * 5}s elapsed)`);
+      }
+    }
+    onProgress(78, 'Upload finishing…');
     logFn('[Puppet] Upload task complete.');
     await browser.close();
     return { videoId: youtubeVideoId, scheduled: scheduledOk };

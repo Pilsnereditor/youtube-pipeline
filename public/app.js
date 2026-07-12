@@ -4066,6 +4066,15 @@ function handleWSMessage(data) {
       document.getElementById('activeUploadSection').classList.add('hidden');
     }, 5000);
     loadAllData();
+  } else if (data.type === 'schedule:progress') {
+    // Live upload progress: update the bar % and stage label (only if the bar is already shown,
+    // which respects the channel filter applied by schedule:uploading).
+    const sec = document.getElementById('activeUploadSection');
+    if (sec && !sec.classList.contains('hidden')) {
+      const pct = Math.max(0, Math.min(100, Number(data.percent) || 0));
+      document.getElementById('activeUploadProgress').style.width = pct + '%';
+      document.getElementById('activeUploadPct').textContent = data.label || (pct + '%');
+    }
   } else if (data.type === 'schedule:deferred') {
     // The file finished uploading; we're now waiting on YouTube to finish processing so the
     // schedule can be applied. Clear the misleading "Uploading…" bar instead of leaving it stuck.

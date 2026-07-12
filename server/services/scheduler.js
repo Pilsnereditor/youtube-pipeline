@@ -295,6 +295,10 @@ export async function processPost(post) {
     if (broadcastFn) {
       broadcastFn({ type: 'schedule:uploading', postId: post.id, channel: channel.name, title: post.title }, post.user_id);
     }
+    const emitProgress = (percent, label) => {
+      if (broadcastFn) broadcastFn({ type: 'schedule:progress', postId: post.id, channel: channel.name, title: post.title, percent, label }, post.user_id);
+    };
+    emitProgress(8, 'Starting upload…');
 
     let videoId = '';
     if (channel.upload_mode === 'browser') {
@@ -319,6 +323,7 @@ export async function processPost(post) {
           scheduledAt: post.scheduled_at,
           thumbnailPath: thumbnailPath || null,
           isPremiere: post.is_premiere || 0,
+          onProgress: (percent, label) => emitProgress(percent, label),
         }, (msg) => notify(msg)));
         videoId = result.videoId;
 
@@ -350,6 +355,7 @@ export async function processPost(post) {
     }
 
     notify(`Uploaded: YouTube video ID ${videoId}`);
+    emitProgress(80, 'Video uploaded ✓');
 
     // --- Set thumbnail ---
     if (thumbnailPath) {
@@ -374,6 +380,7 @@ export async function processPost(post) {
     let commentStatus = 'none';
     if (rawCommentTemplate && rawCommentTemplate.trim()) {
       commentStatus = 'pending';
+      emitProgress(90, 'Posting comment…');
       try {
         const commentText = rawCommentTemplate
           .replace(/\{title\}/gi, post.title)

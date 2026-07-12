@@ -1209,6 +1209,19 @@ select.form-input option {
   margin-bottom: var(--sp-md);
 }
 
+/* Keep the 3-column pipeline grid honest: without min-width:0 the <select>/input
+   fields in the form column refuse to shrink below their intrinsic content width,
+   so that column bloats past its fr share, squeezes "Target Channels" narrow (names
+   wrap badly) and can push the whole panel wider than the viewport. */
+.pipeline-control-grid { min-width: 0; }
+.pipeline-control-grid .control-col { min-width: 0; }
+.pipeline-control-grid select,
+.pipeline-control-grid input,
+.pipeline-control-grid .form-input {
+  min-width: 0;
+  max-width: 100%;
+}
+
 .pipeline-idle-art {
   text-align: center;
   padding: var(--sp-xl) var(--sp-md);

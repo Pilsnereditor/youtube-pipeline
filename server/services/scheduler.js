@@ -411,6 +411,29 @@ export async function processPost(post) {
   } catch (err) {
     notify(`Error processing post ${post.id}: ${err.message}`);
 
+    // If the video is already uploaded but its edit page / visibility editor isn't ready yet
+    // (YouTube is still processing it), this is a TRANSIENT condition — not a real failure.
+    // Keep the post pending and keep retrying WITHOUT consuming the retry budget, so the schedule
+    // gets applied automatically once processing finishes. Because the video ID is saved, the
+    // retry takes the "already uploaded" branch and never re-uploads a duplicate.
+    const _vidRow = queryOne('SELECT youtube_video_id FROM scheduled_posts WHERE id = @id', { id: post.id });
+    const _transient = /visibility editor|still processing|processing delayed|will retry automatically|detached frame|execution context was destroyed|target closed/i.test(err.message || '');
+    if (_transient && _vidRow && _vidRow.youtube_video_id) {
+      const tzOff = new Date().getTimezoneOffset() * 60000;
+      const retryAt = new Date(Date.now() + 3 * 60 * 1000 - tzOff).toISOString().slice(0, 19);
+      run(
+        `UPDATE scheduled_posts SET status = 'pending', next_retry_at = @retryAt,
+                error_message = 'Video uploaded — waiting for YouTube to finish processing so the schedule can be applied. Retrying automatically.'
+          WHERE id = @id`,
+        { id: post.id, retryAt }
+      );
+      notify(`Post ${post.id} deferred: video still processing on YouTube — will keep retrying to apply the schedule (no retry consumed).`);
+      if (broadcastFn) {
+        broadcastFn({ type: 'schedule:status', postId: post.id, message: 'Video uploaded — waiting for YouTube processing to apply the schedule…' }, post.user_id);
+      }
+      return;
+    }
+
     // Record the error in uploads table too
     insert(
       `INSERT INTO uploads (channel_id, title, status, error_message, uploaded_at)

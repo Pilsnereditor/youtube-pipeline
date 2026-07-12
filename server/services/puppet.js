@@ -970,18 +970,19 @@ export async function uploadVideoBrowser(channelId, opts, logFn = console.log) {
     let youtubeVideoId = '';
     function extractVideoId(url) {
       if (!url) return '';
-      // Handle /shorts/VIDEO_ID
-      const shortsMatch = url.match(/\/shorts\/([a-zA-Z0-9_-]{6,20})/);
-      if (shortsMatch) return shortsMatch[1];
-      // Handle youtu.be/VIDEO_ID
-      const youtubeBeMatch = url.match(/youtu\.be\/([a-zA-Z0-9_-]{6,20})/);
-      if (youtubeBeMatch) return youtubeBeMatch[1];
-      // Handle v=VIDEO_ID
-      const vParamMatch = url.match(/[?&]v=([a-zA-Z0-9_-]{6,20})/);
-      if (vParamMatch) return vParamMatch[1];
-      // Handle /video/VIDEO_ID
-      const videoMatch = url.match(/\/video\/([a-zA-Z0-9_-]{6,20})/);
-      if (videoMatch) return videoMatch[1];
+      // Real YouTube IDs are EXACTLY 11 chars. Require 11 and anchor to a terminator so we never
+      // capture a truncated/wrong fragment (a wrong ID points /video/<id>/edit at a nonexistent
+      // video, so the visibility editor never loads no matter how many times we reload).
+      const patterns = [
+        /\/shorts\/([a-zA-Z0-9_-]{11})(?=[/?&#]|$)/,
+        /youtu\.be\/([a-zA-Z0-9_-]{11})(?=[/?&#]|$)/,
+        /[?&]v=([a-zA-Z0-9_-]{11})(?=[&#]|$)/,
+        /\/video\/([a-zA-Z0-9_-]{11})(?=[/?&#]|$)/,
+      ];
+      for (const p of patterns) {
+        const m = url.match(p);
+        if (m) return m[1];
+      }
       return '';
     }
     try {

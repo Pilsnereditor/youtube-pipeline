@@ -3549,7 +3549,7 @@ async function handleSchedPostThumbUpload(files) {
       showToast('Thumbnail uploaded and preview updated.', 'success');
       
       // Reload thumbnails cache
-      loadThumbnails();
+      loadMediaThumbnails();
     }
   } catch (err) {
     showToast('Failed to upload thumbnail: ' + err.message, 'error');

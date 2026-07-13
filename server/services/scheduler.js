@@ -20,6 +20,21 @@ let isCheckingPendingComments = false;
 export function init(broadcast) {
   broadcastFn = broadcast;
 
+  // Reset any posts stuck in 'processing' back to 'pending' so they can be retried/processed.
+  try {
+    const resetResult = run(
+      `UPDATE scheduled_posts 
+       SET status = 'pending', 
+           error_message = 'Server restarted mid-upload — automatically reset to pending.'
+       WHERE status = 'processing'`
+    );
+    if (resetResult.changes > 0) {
+      console.log(`[Scheduler] Reset ${resetResult.changes} posts stuck in 'processing' back to 'pending' on startup.`);
+    }
+  } catch (err) {
+    console.error('[Scheduler] Failed to reset stuck processing posts on startup:', err);
+  }
+
   // Run every minute
   cronTask = cron.schedule('* * * * *', async () => {
     try {

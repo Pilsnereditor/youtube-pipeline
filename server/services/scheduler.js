@@ -141,10 +141,7 @@ export async function checkPendingComments() {
      LEFT JOIN channels c ON c.id = sp.channel_id
      WHERE sp.status = 'complete' 
        AND sp.comment_status = 'pending' 
-       AND sp.scheduled_at <= @now
-       -- NOTE: premieres are NOT special-cased here. A premiere only becomes
-       -- commentable once it airs at scheduled_at; trying earlier used to burn the
-       -- retry budget on the pre-air countdown page and the comment never landed.
+       AND (sp.scheduled_at <= @now OR sp.is_premiere = 1)
        AND sp.youtube_video_id IS NOT NULL
        AND (sp.comment_next_retry_at IS NULL OR sp.comment_next_retry_at <= @now)`,
     { now }

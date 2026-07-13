@@ -340,7 +340,7 @@ router.put('/:id', async (req, res) => {
         // just fails silently. In that case leave it 'pending' — checkPendingComments posts it
         // automatically once the video airs.
         const airMs = existing.scheduled_at ? new Date(existing.scheduled_at).getTime() : 0;
-        const isLiveNow = !existing.scheduled_at || airMs <= Date.now();
+        const isLiveNow = !existing.scheduled_at || airMs <= Date.now() || existing.is_premiere === 1;
 
         if (isLiveNow) {
           // Run browser commenting asynchronously to prevent Express route blocking

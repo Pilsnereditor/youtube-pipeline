@@ -894,6 +894,35 @@ async function safeClick(page, elementHandle, opts = {}) {
  * @param {number} channelId 
  * @param {object} opts { videoPath, title, description, tags, privacy, category, scheduledAt, thumbnailPath }
  */
+// Reliably set a YouTube Studio contenteditable field (title/description). Uses
+// document.execCommand('insertText'), which inserts emoji (💥) and unicode (Turkish İ/ı) in ONE
+// shot and fires the input events Polymer listens to. page.keyboard.type() types key-by-key, drops
+// emoji, and can stop early — which truncated titles like "…KASA KAT". Falls back to keyboard
+// typing only if insertText fails, so worst case is no worse than before.
+async function setEditableText(page, elementHandle, text, logFn = console.log) {
+  try {
+    await safeClick(page, elementHandle, { scroll: true, focus: true });
+    await new Promise(r => setTimeout(r, 120));
+    const ok = await page.evaluate((el, value) => {
+      if (!el) return false;
+      el.focus();
+      try { document.execCommand('selectAll', false, null); } catch (e) {}
+      return document.execCommand('insertText', false, value);
+    }, elementHandle, text || '');
+    if (ok) { await new Promise(r => setTimeout(r, 300)); return; }
+  } catch (e) {
+    logFn(`[Puppet] setEditableText insertText failed (${e.message}); falling back to keyboard typing.`);
+  }
+  // Fallback: clear + keyboard type
+  await safeClick(page, elementHandle, { scroll: true, focus: true });
+  await page.keyboard.down('Control');
+  await page.keyboard.press('A');
+  await page.keyboard.up('Control');
+  await page.keyboard.press('Backspace');
+  await page.keyboard.type(text || '');
+  await new Promise(r => setTimeout(r, 300));
+}
+
 export async function uploadVideoBrowser(channelId, opts, logFn = console.log) {
   // Auto-close any active login window to release profile lock
   await closeBrowserSession(channelId);
@@ -1062,21 +1091,11 @@ export async function uploadVideoBrowser(channelId, opts, logFn = console.log) {
     }
 
     logFn('[Puppet] Inputting title...');
-    await safeClick(page, titleInput, { scroll: true, focus: true });
-    await page.keyboard.down('Control');
-    await page.keyboard.press('A');
-    await page.keyboard.up('Control');
-    await page.keyboard.press('Backspace');
-    await page.keyboard.type(opts.title);
+    await setEditableText(page, titleInput, opts.title, logFn);
 
     logFn('[Puppet] Inputting description...');
     const descInput = await page.waitForSelector('#description-textarea #textbox', { timeout: 5000 });
-    await safeClick(page, descInput, { scroll: true, focus: true });
-    await page.keyboard.down('Control');
-    await page.keyboard.press('A');
-    await page.keyboard.up('Control');
-    await page.keyboard.press('Backspace');
-    await page.keyboard.type(opts.description || '');
+    await setEditableText(page, descInput, opts.description || '', logFn);
 
     // Set "Made for kids" to No
     logFn('[Puppet] Setting audience (Not Made for Kids)...');
@@ -1664,14 +1683,8 @@ export async function rescheduleVideoBrowser(channelId, youtubeVideoId, schedule
     if (newTitle) {
       logFn(`[Puppet] Updating video title to: "${newTitle}"`);
       const titleInput = await page.waitForSelector('#title-textarea #textbox', { timeout: 15000 });
-      await safeClick(page, titleInput, { scroll: true, focus: true });
-      await page.keyboard.down('Control');
-      await page.keyboard.press('A');
-      await page.keyboard.up('Control');
-      await page.keyboard.press('Backspace');
-      await new Promise(r => setTimeout(r, 200));
-      await titleInput.type(newTitle);
-      await new Promise(r => setTimeout(r, 500));
+      await setEditableText(page, titleInput, newTitle, logFn);
+      await new Promise(r => setTimeout(r, 400));
     }
 
     // 2. Update Video Schedule if provided

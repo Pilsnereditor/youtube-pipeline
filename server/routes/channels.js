@@ -5,7 +5,7 @@ import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { queryAll, queryOne, run, insert } from '../db/database.js';
 import { syncChannelWithYouTube, updateChannelBrandingAPI } from '../services/youtube.js';
-import { setupBrowserSession, checkBrowserSessionActive, closeBrowserSession, updateChannelBrandingBrowser, syncChannelWithYouTubeBrowser } from '../services/puppet.js';
+import { setupBrowserSession, checkBrowserSessionActive, closeBrowserSession, updateChannelBrandingBrowser, syncChannelWithYouTubeBrowser, withChannelLock } from '../services/puppet.js';
 import { launchVncSession, isVncActive, getVncPort, getVncProfileName, getVncProfilePath, verifyVncChannels, stopVncSession, isLocalChrome } from '../services/vnc.js';
 import { requireAdmin } from './client.js';
 
@@ -695,7 +695,7 @@ router.post('/:id/sync', async (req, res) => {
   try {
     let result;
     if (channel && channel.upload_mode === 'browser') {
-      result = await syncChannelWithYouTubeBrowser(Number(id));
+      result = await withChannelLock(Number(id), () => syncChannelWithYouTubeBrowser(Number(id)));
     } else {
       result = await syncChannelWithYouTube(Number(id));
     }
@@ -734,11 +734,11 @@ router.post('/:id/sync-branding', async (req, res) => {
 
     if (channel.upload_mode === 'browser') {
       // Sync everything using Puppeteer browser automation
-      await updateChannelBrandingBrowser(Number(id), {
+      await withChannelLock(Number(id), () => updateChannelBrandingBrowser(Number(id), {
         logoPath: channel.custom_logo_path,
         bannerPath: channel.custom_banner_path,
         description: channel.description
-      });
+      }));
     } else {
       // API Mode
       // Update description and banner via YouTube Data API
@@ -751,9 +751,9 @@ router.post('/:id/sync-branding', async (req, res) => {
       if (channel.custom_logo_path) {
         // If a browser profile is linked, sync logo via Puppeteer
         if (channel.profile_name) {
-          await updateChannelBrandingBrowser(Number(id), {
+          await withChannelLock(Number(id), () => updateChannelBrandingBrowser(Number(id), {
             logoPath: channel.custom_logo_path
-          });
+          }));
         } else {
           warning = 'YouTube Data API does not support updating profile logos. To sync the profile logo, please link a browser profile in settings.';
         }

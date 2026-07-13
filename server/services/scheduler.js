@@ -88,7 +88,7 @@ export function init(broadcast) {
         try {
           console.log(`[Scheduler] Auto-syncing channel "${ch.name}" (${ch.id}) in mode: ${ch.upload_mode}`);
           if (ch.upload_mode === 'browser') {
-            await syncChannelWithYouTubeBrowser(ch.id);
+            await withChannelLock(ch.id, () => syncChannelWithYouTubeBrowser(ch.id));
           } else {
             await syncChannelWithYouTube(ch.id);
           }
@@ -162,7 +162,7 @@ export async function checkPendingComments() {
       console.log(`[Scheduler] Video ${post.youtube_video_id} is public or a Premiere. Posting comment...`);
       
       if (post.upload_mode === 'browser') {
-        await postCommentBrowser(post.channel_id, post.youtube_video_id, commentText);
+        await withChannelLock(post.channel_id, () => postCommentBrowser(post.channel_id, post.youtube_video_id, commentText));
       } else {
         await addComment(post.channel_id, post.youtube_video_id, commentText);
       }

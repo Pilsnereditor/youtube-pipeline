@@ -52,6 +52,31 @@ Known minor items left (low priority): (a) a premiere longer than ~2.5h could st
 
 ---
 
+## VNC + upload reliability overhaul (2 expert AI reviews, implemented — ⚠️ needs live run)
+
+Fixes the two User-2 symptoms: (A) remote Chrome login stuck on "Connecting"/black screen; (B) scheduled video sticks on "Starting upload…" and never uploads. Two domain-expert agents (VNC/X11/infra + Puppeteer/concurrency) produced specs; implemented centrally. All 4 files pass `node --check`; sandbox unit tests still green (channel-lock, defer-requeue, atomic-claim). Browser/VNC behavior itself is NOT testable from the sandbox — **test live**. Not deployed yet.
+
+**`server/services/vnc.js`** — root cause of "Connecting" was *return-before-ready* + stale X11 locks + non-awaitable kills:
+- Added `killProcAsync` (awaitable SIGTERM→SIGKILL, resolves on real exit), `cleanX11Locks` (rm `/tmp/.X{N}-lock` + `/tmp/.X11-unix/X{N}`), `spawnTracked`+`assertAlive` (fail-fast on immediate death), `waitForPort`/`waitForFile` (readiness gates), and `selfHealSlotsOnStartup()` run once at module load.
+- Launch is now a gated chain: Xvfb (`-nolisten tcp`) → wait for X socket → openbox → Chrome → wait CDP port → x11vnc (`-localhost`) → wait vnc port → websockify (target `127.0.0.1:` not `localhost:`) → wait ws port. `ws_port` only returned after websockify is confirmed listening. Partial-failure path tears everything down + cleans locks.
+- `stopVncSession` now awaits `killProcAsync` for all children + kills orphan Chrome by `remote-debugging-port=${cdpPort}` + cleans locks (fixes the killProc race that left Chrome holding the profile SingletonLock → the "upload never starts" case).
+- SLOTS vncPorts shifted 5999-6002 → **5910-5913** (old 6000 collided with X11 `:0`; Xvfb TCP 6099-6102 removed via `-nolisten tcp`).
+
+**`server/index.js`** — `/websockify` TCP proxy: added a 5s CONNECT timeout (→504) cleared on connect (it's an idle timeout; leaving it armed would kill the live stream); 502 on error. Stops the ~75s hang when websockify is dead.
+
+**`server/services/puppet.js`** — the "scheduled → stuck → never uploads" core fix:
+- `withChannelLock(channelId, fn, opts)` now runs fn via `guardedChannelRun` with a **liveness watchdog**: `idleMs` (opt-in; abort if no heartbeat) + `hardCapMs` (always-on backstop, default 30 min). On trip it calls `abortChannelBrowser` (killOrphanedChrome + closeBrowserSession) and only rejects AFTER the browser is dead — so the hung op can't hold the lock forever AND the next queued op won't collide on the same locked profile (fixes both the deadlock and my earlier critique of a bare reject). Existing callers are unchanged (ignore `{heartbeat}`, get the 30-min backstop).
+- `killOrphanedChrome`: Linux `pgrep` narrowed to `chrome.*<escaped path>` (was matching any process containing the profile path).
+- Removed the duplicate `stopVncSessionForProfile` in `uploadVideoBrowser` (closeBrowserSession already does it).
+- Bounded the one unbounded await: `page.waitForFileChooser({ timeout: 30000 })`.
+- (Deliberately did NOT do the experts' larger reach-dialog IIFE restructure — watchdog + fileChooser timeout already bound every step; avoided restructuring the most fragile path untested.)
+
+**`server/services/scheduler.js`** — the upload call now passes `({ heartbeat }) => …`, wires `heartbeat()` into BOTH `onProgress` and `logFn` (dense liveness proof), and passes `{ idleMs: 8 min, hardCapMs: 90 min }` — 8-min idle catches a genuine stall fast; 90-min cap is above the ~65-min legit worst case (mid-upload monitor) so a slow-but-progressing large upload is never killed.
+
+**One-time VPS cleanup before first restart** (clears existing bad state): kill lingering chrome/Xvfb/x11vnc/websockify, `rm -f /tmp/.X{99,100,101,102}-lock /tmp/.X11-unix/X{99,100,101,102}`, then `git pull` + `pm2 restart`. Do it when the queue is quiet (the pkill will abort any in-flight upload).
+
+---
+
 ## Hard environment constraints (important)
 
 - **Cannot test against live YouTube Studio / VNC / real Google login from the Claude sandbox.** All browser-automation fixes are reasoned + unit-tested for *logic* only. Do NOT claim "100% fixed" for browser-DOM behavior — say "logic verified, needs a live run."

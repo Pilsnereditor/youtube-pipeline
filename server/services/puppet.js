@@ -28,7 +28,8 @@ async function killOrphanedChrome(profilePath) {
   } else {
     try {
       // Find Chrome processes on Linux/macOS containing the profile path in command line
-      const { stdout } = await execAsync(`pgrep -f "${normalizedPath}"`);
+      const escaped = normalizedPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const { stdout } = await execAsync(`pgrep -f "chrome.*${escaped}"`);
       const pids = stdout.trim().split(/\s+/).filter(Boolean);
       if (pids.length > 0) {
         console.log(`[Puppet] Found running Chrome processes using profile ${profilePath}: ${pids.join(', ')}. Killing them...`);
@@ -58,11 +59,60 @@ export const activeSetupSessions = new Map();
 // crashes). Callers on the same channel queue and run one after another; different channels
 // stay fully independent and run in parallel.
 const channelOpQueues = new Map();
-export function withChannelLock(channelId, fn) {
+// Kill this channel's Chrome + clean its profile so any hung awaited page op inside a
+// runaway fn() throws ("Target closed") and unwinds, and the NEXT queued op can launch
+// clean instead of colliding on the same locked userDataDir.
+async function abortChannelBrowser(channelId, reason) {
+  console.warn(`[Puppet] Watchdog aborting channel ${channelId} browser: ${reason}`);
+  try { await killOrphanedChrome(getProfilePath(channelId)); } catch (e) {}
+  try { await closeBrowserSession(channelId); } catch (e) {}
+}
+
+// Runs one channel operation with a liveness watchdog. fn receives { heartbeat }:
+//   • idleMs  (opt-in): if heartbeat() isn't called within idleMs, ABORT.  Reset on every beat.
+//   • hardCapMs (always on): absolute ceiling regardless of progress.
+// On either trip we kill the channel's Chrome, THEN settle (reject) — so the queue tail only
+// advances after the zombie browser is gone.
+function guardedChannelRun(channelId, fn, idleMs, hardCapMs) {
+  return new Promise((resolve, reject) => {
+    let settled = false, aborting = false, idleTimer = null, hardTimer = null;
+    const clearAll = () => { if (idleTimer) clearTimeout(idleTimer); if (hardTimer) clearTimeout(hardTimer); };
+    const settle = (op) => { if (settled) return; settled = true; clearAll(); op(); };
+    const trip = (reason, msg) => {
+      if (settled || aborting) return;
+      aborting = true;
+      abortChannelBrowser(channelId, reason).finally(() => settle(() => reject(new Error(msg))));
+    };
+    const armIdle = () => {
+      if (idleMs == null || settled) return;
+      if (idleTimer) clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => trip(
+        `no progress for ${Math.round(idleMs / 1000)}s`,
+        `CHANNEL_OP_STALLED: no upload progress for ${Math.round(idleMs / 60000)} min — browser aborted; will retry.`
+      ), idleMs);
+    };
+    hardTimer = setTimeout(() => trip(
+      `hard cap ${Math.round(hardCapMs / 60000)} min exceeded`,
+      `CHANNEL_OP_TIMEOUT: operation exceeded ${Math.round(hardCapMs / 60000)} min — browser aborted; will retry.`
+    ), hardCapMs);
+    const heartbeat = () => armIdle();
+    armIdle();
+    Promise.resolve()
+      .then(() => fn({ heartbeat }))
+      .then(
+        (v) => settle(() => resolve(v)),
+        (e) => { if (aborting) return; settle(() => reject(e)); }
+      );
+  });
+}
+
+export function withChannelLock(channelId, fn, opts = {}) {
   const key = String(channelId);
+  const idleMs = opts.idleMs ?? null;                    // opt-in liveness timeout
+  const hardCapMs = opts.hardCapMs ?? 30 * 60 * 1000;    // absolute backstop for every caller
   const prev = channelOpQueues.get(key) || Promise.resolve();
-  const run = prev.then(() => fn(), () => fn());
-  // Store a tail that never rejects, so one failed op doesn't break the queue for the next.
+  const start = () => guardedChannelRun(channelId, fn, idleMs, hardCapMs);
+  const run = prev.then(start, start);
   channelOpQueues.set(key, run.then(() => {}, () => {}));
   return run;
 }
@@ -847,8 +897,6 @@ async function safeClick(page, elementHandle, opts = {}) {
 export async function uploadVideoBrowser(channelId, opts, logFn = console.log) {
   // Auto-close any active login window to release profile lock
   await closeBrowserSession(channelId);
-  // Auto-close VNC session if running — they share the same profile
-  try { await stopVncSessionForProfile(getProfilePath(channelId)); } catch (e) {}
   await new Promise(r => setTimeout(r, 1000));
   const profilePath = getProfilePath(channelId);
   const chromePath = getChromePath();
@@ -955,7 +1003,7 @@ export async function uploadVideoBrowser(channelId, opts, logFn = console.log) {
     }
 
     logFn('[Puppet] File picker open. Uploading video file...');
-    const fileChooserPromise = page.waitForFileChooser();
+    const fileChooserPromise = page.waitForFileChooser({ timeout: 30000 });
     // Click select files button inside the file picker modal
     await page.evaluate(() => {
       const btn = document.querySelector('ytcp-uploads-file-picker input[type="file"], input[type="file"]');

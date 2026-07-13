@@ -20,6 +20,7 @@
  */
 
 import { spawn, execSync } from 'child_process';
+import net from 'net';
 import puppeteer from 'puppeteer-core';
 import path from 'path';
 import fs from 'fs';
@@ -38,10 +39,10 @@ if (!fs.existsSync(PROFILES_DIR)) {
 // Fixed pool of isolated resource slots. One slot per concurrent interactive login.
 // Sized to the number of users expected to log in simultaneously.
 const SLOTS = [
-  { display: ':99',  vncPort: 5999, wsPort: 6080, cdpPort: 9222 },
-  { display: ':100', vncPort: 6000, wsPort: 6081, cdpPort: 9223 },
-  { display: ':101', vncPort: 6001, wsPort: 6082, cdpPort: 9224 },
-  { display: ':102', vncPort: 6002, wsPort: 6083, cdpPort: 9225 },
+  { display: ':99',  vncPort: 5910, wsPort: 6080, cdpPort: 9222 },
+  { display: ':100', vncPort: 5911, wsPort: 6081, cdpPort: 9223 },
+  { display: ':101', vncPort: 5912, wsPort: 6082, cdpPort: 9224 },
+  { display: ':102', vncPort: 5913, wsPort: 6083, cdpPort: 9225 },
 ];
 
 // userId -> session object (includes its allocated slot)
@@ -55,17 +56,116 @@ function sleep(ms) {
   return new Promise(r => setTimeout(r, ms));
 }
 
-function killProc(proc) {
-  if (!proc || proc.killed) return;
-  try { proc.kill('SIGTERM'); } catch {}
-  setTimeout(() => {
-    try { if (!proc.killed) proc.kill('SIGKILL'); } catch {}
-  }, 2000);
+/** Awaitable termination: SIGTERM, escalate to SIGKILL, resolve only once the
+ *  process has actually exited (or was already dead). Prevents port-rebind races. */
+function killProcAsync(proc, timeoutMs = 3000) {
+  return new Promise((resolve) => {
+    if (!proc) return resolve();
+    if (proc.exitCode !== null || proc.signalCode !== null) return resolve();
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(killTimer);
+      resolve();
+    };
+    proc.once('exit', finish);
+    proc.once('error', finish);
+    try { proc.kill('SIGTERM'); } catch { return finish(); }
+    const killTimer = setTimeout(() => {
+      try { proc.kill('SIGKILL'); } catch {}
+      setTimeout(finish, 300);
+    }, timeoutMs);
+  });
 }
 
 function execQuiet(cmd) {
   try { execSync(cmd, { stdio: 'ignore', timeout: 5000 }); } catch {}
 }
+
+// --- Readiness / lifecycle helpers ----------------------------------------
+
+/** ':99' -> '99' */
+function displayNumber(display) {
+  return String(display).replace(':', '').trim();
+}
+
+/** Remove stale X11 lock + socket for a display so a new Xvfb can bind it. */
+function cleanX11Locks(display) {
+  const n = displayNumber(display);
+  for (const p of [`/tmp/.X${n}-lock`, `/tmp/.X11-unix/X${n}`]) {
+    try { if (fs.existsSync(p)) fs.unlinkSync(p); } catch {}
+  }
+}
+
+/** Spawn with an 'error' listener so ENOENT etc. don't throw uncaught, and early
+ *  death is observable via proc.exitCode / proc._spawnErr. */
+function spawnTracked(cmd, args, opts) {
+  const proc = spawn(cmd, args, opts);
+  proc._spawnErr = null;
+  proc.on('error', (e) => { proc._spawnErr = e; });
+  proc.unref();
+  return proc;
+}
+
+/** Fail fast if a just-spawned process died within a short grace window. */
+async function assertAlive(proc, label, graceMs = 400) {
+  await sleep(graceMs);
+  if (proc._spawnErr) throw new Error(`${label} failed to spawn: ${proc._spawnErr.message}`);
+  if (proc.exitCode !== null) throw new Error(`${label} exited immediately with code ${proc.exitCode}`);
+  if (proc.signalCode !== null) throw new Error(`${label} was killed by ${proc.signalCode}`);
+}
+
+/** Poll a TCP port on loopback until it accepts a connection or times out. */
+function waitForPort(port, { host = '127.0.0.1', timeoutMs = 8000, intervalMs = 150 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  return new Promise((resolve) => {
+    const attempt = () => {
+      const sock = net.connect({ host, port });
+      let done = false;
+      const settle = (ok) => {
+        if (done) return;
+        done = true;
+        sock.destroy();
+        if (ok) return resolve(true);
+        if (Date.now() >= deadline) return resolve(false);
+        setTimeout(attempt, intervalMs);
+      };
+      sock.once('connect', () => settle(true));
+      sock.once('error', () => settle(false));
+      sock.setTimeout(1000, () => settle(false));
+    };
+    attempt();
+  });
+}
+
+/** Wait for a file (e.g. the X11 unix socket) to appear. */
+async function waitForFile(filePath, timeoutMs = 6000, intervalMs = 100) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (fs.existsSync(filePath)) return true;
+    await sleep(intervalMs);
+  }
+  return false;
+}
+
+/** One-time boot self-heal: kill orphaned children (detached+unref'd, survive a
+ *  server restart) and wipe stale X11 locks for ALL slots. Safe: runs at module load
+ *  when vncSessions is empty, so nothing it kills belongs to a live session. */
+function selfHealSlotsOnStartup() {
+  if (process.platform === 'win32') return;
+  for (const slot of SLOTS) {
+    const { display, vncPort, wsPort, cdpPort } = slot;
+    execQuiet(`pkill -f "Xvfb ${display} "`);
+    execQuiet(`pkill -f "x11vnc.*-rfbport ${vncPort}"`);
+    execQuiet(`pkill -f "websockify.* ${wsPort} "`);
+    execQuiet(`pkill -f "remote-debugging-port=${cdpPort}"`);
+    cleanX11Locks(display);
+  }
+  console.log('[VNC] Startup self-heal complete (stale locks + orphan processes cleared).');
+}
+
+selfHealSlotsOnStartup();
 
 /** Allocate a free slot, or null if all slots are in use. */
 function allocateSlot() {
@@ -304,97 +404,123 @@ export async function launchVncSession(profileName = 'yt_setup_new', userId = nu
 
   // Kill any stale processes for THIS slot only (never touch other slots/users).
   execQuiet(`pkill -f "Xvfb ${display} "`);
-  execQuiet(`pkill -f "x11vnc.*${vncPort}"`);
-  execQuiet(`pkill -f "websockify.*${wsPort}"`);
+  execQuiet(`pkill -f "x11vnc.*-rfbport ${vncPort}"`);
+  execQuiet(`pkill -f "websockify.* ${wsPort} "`);
   execQuiet(`pkill -f "openbox.*DISPLAY=${display}"`);
-  await sleep(500);
+  execQuiet(`pkill -f "remote-debugging-port=${cdpPort}"`);
+  await sleep(300);
+
+  // Remove stale X11 lock + socket so a crashed Xvfb can't silently block a new one.
+  cleanX11Locks(display);
 
   const env = { ...process.env, DISPLAY: display };
+  const xSocket = `/tmp/.X11-unix/X${displayNumber(display)}`;
 
-  console.log(`[VNC] Starting Xvfb on display ${display}...`);
-  const xvfb = spawn('Xvfb', [display, '-screen', '0', '1280x800x24', '-ac'], {
-    detached: true, stdio: 'ignore'
-  });
-  xvfb.unref();
-  await sleep(1000);
+  // Track everything we start so we can clean up on any failure.
+  let xvfb, openbox, chrome, x11vnc, websockify, cdpBrowser = null;
 
-  console.log('[VNC] Starting openbox window manager...');
-  const openbox = spawn('openbox', [], { detached: true, stdio: 'ignore', env });
-  openbox.unref();
-  await sleep(500);
-
-  console.log('[VNC] Launching Chrome...');
-  const chromePath = findChrome();
-  const { proxyArg, needsAuth, proxyUser, proxyPass } = resolveProxyForProfile(profileName);
-
-  const chromeArgs = [
-    `--user-data-dir=${profilePath}`,
-    `--remote-debugging-port=${cdpPort}`,
-    '--no-first-run',
-    '--no-default-browser-check',
-    '--disable-features=TranslateUI',
-    '--disable-blink-features=AutomationControlled',
-    '--lang=en-US',
-    '--window-size=1280,800',
-    '--window-position=0,0',
-    '--start-maximized',
-    '--no-sandbox',
-    '--disable-setuid-sandbox',
-    '--disable-gpu',
-    '--password-store=basic',
-    '--use-mock-keychain'
-  ];
-  if (proxyArg) chromeArgs.push(proxyArg);
-  chromeArgs.push('--enforce-webrtc-ip-permission-check');
-  chromeArgs.push('--disable-webrtc-hw-decoding');
-  chromeArgs.push('--disable-webrtc-hw-encoding');
-  chromeArgs.push('--webrtc-ip-handling-policy=disable_non_proxied_udp');
-  if (needsAuth) {
-    chromeArgs.push('about:blank');
-    console.log('[VNC] Proxy needs authentication. Starting Chrome on about:blank to configure auth first...');
-  } else {
-    chromeArgs.push('https://studio.youtube.com?hl=en&persist_hl=1');
-  }
-
-  const chrome = spawn(chromePath, chromeArgs, { detached: true, stdio: 'ignore', env });
-  chrome.unref();
-  await sleep(2500);
-
-  console.log(`[VNC] Starting x11vnc on port ${vncPort}...`);
-  const x11vnc = spawn('x11vnc', [
-    '-display', display,
-    '-nopw',
-    '-forever',
-    '-shared',
-    '-rfbport', String(vncPort),
-    '-cursor', 'arrow',
-    '-noxdamage',
-    '-xkb',
-    '-ncache', '0'
-  ], { detached: true, stdio: 'ignore' });
-  x11vnc.unref();
-  await sleep(1000);
-
-  console.log(`[VNC] Starting websockify (noVNC bridge) on port ${wsPort}...`);
-  const websockify = spawn('websockify', [
-    '--web', depsCheck.novncDir,
-    String(wsPort),
-    `localhost:${vncPort}`
-  ], { detached: true, stdio: 'ignore' });
-  websockify.unref();
-  await sleep(1000);
-
-  // Automate proxy authentication if proxy has username/password
-  let cdpBrowser = null;
-  if (needsAuth) {
-    try {
-      console.log('[VNC] Connecting via CDP to authenticate proxy credentials...');
-      await sleep(1500);
-      cdpBrowser = await puppeteer.connect({ browserURL: `http://127.0.0.1:${cdpPort}`, defaultViewport: null });
-      await applyProxyAuth(cdpBrowser, proxyUser, proxyPass);
-    } catch (err) {
-      console.warn('[VNC] Failed to automate proxy credentials via CDP:', err.message);
+  try {
+    console.log(`[VNC] Starting Xvfb on display ${display}...`);
+    xvfb = spawnTracked('Xvfb', [display, '-screen', '0', '1280x800x24', '-ac', '-nolisten', 'tcp'], {
+      detached: true, stdio: 'ignore'
+    });
+    await assertAlive(xvfb, 'Xvfb');
+    if (!await waitForFile(xSocket, 6000)) {
+      throw new Error(`Xvfb display ${display} never became ready (no ${xSocket}).`);
     }
+
+    console.log('[VNC] Starting openbox window manager...');
+    openbox = spawnTracked('openbox', [], { detached: true, stdio: 'ignore', env });
+    await assertAlive(openbox, 'openbox', 300);
+
+    console.log('[VNC] Launching Chrome...');
+    const chromePath = findChrome();
+    const { proxyArg, needsAuth, proxyUser, proxyPass } = resolveProxyForProfile(profileName);
+
+    const chromeArgs = [
+      `--user-data-dir=${profilePath}`,
+      `--remote-debugging-port=${cdpPort}`,
+      '--no-first-run',
+      '--no-default-browser-check',
+      '--disable-features=TranslateUI',
+      '--disable-blink-features=AutomationControlled',
+      '--lang=en-US',
+      '--window-size=1280,800',
+      '--window-position=0,0',
+      '--start-maximized',
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-gpu',
+      '--password-store=basic',
+      '--use-mock-keychain'
+    ];
+    if (proxyArg) chromeArgs.push(proxyArg);
+    chromeArgs.push('--enforce-webrtc-ip-permission-check');
+    chromeArgs.push('--disable-webrtc-hw-decoding');
+    chromeArgs.push('--disable-webrtc-hw-encoding');
+    chromeArgs.push('--webrtc-ip-handling-policy=disable_non_proxied_udp');
+    if (needsAuth) {
+      chromeArgs.push('about:blank');
+      console.log('[VNC] Proxy needs authentication. Starting Chrome on about:blank to configure auth first...');
+    } else {
+      chromeArgs.push('https://studio.youtube.com?hl=en&persist_hl=1');
+    }
+
+    chrome = spawnTracked(chromePath, chromeArgs, { detached: true, stdio: 'ignore', env });
+    await assertAlive(chrome, 'Chrome', 600);
+    if (!await waitForPort(cdpPort, { timeoutMs: 10000 })) {
+      throw new Error(`Chrome CDP port ${cdpPort} never opened.`);
+    }
+
+    console.log(`[VNC] Starting x11vnc on port ${vncPort}...`);
+    x11vnc = spawnTracked('x11vnc', [
+      '-display', display,
+      '-nopw',
+      '-forever',
+      '-shared',
+      '-localhost',
+      '-rfbport', String(vncPort),
+      '-cursor', 'arrow',
+      '-noxdamage',
+      '-xkb',
+      '-ncache', '0'
+    ], { detached: true, stdio: 'ignore' });
+    await assertAlive(x11vnc, 'x11vnc');
+    if (!await waitForPort(vncPort, { timeoutMs: 8000 })) {
+      throw new Error(`x11vnc port ${vncPort} never opened.`);
+    }
+
+    console.log(`[VNC] Starting websockify (noVNC bridge) on port ${wsPort}...`);
+    websockify = spawnTracked('websockify', [
+      '--web', depsCheck.novncDir,
+      String(wsPort),
+      `127.0.0.1:${vncPort}`
+    ], { detached: true, stdio: 'ignore' });
+    await assertAlive(websockify, 'websockify');
+    if (!await waitForPort(wsPort, { timeoutMs: 8000 })) {
+      throw new Error(`websockify port ${wsPort} never opened.`);
+    }
+
+    if (needsAuth) {
+      try {
+        console.log('[VNC] Connecting via CDP to authenticate proxy credentials...');
+        cdpBrowser = await puppeteer.connect({ browserURL: `http://127.0.0.1:${cdpPort}`, defaultViewport: null });
+        await applyProxyAuth(cdpBrowser, proxyUser, proxyPass);
+      } catch (err) {
+        console.warn('[VNC] Failed to automate proxy credentials via CDP:', err.message);
+      }
+    }
+  } catch (err) {
+    console.error(`[VNC] Launch failed for user ${userId} on ${display}: ${err.message}`);
+    await Promise.all([
+      killProcAsync(websockify),
+      killProcAsync(x11vnc),
+      killProcAsync(chrome),
+      killProcAsync(openbox),
+      killProcAsync(xvfb),
+    ]);
+    cleanX11Locks(display);
+    throw new Error(`Failed to start remote browser session: ${err.message}`);
   }
 
   vncSessions.set(userId, { userId, slot, xvfb, openbox, chrome, x11vnc, websockify, profilePath, profileName, cdpBrowser });
@@ -615,22 +741,28 @@ export async function stopVncSession(userId) {
     if (session.cdpBrowser) {
       try { session.cdpBrowser.disconnect(); } catch {}
     }
-    killProc(session.websockify);
-    killProc(session.x11vnc);
-    killProc(session.chrome);
-    killProc(session.openbox);
-    killProc(session.xvfb);
+    // Awaitable termination: resolve only once each child has actually exited,
+    // so the slot's ports/locks are truly free before any relaunch.
+    await Promise.all([
+      killProcAsync(session.websockify),
+      killProcAsync(session.x11vnc),
+      killProcAsync(session.chrome),
+      killProcAsync(session.openbox),
+      killProcAsync(session.xvfb),
+    ]);
 
-    // Safety net: kill any stragglers bound to THIS session's slot only.
+    // Safety net: kill any stragglers bound to THIS session's slot only,
+    // including an orphaned Chrome matched by its unique remote-debugging port.
     if (process.platform !== 'win32' && session.slot) {
-      const { display, vncPort, wsPort } = session.slot;
+      const { display, vncPort, wsPort, cdpPort } = session.slot;
       execQuiet(`pkill -f "Xvfb ${display} "`);
-      execQuiet(`pkill -f "x11vnc.*${vncPort}"`);
-      execQuiet(`pkill -f "websockify.*${wsPort}"`);
+      execQuiet(`pkill -f "x11vnc.*-rfbport ${vncPort}"`);
+      execQuiet(`pkill -f "websockify.* ${wsPort} "`);
+      execQuiet(`pkill -f "remote-debugging-port=${cdpPort}"`);
+      cleanX11Locks(display);
     }
 
     vncSessions.delete(userId);
-    await sleep(500);
     console.log(`[VNC] Session for user ${userId} stopped.`);
   }
 }

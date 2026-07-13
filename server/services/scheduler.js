@@ -313,7 +313,7 @@ export async function processPost(post) {
           await withChannelLock(post.channel_id, () => rescheduleVideoBrowser(post.channel_id, videoId, post.scheduled_at, post.is_premiere || 0));
         }
       } else {
-        const result = await withChannelLock(post.channel_id, () => uploadVideoBrowser(post.channel_id, {
+        const result = await withChannelLock(post.channel_id, ({ heartbeat }) => uploadVideoBrowser(post.channel_id, {
           videoPath,
           title: post.title,
           description: post.description || '',
@@ -323,8 +323,11 @@ export async function processPost(post) {
           scheduledAt: post.scheduled_at,
           thumbnailPath: thumbnailPath || null,
           isPremiere: post.is_premiere || 0,
-          onProgress: (percent, label) => emitProgress(percent, label),
-        }, (msg) => notify(msg)));
+          // Every progress tick AND every log line proves the flow is advancing → reset the idle
+          // watchdog. This is why the watchdog never kills a legitimately progressing upload.
+          onProgress: (percent, label) => { heartbeat(); emitProgress(percent, label); },
+        }, (msg) => { heartbeat(); notify(msg); }),
+        { idleMs: 8 * 60 * 1000, hardCapMs: 90 * 60 * 1000 });
         videoId = result.videoId;
 
         // Persist the video ID immediately, so if anything below fails and this post is retried,

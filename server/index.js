@@ -235,7 +235,20 @@ server.on('upgrade', (request, socket, head) => {
         socket.destroy();
         return;
       }
-      const target = net.createConnection({ host: '127.0.0.1', port: wsPort }, () => {
+      const target = net.createConnection({ host: '127.0.0.1', port: wsPort });
+      // 5s CONNECT timeout: if websockify is dead/hung, fail fast with 504 instead of
+      // hanging ~75s on the OS SYN timeout.
+      target.setTimeout(5000);
+      target.once('timeout', () => {
+        console.error(`[VNC Proxy] Connect timeout to websockify port ${wsPort}`);
+        try { socket.write('HTTP/1.1 504 Gateway Timeout\r\n\r\n'); } catch {}
+        target.destroy();
+        socket.destroy();
+      });
+      target.once('connect', () => {
+        // Clear the timeout — it is an IDLE timeout; keeping it would tear down the live
+        // interactive VNC stream after 5s of quiet.
+        target.setTimeout(0);
         // Reconstruct the HTTP upgrade request and forward to this user's websockify
         let httpReq = `GET ${request.url} HTTP/${request.httpVersion}\r\n`;
         for (let i = 0; i < request.rawHeaders.length; i += 2) {
@@ -248,6 +261,7 @@ server.on('upgrade', (request, socket, head) => {
       });
       target.on('error', (err) => {
         console.error('[VNC Proxy] Error:', err.message);
+        try { socket.write('HTTP/1.1 502 Bad Gateway\r\n\r\n'); } catch {}
         socket.destroy();
       });
       socket.on('error', () => target.destroy());

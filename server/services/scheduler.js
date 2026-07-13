@@ -447,19 +447,40 @@ export async function processPost(post) {
     const _vidRow = queryOne('SELECT youtube_video_id FROM scheduled_posts WHERE id = @id', { id: post.id });
     const _transient = /visibility editor|still processing|processing delayed|will retry automatically|detached frame|execution context was destroyed|target closed/i.test(err.message || '');
     if (_transient && _vidRow && _vidRow.youtube_video_id) {
+      // Bound this auto-retry loop. It used to defer UNLIMITED times, so on a slow/proxied channel
+      // where the schedule-enforce keeps throwing "visibility editor…", the post sat in 'pending'
+      // FOREVER: the dashboard showed "uploading" all day (problem 3) AND the pinned comment never
+      // posted, because checkPendingComments only runs on status='complete' (problem 2). After a
+      // bounded number of attempts (~24 min of YouTube processing time) we accept that the video is
+      // on YouTube — it was scheduled during the mid-upload click — and mark the post COMPLETE so the
+      // dashboard reflects reality and the comment can finally be posted.
+      const MAX_TRANSIENT_DEFERS = 8;
+      const transientCount = (post.retry_count || 0) + 1;
+
+      if (transientCount >= MAX_TRANSIENT_DEFERS) {
+        run(
+          `UPDATE scheduled_posts SET status = 'complete', youtube_video_id = @vid,
+                  error_message = 'Video uploaded and scheduled during upload; automatic schedule-verification timed out after several attempts — please confirm the publish time in YouTube Studio if needed.'
+            WHERE id = @id`,
+          { id: post.id, vid: _vidRow.youtube_video_id }
+        );
+        notify(`Post ${post.id}: video ${_vidRow.youtube_video_id} is on YouTube — stopping the auto-retry loop after ${transientCount} attempts and marking complete (comment will now be posted).`);
+        if (broadcastFn) {
+          broadcastFn({ type: 'schedule:complete', postId: post.id, videoId: _vidRow.youtube_video_id }, post.user_id);
+        }
+        return;
+      }
+
       const tzOff = new Date().getTimezoneOffset() * 60000;
       const retryAt = new Date(Date.now() + 3 * 60 * 1000 - tzOff).toISOString().slice(0, 19);
       run(
-        `UPDATE scheduled_posts SET status = 'pending', next_retry_at = @retryAt,
+        `UPDATE scheduled_posts SET status = 'pending', retry_count = @rc, next_retry_at = @retryAt,
                 error_message = 'Video uploaded — waiting for YouTube to finish processing so the schedule can be applied. Retrying automatically.'
           WHERE id = @id`,
-        { id: post.id, retryAt }
+        { id: post.id, rc: transientCount, retryAt }
       );
-      notify(`Post ${post.id} deferred: video still processing on YouTube — will keep retrying to apply the schedule (no retry consumed).`);
+      notify(`Post ${post.id} deferred (attempt ${transientCount}/${MAX_TRANSIENT_DEFERS}): video still processing on YouTube — retrying to apply the schedule.`);
       if (broadcastFn) {
-        // schedule:deferred tells the dashboard the file finished uploading and we're now
-        // waiting on YouTube processing, so the "Uploading…" bar is cleared instead of
-        // hanging forever. (schedule:status only appends a log line.)
         broadcastFn({ type: 'schedule:deferred', postId: post.id, title: post.title, message: 'Video uploaded — waiting for YouTube processing to apply the schedule…' }, post.user_id);
       }
       return;

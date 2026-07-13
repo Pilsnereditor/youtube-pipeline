@@ -1038,8 +1038,22 @@ export async function uploadVideoBrowser(channelId, opts, logFn = console.log) {
       return '';
     }
     try {
-      const linkElem = await page.waitForSelector('a.style-scope.ytcp-video-info, #share-url, .video-url-fadeable a, span.video-url-text a', { timeout: 15000 });
-      const videoLink = await page.evaluate(el => el.href || el.textContent, linkElem);
+      await page.waitForSelector('span.video-url-text a, #share-url, .video-url-fadeable a, a.style-scope.ytcp-video-info', { timeout: 15000 }).catch(() => null);
+      // Pick the REAL video URL, not the channel-info link. The first matching anchor is often
+      // studio.youtube.com/channel/… which yields an empty ID; scan all candidates and take the
+      // one whose href/text is an actual video URL (youtu.be / watch?v= / /video/).
+      const videoLink = await page.evaluate(() => {
+        const sels = ['span.video-url-text a', '#share-url', '.video-url-fadeable a', 'a.style-scope.ytcp-video-info'];
+        const rx = /youtu\.be\/[a-zA-Z0-9_-]{11}|[?&]v=[a-zA-Z0-9_-]{11}|\/video\/[a-zA-Z0-9_-]{11}/;
+        for (const sel of sels) {
+          for (const a of document.querySelectorAll(sel)) {
+            const h = a.href || a.textContent || '';
+            if (rx.test(h)) return h;
+          }
+        }
+        const el = document.querySelector('span.video-url-text a') || document.querySelector('#share-url');
+        return el ? (el.href || el.textContent || '') : '';
+      }).catch(() => '');
       logFn(`[Puppet] Generated video link: ${videoLink}`);
       youtubeVideoId = extractVideoId(videoLink);
       logFn(`[Puppet] Extracted YouTube Video ID: ${youtubeVideoId}`);
@@ -1503,9 +1517,20 @@ export async function uploadVideoBrowser(channelId, opts, logFn = console.log) {
     // Try to get video ID again if we couldn't get it earlier
     if (!youtubeVideoId) {
       try {
-        const linkElem = await page.waitForSelector('span.video-url-text a, a.style-scope.ytcp-video-info, #share-url, .video-url-fadeable a', { timeout: 10000 }).catch(() => null);
-        if (linkElem) {
-          const videoLink = await page.evaluate(el => el.href || el.textContent, linkElem);
+        await page.waitForSelector('span.video-url-text a, #share-url, .video-url-fadeable a, a.style-scope.ytcp-video-info', { timeout: 10000 }).catch(() => null);
+        const videoLink = await page.evaluate(() => {
+          const sels = ['span.video-url-text a', '#share-url', '.video-url-fadeable a', 'a.style-scope.ytcp-video-info'];
+          const rx = /youtu\.be\/[a-zA-Z0-9_-]{11}|[?&]v=[a-zA-Z0-9_-]{11}|\/video\/[a-zA-Z0-9_-]{11}/;
+          for (const sel of sels) {
+            for (const a of document.querySelectorAll(sel)) {
+              const h = a.href || a.textContent || '';
+              if (rx.test(h)) return h;
+            }
+          }
+          const el = document.querySelector('span.video-url-text a') || document.querySelector('#share-url');
+          return el ? (el.href || el.textContent || '') : '';
+        }).catch(() => '');
+        if (videoLink) {
           youtubeVideoId = extractVideoId(videoLink);
           logFn(`[Puppet] Extracted YouTube Video ID on completion: ${youtubeVideoId}`);
         }
@@ -3084,10 +3109,18 @@ export async function syncChannelWithYouTubeBrowser(channelId, logFn = console.l
         }
         // Mark post as cancelled
         run(`UPDATE scheduled_posts SET status = 'cancelled' WHERE id = @id`, { id: post.id });
-        run(`UPDATE uploads SET status = 'cancelled' WHERE channel_id = @channelId AND youtube_video_id = @youtubeVideoId`, {
-          channelId: post.channel_id,
-          youtubeVideoId: post.youtube_video_id
-        });
+        // The uploads table's CHECK constraint does NOT include 'cancelled' — writing it threw a
+        // SqliteError that aborted the whole sync mid-run (leaving its browser lingering, which then
+        // collided with the next upload). Use a valid status and guard it so bookkeeping can never
+        // crash the sync. The scheduled_posts row is already marked cancelled above (what matters).
+        try {
+          run(`UPDATE uploads SET status = 'error' WHERE channel_id = @channelId AND youtube_video_id = @youtubeVideoId`, {
+            channelId: post.channel_id,
+            youtubeVideoId: post.youtube_video_id
+          });
+        } catch (e) {
+          logFn(`[Puppet Sync] Could not update uploads row for ${post.youtube_video_id}: ${e.message}`);
+        }
         cancelledCount++;
       }
     }

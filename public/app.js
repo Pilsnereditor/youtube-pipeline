@@ -747,7 +747,7 @@ function renderVideosGrid() {
       <div class="media-row-card glass-light" onclick="openScheduleModalForVideo(event, ${vid.id})" style="display: flex; gap: 20px; padding: 16px; border-radius: 12px; background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.05); transition: all 0.2s; align-items: flex-start; cursor: pointer;">
         <!-- Left: Video Preview -->
         <div style="width: 160px; flex-shrink: 0; aspect-ratio: 16/9; background: #000; border-radius: 8px; overflow: hidden; border: 1px solid rgba(255,255,255,0.08);">
-          <video id="${videoId}" src="/api/media/video-file/${vid.id}" preload="none" muted controls ${vid.thumbnail_id ? `poster="/api/media/thumbnail-file/${vid.thumbnail_id}?v=${vid.title ? encodeURIComponent(vid.title.substring(0,20)) : 'raw'}"` : ''} style="width: 100%; height: 100%; object-fit: cover;" onloadedmetadata="try { document.getElementById('${durationId}').textContent = formatDuration(this.duration); if (!${vid.duration || 0}) { window.saveVideoDuration(${vid.id}, this.duration); } } catch(e){}"></video>
+          <video id="${videoId}" src="/api/media/video-file/${vid.id}" preload="none" muted controls ${vid.thumbnail_id ? `poster="/api/media/thumbnail-file/${vid.thumbnail_id}?v=${vid.title ? encodeURIComponent([...vid.title].slice(0,20).join('')) : 'raw'}"` : ''} style="width: 100%; height: 100%; object-fit: cover;" onloadedmetadata="try { document.getElementById('${durationId}').textContent = formatDuration(this.duration); if (!${vid.duration || 0}) { window.saveVideoDuration(${vid.id}, this.duration); } } catch(e){}"></video>
         </div>
 
         <!-- Middle: Title, Description, Tags -->
@@ -1163,7 +1163,7 @@ function onSchedVideoSelectChange() {
     const previewImg = document.getElementById('schedThumbPreviewImg');
     if (previewGroup && previewImg) {
       if (video.thumbnail_id) {
-        previewImg.src = `/api/media/thumbnail-file/${video.thumbnail_id}?v=${video.title ? encodeURIComponent(video.title.substring(0,20)) : 'raw'}`;
+        previewImg.src = `/api/media/thumbnail-file/${video.thumbnail_id}?v=${video.title ? encodeURIComponent([...video.title].slice(0,20).join('')) : 'raw'}`;
         previewGroup.style.display = 'block';
       } else {
         previewGroup.style.display = 'none';

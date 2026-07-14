@@ -318,8 +318,10 @@ export async function processPost(post) {
 
       if (post.youtube_video_id) {
         // A previous attempt already uploaded this video. Do NOT upload it again (that would
-        // create a duplicate on YouTube). Just (re)apply the schedule on the edit page.
+        // create a duplicate on YouTube). This is a SCHEDULE retry, not an upload — say so, so the
+        // dashboard doesn't misleadingly show "uploading" again.
         videoId = post.youtube_video_id;
+        emitProgress(45, 'Video already uploaded — applying the schedule on YouTube…');
         if (wantsSchedule) {
           notify(`Video ${videoId} was already uploaded — applying the schedule on the edit page...`);
           await withChannelLock(post.channel_id, () => rescheduleVideoBrowser(post.channel_id, videoId, post.scheduled_at, post.is_premiere || 0));
@@ -447,41 +449,45 @@ export async function processPost(post) {
     const _vidRow = queryOne('SELECT youtube_video_id FROM scheduled_posts WHERE id = @id', { id: post.id });
     const _transient = /visibility editor|still processing|processing delayed|will retry automatically|detached frame|execution context was destroyed|target closed/i.test(err.message || '');
     if (_transient && _vidRow && _vidRow.youtube_video_id) {
-      // Bound this auto-retry loop. It used to defer UNLIMITED times, so on a slow/proxied channel
-      // where the schedule-enforce keeps throwing "visibility editor…", the post sat in 'pending'
-      // FOREVER: the dashboard showed "uploading" all day (problem 3) AND the pinned comment never
-      // posted, because checkPendingComments only runs on status='complete' (problem 2). After a
-      // bounded number of attempts (~24 min of YouTube processing time) we accept that the video is
-      // on YouTube — it was scheduled during the mid-upload click — and mark the post COMPLETE so the
-      // dashboard reflects reality and the comment can finally be posted.
-      const MAX_TRANSIENT_DEFERS = 8;
+      // The video is uploaded, but the schedule couldn't be applied yet — almost always because
+      // YouTube is still PROCESSING it. Slow/proxied uploads take a long time to process, so the edit
+      // page's visibility editor isn't available yet ("Visibility editor not ready" in the logs).
+      // Keep retrying at a sensible interval so the schedule applies AS SOON AS processing finishes.
+      // Do NOT fake-complete — that would leave an unscheduled private draft on YouTube that never
+      // publishes. The target publish time is normally days out, so there is plenty of time to retry.
       const transientCount = (post.retry_count || 0) + 1;
+      const MAX_TRANSIENT_DEFERS = 24;      // ~4 hours at 10-min intervals
+      const RETRY_MINUTES = 10;
+      const schedMs = post.scheduled_at ? new Date(post.scheduled_at).getTime() : 0;
+      const scheduledTimePassed = schedMs && schedMs <= Date.now();
 
-      if (transientCount >= MAX_TRANSIENT_DEFERS) {
+      if (transientCount >= MAX_TRANSIENT_DEFERS || scheduledTimePassed) {
+        // Genuinely could not apply the schedule (video never finished processing, or its publish
+        // time already passed). Mark ERROR — NOT complete — so it's honest and the user can fix it.
         run(
-          `UPDATE scheduled_posts SET status = 'complete', youtube_video_id = @vid,
-                  error_message = 'Video uploaded and scheduled during upload; automatic schedule-verification timed out after several attempts — please confirm the publish time in YouTube Studio if needed.'
+          `UPDATE scheduled_posts SET status = 'error', next_retry_at = NULL,
+                  error_message = 'Video uploaded to YouTube, but the schedule could not be applied automatically (YouTube kept the video in "processing" too long). Open it in YouTube Studio and set the publish time / premiere manually.'
             WHERE id = @id`,
-          { id: post.id, vid: _vidRow.youtube_video_id }
+          { id: post.id }
         );
-        notify(`Post ${post.id}: video ${_vidRow.youtube_video_id} is on YouTube — stopping the auto-retry loop after ${transientCount} attempts and marking complete (comment will now be posted).`);
+        notify(`Post ${post.id}: video ${_vidRow.youtube_video_id} uploaded but schedule NOT applied after ${transientCount} attempts — marked error for manual scheduling.`);
         if (broadcastFn) {
-          broadcastFn({ type: 'schedule:complete', postId: post.id, videoId: _vidRow.youtube_video_id }, post.user_id);
+          broadcastFn({ type: 'schedule:error', postId: post.id, error: 'Uploaded but not scheduled — set the publish time manually in YouTube Studio.' }, post.user_id);
         }
         return;
       }
 
       const tzOff = new Date().getTimezoneOffset() * 60000;
-      const retryAt = new Date(Date.now() + 3 * 60 * 1000 - tzOff).toISOString().slice(0, 19);
+      const retryAt = new Date(Date.now() + RETRY_MINUTES * 60 * 1000 - tzOff).toISOString().slice(0, 19);
       run(
         `UPDATE scheduled_posts SET status = 'pending', retry_count = @rc, next_retry_at = @retryAt,
                 error_message = 'Video uploaded — waiting for YouTube to finish processing so the schedule can be applied. Retrying automatically.'
           WHERE id = @id`,
         { id: post.id, rc: transientCount, retryAt }
       );
-      notify(`Post ${post.id} deferred (attempt ${transientCount}/${MAX_TRANSIENT_DEFERS}): video still processing on YouTube — retrying to apply the schedule.`);
+      notify(`Post ${post.id} deferred (attempt ${transientCount}/${MAX_TRANSIENT_DEFERS}, next in ${RETRY_MINUTES}m): YouTube still processing — will apply the schedule once it's ready.`);
       if (broadcastFn) {
-        broadcastFn({ type: 'schedule:deferred', postId: post.id, title: post.title, message: 'Video uploaded — waiting for YouTube processing to apply the schedule…' }, post.user_id);
+        broadcastFn({ type: 'schedule:deferred', postId: post.id, title: post.title, message: 'Video uploaded — waiting for YouTube to finish processing to apply the schedule…' }, post.user_id);
       }
       return;
     }

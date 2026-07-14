@@ -1459,8 +1459,67 @@ export async function uploadVideoBrowser(channelId, opts, logFn = console.log) {
             return 'not_found';
           });
           logFn(`[Puppet] Premiere checkbox status: ${clickedPremiere}`);
+          await new Promise(r => setTimeout(r, 1200));
+
+          // Ticking "Set as Premiere" alone flips the primary button from "Schedule" to "Done" until
+          // the premiere is actually SET UP. Click "Set up premiere" and confirm its panel so YouTube
+          // treats it as a schedulable premiere (otherwise scheduled=false → unscheduled draft).
+          const setupClicked = await page.evaluate(() => {
+            const btns = Array.from(document.querySelectorAll('button, ytcp-button, tp-yt-paper-button, a')).filter(b => b.offsetParent !== null);
+            const setup = btns.find(b => {
+              const t = (b.textContent || '').trim().toLowerCase();
+              return t.includes('set up premiere') || t.includes('gösterimi ayarla') || t.includes('premiyeri ayarla') || (t.includes('premiere') && t.includes('set up'));
+            });
+            if (setup) { setup.click(); return true; }
+            return false;
+          });
+          logFn(`[Puppet] "Set up premiere" clicked: ${setupClicked}`);
+          if (setupClicked) {
+            await new Promise(r => setTimeout(r, 2500));
+            // Only click a confirm button that lives INSIDE the premiere setup dialog — never fall
+            // back to the page's main "Done" button (that would submit the whole thing prematurely).
+            const confirmed = await page.evaluate(() => {
+              const dialog = document.querySelector('tp-yt-paper-dialog[opened], ytcp-dialog[opened], tp-yt-paper-dialog, [role="dialog"]');
+              if (!dialog) return 'no-dialog';
+              const btns = Array.from(dialog.querySelectorAll('ytcp-button, tp-yt-paper-button, button')).filter(b => b.offsetParent !== null);
+              const cand = btns.find(b => {
+                const t = (b.textContent || '').trim().toLowerCase();
+                return ['done','continue','set up premiere','save','confirm','ok','bitti','devam','kaydet','tamam'].includes(t);
+              });
+              if (cand) { cand.click(); return (cand.textContent || '').trim(); }
+              return 'no-confirm-button';
+            });
+            logFn(`[Puppet] Premiere setup confirm: "${confirmed}"`);
+            await new Promise(r => setTimeout(r, 2000));
+          }
+
+          // Snapshot the premiere state (helps refine this flow later if YouTube changes it).
+          try { await page.screenshot({ path: path.join(profilePath, 'puppet_premiere_debug.png') }); } catch (e) {}
+
+          // SAFETY NET: if premiere STILL left the primary button as non-"Schedule", the premiere
+          // could not be completed — revert the premiere tick so the SCHEDULE is preserved and the
+          // video still publishes on time (a scheduled public video beats an unscheduled draft).
+          const btnAfter = await page.evaluate(() => {
+            const b = document.querySelector('#schedule-button, #done-button, #publish-button, #save-button') ||
+                      document.querySelector('ytcp-button[id*="schedule"], ytcp-button[id*="done"]');
+            return b ? (b.id || (b.getAttribute && b.getAttribute('id')) || '') : '';
+          });
+          logFn(`[Puppet] Primary button after premiere setup: "${btnAfter}"`);
+          if (btnAfter && !/schedule/i.test(btnAfter)) {
+            logFn('[Puppet] Premiere did not become schedulable — reverting the premiere tick to preserve the schedule.');
+            await page.evaluate(() => {
+              const checkboxes = Array.from(document.querySelectorAll('ytcp-checkbox, tp-yt-paper-checkbox, paper-checkbox, ytcp-checkbox-lit'));
+              const cb = checkboxes.find(el => {
+                const t = (el.textContent || '').trim().toLowerCase();
+                return t.includes('premiere') || t.includes('gösterim') || t.includes('gosterim');
+              });
+              const on = cb && (cb.checked || cb.hasAttribute('checked') || cb.getAttribute('aria-checked') === 'true');
+              if (cb && on) cb.click();
+            });
+            await new Promise(r => setTimeout(r, 1200));
+          }
         } catch (e) {
-          logFn(`[Puppet] Warning: failed to check premiere checkbox: ${e.message}`);
+          logFn(`[Puppet] Warning: premiere handling error: ${e.message}`);
         }
         await new Promise(r => setTimeout(r, 800));
       }

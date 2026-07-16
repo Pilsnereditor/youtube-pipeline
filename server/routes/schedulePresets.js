@@ -60,4 +60,30 @@ router.delete('/:id', (req, res) => {
   }
 });
 
+/**
+ * PUT /api/schedule-presets/:id — Update an existing schedule preset
+ * Body: { name, time, days }
+ */
+router.put('/:id', (req, res) => {
+  const userId = req.session.userId;
+  const { id } = req.params;
+  const { name, time, days } = req.body;
+  if (!name || !time) {
+    return res.status(400).json({ error: 'name and time are required.' });
+  }
+  try {
+    const result = run(
+      'UPDATE schedule_presets SET name = @name, time = @time, days = @days WHERE id = @id AND user_id = @userId',
+      { id, userId, name: name.trim(), time: time.trim(), days: days ? days.trim() : 'everyday' }
+    );
+    if (result.changes === 0) {
+      return res.status(404).json({ error: 'Schedule preset not found.' });
+    }
+    const preset = queryOne('SELECT * FROM schedule_presets WHERE id = @id AND user_id = @userId', { id, userId });
+    res.json(preset);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 export default router;

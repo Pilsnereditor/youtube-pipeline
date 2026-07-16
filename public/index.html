@@ -181,7 +181,7 @@
             <div style="display: flex; flex-direction: column; gap: 4px; margin-top: 4px;">
               <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 2px;">
                 <label style="font-size: 0.8rem; font-weight: 500; color: var(--text-secondary); margin-bottom: 0;">Schedule Preset (Optional)</label>
-                <button type="button" onclick="createNewSchedulePresetFromDashboard()" class="btn-link" style="font-size: 0.8rem; padding: 0; border: none; background: none; cursor: pointer; color: var(--text-accent); text-decoration: none;">＋ Save New</button>
+                <span style="display: inline-flex; gap: 10px; align-items: center;"><button type="button" onclick="createNewSchedulePresetFromDashboard()" class="btn-link" style="font-size: 0.78rem; padding: 0; border: none; background: none; cursor: pointer; color: var(--text-accent); text-decoration: none;">＋ Save New</button><button type="button" onclick="editSchedulePresetFromDashboard()" class="btn-link" style="font-size: 0.78rem; padding: 0; border: none; background: none; cursor: pointer; color: var(--text-secondary); text-decoration: none;">✎ Edit</button><button type="button" onclick="removeSchedulePresetFromDashboard()" class="btn-link" style="font-size: 0.78rem; padding: 0; border: none; background: none; cursor: pointer; color: var(--accent-red); text-decoration: none;">🗑 Remove</button></span>
               </div>
               <select id="dashPresetSelect" class="form-input" style="margin-bottom: 0; padding: 6px; font-size: 0.85rem; border-radius: 6px; background: rgba(255,255,255,0.03); border: var(--border-glass); width: 100%;">
                 <option value="">-- Use Channel defaults --</option>
@@ -191,7 +191,7 @@
             <div style="display: flex; flex-direction: column; gap: 4px; margin-top: 8px;">
               <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 2px;">
                 <label style="font-size: 0.8rem; font-weight: 500; color: var(--text-secondary); margin-bottom: 0;">Auto-Comment Template (Optional)</label>
-                <button type="button" onclick="createNewCommentTemplateFromDashboard()" class="btn-link" style="font-size: 0.8rem; padding: 0; border: none; background: none; cursor: pointer; color: var(--text-accent); text-decoration: none;">＋ Save New</button>
+                <span style="display: inline-flex; gap: 10px; align-items: center;"><button type="button" onclick="createNewCommentTemplateFromDashboard()" class="btn-link" style="font-size: 0.78rem; padding: 0; border: none; background: none; cursor: pointer; color: var(--text-accent); text-decoration: none;">＋ Save New</button><button type="button" onclick="editCommentTemplateFromDashboard()" class="btn-link" style="font-size: 0.78rem; padding: 0; border: none; background: none; cursor: pointer; color: var(--text-secondary); text-decoration: none;">✎ Edit</button><button type="button" onclick="removeCommentTemplateFromDashboard()" class="btn-link" style="font-size: 0.78rem; padding: 0; border: none; background: none; cursor: pointer; color: var(--accent-red); text-decoration: none;">🗑 Remove</button></span>
               </div>
               <select id="dashCommentSelect" class="form-input" style="margin-bottom: 0; padding: 6px; font-size: 0.85rem; border-radius: 6px; background: rgba(255,255,255,0.03); border: var(--border-glass); width: 100%;">
                 <option value="">-- Use Channel defaults --</option>

@@ -4764,6 +4764,129 @@ async function createNewCommentTemplateFromDashboard() {
   }
 }
 
+async function editSchedulePresetFromDashboard() {
+  const select = document.getElementById('dashPresetSelect');
+  const presetId = select ? select.value : '';
+  if (!presetId) {
+    showToast('Pick a preset from the dropdown first, then click Edit.', 'warning');
+    return;
+  }
+  const preset = state.schedulePresets.find(p => p.id === parseInt(presetId, 10));
+  if (!preset) return;
+
+  const name = prompt('Edit the preset name:', preset.name);
+  if (name === null) return;
+  if (!name.trim()) { showToast('Name cannot be empty.', 'error'); return; }
+
+  const time = prompt('Edit the posting time (HH:MM, e.g. 22:00):', preset.time);
+  if (time === null) return;
+  const timeRegex = /^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/;
+  if (!timeRegex.test(time.trim())) {
+    showToast('Invalid time format. Use HH:MM (e.g., 15:00, 22:00).', 'error');
+    return;
+  }
+
+  const days = prompt('Edit days (comma-separated, e.g. everyday, mon,wed,fri):', preset.days || 'everyday');
+  if (days === null) return;
+
+  try {
+    const res = await fetch(`${API_BASE}/schedule-presets/${presetId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: name.trim(), time: time.trim(), days })
+    });
+    if (!res.ok) throw new Error(await res.text());
+    showToast('Schedule preset updated.', 'success');
+    await loadSchedulePresets();
+    const sel = document.getElementById('dashPresetSelect');
+    if (sel) sel.value = presetId;
+    updateDashboardScheduleSummary();
+  } catch (err) {
+    showToast('Failed to update preset: ' + err.message, 'error');
+  }
+}
+
+async function removeSchedulePresetFromDashboard() {
+  const select = document.getElementById('dashPresetSelect');
+  const presetId = select ? select.value : '';
+  if (!presetId) {
+    showToast('Pick a preset from the dropdown first, then click Remove.', 'warning');
+    return;
+  }
+  const preset = state.schedulePresets.find(p => p.id === parseInt(presetId, 10));
+  const label = preset ? preset.name : 'this preset';
+  if (!confirm(`Delete schedule preset "${label}"? This cannot be undone.`)) return;
+
+  try {
+    const res = await fetch(`${API_BASE}/schedule-presets/${presetId}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error(await res.text());
+    showToast('Schedule preset removed.', 'success');
+    await loadSchedulePresets();
+    if (select) select.value = '';
+    updateDashboardScheduleSummary();
+  } catch (err) {
+    showToast('Failed to remove preset: ' + err.message, 'error');
+  }
+}
+
+async function editCommentTemplateFromDashboard() {
+  const select = document.getElementById('dashCommentSelect');
+  const tId = select ? select.value : '';
+  if (!tId) {
+    showToast('Pick a comment template from the dropdown first, then click Edit.', 'warning');
+    return;
+  }
+  const tpl = state.savedComments.find(c => c.id === parseInt(tId, 10));
+  if (!tpl) return;
+
+  const title = prompt('Edit the template name:', tpl.title);
+  if (title === null) return;
+  if (!title.trim()) { showToast('Name cannot be empty.', 'error'); return; }
+
+  const text = prompt('Edit the comment text (placeholders like {title} or {videoId} allowed):', tpl.text);
+  if (text === null) return;
+  if (!text.trim()) { showToast('Comment text cannot be empty.', 'error'); return; }
+
+  try {
+    const res = await fetch(`${API_BASE}/comments/${tId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: title.trim(), text: text.trim() })
+    });
+    if (!res.ok) throw new Error(await res.text());
+    showToast('Comment template updated.', 'success');
+    await loadSavedComments();
+    const sel = document.getElementById('dashCommentSelect');
+    if (sel) sel.value = tId;
+    updateDashboardCommentPreview();
+  } catch (err) {
+    showToast('Failed to update comment template: ' + err.message, 'error');
+  }
+}
+
+async function removeCommentTemplateFromDashboard() {
+  const select = document.getElementById('dashCommentSelect');
+  const tId = select ? select.value : '';
+  if (!tId) {
+    showToast('Pick a comment template from the dropdown first, then click Remove.', 'warning');
+    return;
+  }
+  const tpl = state.savedComments.find(c => c.id === parseInt(tId, 10));
+  const label = tpl ? tpl.title : 'this template';
+  if (!confirm(`Delete comment template "${label}"? This cannot be undone.`)) return;
+
+  try {
+    const res = await fetch(`${API_BASE}/comments/${tId}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error(await res.text());
+    showToast('Comment template removed.', 'success');
+    await loadSavedComments();
+    if (select) select.value = '';
+    updateDashboardCommentPreview();
+  } catch (err) {
+    showToast('Failed to remove comment template: ' + err.message, 'error');
+  }
+}
+
 // ---------------------------------------------------------------------------
 // 14. Dashboard Pipeline & Scheduling Control
 // ---------------------------------------------------------------------------

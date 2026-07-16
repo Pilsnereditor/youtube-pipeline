@@ -59,4 +59,30 @@ router.delete('/:id', (req, res) => {
   }
 });
 
+/**
+ * PUT /api/comments/:id — Update an existing comment template
+ * Body: { title, text }
+ */
+router.put('/:id', (req, res) => {
+  const userId = req.session.userId;
+  const { id } = req.params;
+  const { title, text } = req.body;
+  if (!title || !text) {
+    return res.status(400).json({ error: 'title and text are required.' });
+  }
+  try {
+    const result = run(
+      'UPDATE saved_comments SET title = @title, text = @text WHERE id = @id AND user_id = @userId',
+      { id, userId, title: title.trim(), text: text.trim() }
+    );
+    if (result.changes === 0) {
+      return res.status(404).json({ error: 'Comment template not found.' });
+    }
+    const comment = queryOne('SELECT * FROM saved_comments WHERE id = @id AND user_id = @userId', { id, userId });
+    res.json(comment);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 export default router;

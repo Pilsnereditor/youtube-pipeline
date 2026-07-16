@@ -62,6 +62,10 @@
       <span class="tab-emoji">🎬</span>
       <span class="tab-label">Media Library</span>
     </button>
+    <button class="tab-btn" data-tab="studio" onclick="switchTab('studio')">
+      <span class="tab-emoji">🎯</span>
+      <span class="tab-label">Studio Videos</span>
+    </button>
     <button class="tab-btn" data-tab="schedule" onclick="switchTab('schedule')">
       <span class="tab-emoji">📅</span>
       <span class="tab-label">Schedule</span>
@@ -460,6 +464,28 @@
     </div>
 
     <!-- ─── TAB 4: SCHEDULE ──────────────────────────────── -->
+    <div id="tab-studio" class="tab-content">
+      <div class="tab-header">
+        <div>
+          <h2>Studio Videos</h2>
+          <p class="subtitle">Videos already uploaded to YouTube Studio that still need scheduling. Use this to recover an upload that didn't get scheduled.</p>
+        </div>
+      </div>
+
+      <div class="glass-light" style="margin-bottom:15px; padding:12px; border-radius:8px; display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+        <label style="font-weight:600; font-size:0.95rem; color:var(--text-bright);">📺 Channel:</label>
+        <select id="studioChannelSelect" class="form-input" style="width:auto; min-width:250px; margin-bottom:0;" onchange="loadStudioDrafts()">
+          <option value="">-- Select a browser-mode channel --</option>
+        </select>
+        <button class="btn btn-secondary" onclick="loadStudioDrafts()">🔄 Refresh</button>
+        <span class="hint" style="margin-left:auto; font-size:0.85rem; color:var(--text-muted);">Reads live from YouTube Studio — can take 20–40s per channel</span>
+      </div>
+
+      <div id="studioDraftsGrid" style="display:grid; grid-template-columns:repeat(auto-fill,minmax(280px,1fr)); gap:16px;">
+        <p class="muted" style="grid-column:1/-1;">Select a channel above to load its Studio drafts.</p>
+      </div>
+    </div>
+
     <div id="tab-schedule" class="tab-content">
       <div class="tab-header">
         <div>

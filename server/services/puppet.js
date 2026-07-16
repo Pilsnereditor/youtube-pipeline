@@ -1278,6 +1278,9 @@ export async function uploadVideoBrowser(channelId, opts, logFn = console.log) {
       throw new Error('Could not find or click the "Upload videos" option in the Create dropdown.');
     }
 
+    if (!opts.videoPath || !fs.existsSync(opts.videoPath)) {
+      throw new Error(`Video file not found on server: ${opts.videoPath || '(empty path)'} - it may have been moved or cleaned up before this scheduled upload ran.`);
+    }
     logFn('[Puppet] File picker open. Uploading video file...');
     const fileChooserPromise = page.waitForFileChooser({ timeout: 30000 });
     // Click select files button inside the file picker modal
@@ -3465,6 +3468,107 @@ export async function updateChannelBrandingBrowser(channelId, opts, logFn = cons
  * @param {number} channelId
  * @param {function} logFn
  */
+/**
+ * List videos on a channel's YouTube Studio "Content" page that still need scheduling
+ * (draft / private / unlisted / unknown — i.e. NOT already scheduled or public). Powers the
+ * "Studio Videos" recovery tab so a video that uploaded but failed to schedule can be scheduled
+ * manually. Best-effort DOM scrape; throws only on hard failures (not logged in, page never loads).
+ * @param {number} channelId
+ * @param {function} logFn
+ * @returns {Promise<Array<{videoId:string,title:string,thumbnail:string,status:string}>>}
+ */
+export async function listStudioDraftsBrowser(channelId, logFn = console.log) {
+  await closeBrowserSession(channelId);
+  try { await stopVncSessionForProfile(getProfilePath(channelId)); } catch (e) {}
+  await new Promise(r => setTimeout(r, 800));
+
+  const profilePath = getProfilePath(channelId);
+  const chromePath = getChromePath();
+  try {
+    for (const f of ['SingletonLock', 'SingletonSocket', 'SingletonCookie']) {
+      const lp = path.join(profilePath, f);
+      if (fs.existsSync(lp)) fs.unlinkSync(lp);
+    }
+  } catch (e) {}
+
+  const channel = queryOne('SELECT * FROM channels WHERE id = @id', { id: channelId });
+  if (!channel) throw new Error(`Channel ${channelId} not found.`);
+  const proxyConfig = resolveChannelProxy(channel);
+  const proxyUrl = proxyConfig ? proxyConfig.proxyUrl : null;
+
+  const runHeadless = process.env.PUPPET_HEADLESS !== 'false';
+  logFn(`[Puppet Studio] Listing drafts for channel ${channelId} (headless: ${runHeadless})`);
+  const browser = await launchBrowserWithRetry(chromePath, profilePath, runHeadless, 3, 3000, proxyUrl);
+
+  let page;
+  try {
+    page = await browser.newPage();
+    if (proxyConfig && (proxyConfig.username || proxyConfig.password)) {
+      await page.authenticate({ username: proxyConfig.username || '', password: proxyConfig.password || '' });
+    }
+    await page.setExtraHTTPHeaders({ 'Accept-Language': 'en-US,en;q=0.9' });
+    await page.setUserAgent(getUserAgent());
+    await page.setViewport({ width: 1280, height: 900 });
+    await page.evaluateOnNewDocument(() => { Object.defineProperty(navigator, 'webdriver', { get: () => false }); });
+
+    const targetUrl = channel.youtube_channel_id
+      ? `https://studio.youtube.com/channel/${channel.youtube_channel_id}/videos/upload?hl=en&persist_hl=1`
+      : `https://studio.youtube.com/channel/videos?hl=en&persist_hl=1`;
+    logFn(`[Puppet Studio] Navigating to: ${targetUrl}`);
+    await page.goto(targetUrl, { waitUntil: 'networkidle2', timeout: 60000 });
+    if (page.url().includes('accounts.google.com')) {
+      throw new Error('Not logged in for this channel. Set up the browser session in channel settings first.');
+    }
+
+    // Patient wait for the video rows to render (slow proxies can be slow to paint the list).
+    let rowsReady = false;
+    for (let a = 1; a <= 4 && !rowsReady; a++) {
+      rowsReady = await page.waitForSelector('ytcp-video-row', { timeout: 20000 }).then(() => true).catch(() => false);
+      if (!rowsReady && a < 4) {
+        logFn(`[Puppet Studio] Video rows not ready (attempt ${a}/4), waiting...`);
+        await new Promise(r => setTimeout(r, 4000));
+      }
+    }
+    await new Promise(r => setTimeout(r, 2500));
+
+    const rows = await page.evaluate(() => {
+      const norm = (s) => (s || '').replace(/\s+/g, ' ').trim();
+      const out = [];
+      for (const row of Array.from(document.querySelectorAll('ytcp-video-row'))) {
+        let videoId = '';
+        const a = row.querySelector('a[href*="/video/"]');
+        if (a) { const m = (a.href || '').match(/\/video\/([a-zA-Z0-9_-]{11})/); if (m) videoId = m[1]; }
+        let title = '';
+        const t = row.querySelector('#video-title, a#video-title, #video-title-container a, #video-title-container');
+        if (t) title = norm(t.textContent);
+        let thumbnail = '';
+        const img = row.querySelector('img');
+        if (img) thumbnail = img.src || '';
+        const rowText = norm(row.textContent).toLowerCase();
+        let status = 'unknown';
+        if (/schedul|zamanlan/.test(rowText)) status = 'scheduled';
+        else if (/draft|taslak/.test(rowText)) status = 'draft';
+        else if (/public|herkese/.test(rowText)) status = 'public';
+        else if (/unlisted|liste dış/.test(rowText)) status = 'unlisted';
+        else if (/private|özel/.test(rowText)) status = 'private';
+        if (videoId) out.push({ videoId, title, thumbnail, status });
+      }
+      return out;
+    });
+
+    await browser.close();
+    logFn(`[Puppet Studio] Found ${rows.length} rows total on the page.`);
+    // Keep only videos that still need scheduling (exclude already-scheduled and already-public).
+    const needs = rows.filter(r => r.status !== 'scheduled' && r.status !== 'public');
+    logFn(`[Puppet Studio] ${needs.length} of them still need scheduling.`);
+    return needs;
+  } catch (err) {
+    logFn(`[Puppet Studio] Error listing drafts: ${err.message}`);
+    try { await browser.close(); } catch (e) {}
+    throw err;
+  }
+}
+
 export async function syncChannelWithYouTubeBrowser(channelId, logFn = console.log) {
   await closeBrowserSession(channelId);
   try { await stopVncSessionForProfile(getProfilePath(channelId)); } catch (e) {}

@@ -24,6 +24,7 @@ import settingsRouter from './routes/settings.js';
 import aiRouter from './routes/ai.js';
 import commentsRouter from './routes/comments.js';
 import schedulePresetsRouter from './routes/schedulePresets.js';
+import studioRouter from './routes/studio.js';
 import proxyPoolRouter from './routes/proxyPool.js';
 import { createPipelineRouter } from './routes/pipeline.js';
 
@@ -318,6 +319,7 @@ app.use('/api/settings', settingsRouter);
 app.use('/api/ai', aiRouter);
 app.use('/api/comments', commentsRouter);
 app.use('/api/schedule-presets', schedulePresetsRouter);
+app.use('/api/studio', studioRouter);
 app.use('/api/pipeline', pipelineRouter);
 app.use('/api/proxy-pool', proxyPoolRouter);
 

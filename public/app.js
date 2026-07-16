@@ -446,6 +446,119 @@ function switchTab(tabId) {
   } else if (tabId === 'settings') {
     loadYtProfiles();
     loadProxyPool();
+  } else if (tabId === 'studio') {
+    populateStudioChannels();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Studio Videos — recover videos already uploaded to YouTube Studio but not scheduled
+// ---------------------------------------------------------------------------
+state.studioDrafts = [];
+
+function populateStudioChannels() {
+  const sel = document.getElementById('studioChannelSelect');
+  if (!sel) return;
+  const cur = sel.value;
+  const browserChannels = (state.channels || []).filter(c => c.upload_mode === 'browser');
+  sel.innerHTML = '<option value="">-- Select a browser-mode channel --</option>' +
+    browserChannels.map(c => `<option value="${c.id}">${escapeHTML(c.name)}</option>`).join('');
+  if (cur) sel.value = cur;
+}
+
+async function loadStudioDrafts() {
+  const sel = document.getElementById('studioChannelSelect');
+  const grid = document.getElementById('studioDraftsGrid');
+  if (!sel || !grid) return;
+  const channelId = sel.value;
+  if (!channelId) {
+    grid.innerHTML = '<p class="muted" style="grid-column:1/-1;">Select a channel above to load its Studio drafts.</p>';
+    return;
+  }
+  grid.innerHTML = '<p class="muted" style="grid-column:1/-1;">⏳ Reading YouTube Studio… this can take 20–40s.</p>';
+  try {
+    const res = await fetch(`${API_BASE}/studio/${channelId}/drafts`);
+    if (!res.ok) throw new Error(await res.text());
+    const drafts = await res.json();
+    renderStudioDrafts(drafts);
+  } catch (err) {
+    grid.innerHTML = `<p class="muted" style="grid-column:1/-1; color:var(--accent-red);">Couldn't read Studio: ${escapeHTML(err.message)}</p>`;
+  }
+}
+
+function renderStudioDrafts(drafts) {
+  const grid = document.getElementById('studioDraftsGrid');
+  if (!grid) return;
+  state.studioDrafts = Array.isArray(drafts) ? drafts : [];
+  if (!state.studioDrafts.length) {
+    grid.innerHTML = '<p class="muted" style="grid-column:1/-1;">✅ No unscheduled drafts found on this channel.</p>';
+    return;
+  }
+  const d = new Date(Date.now() + 24 * 60 * 60 * 1000);
+  const defDate = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+
+  grid.innerHTML = state.studioDrafts.map((v, i) => {
+    const thumbInner = v.thumbnail
+      ? `<img src="${escapeHTML(v.thumbnail)}" style="width:100%; height:100%; object-fit:cover;" onerror="this.style.display='none'">`
+      : 'No thumbnail';
+    const badgeColor = v.status === 'draft' ? 'var(--accent-red)' : 'var(--text-secondary)';
+    return `
+    <div class="glass-light" style="border-radius:10px; overflow:hidden; border:1px solid rgba(255,255,255,0.05);">
+      <div style="height:150px; background:rgba(255,255,255,0.04); display:flex; align-items:center; justify-content:center; color:var(--text-muted); font-size:0.8rem;">${thumbInner}</div>
+      <div style="padding:12px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:6px;">
+          <span style="font-size:0.7rem; font-weight:700; text-transform:uppercase; letter-spacing:0.5px; color:${badgeColor};">${escapeHTML(v.status || 'unknown')}</span>
+          <span style="font-size:0.68rem; color:var(--text-muted); font-family:monospace;">${escapeHTML(v.videoId)}</span>
+        </div>
+        <p style="font-weight:600; font-size:0.88rem; margin:0 0 10px; line-height:1.3; min-height:2.3em; max-height:2.3em; overflow:hidden;">${escapeHTML(v.title || '(untitled draft)')}</p>
+        <button class="btn btn-primary" style="width:100%;" onclick="toggleStudioScheduleForm(${i})">📅 Schedule this video</button>
+        <div id="studioForm-${i}" style="display:none; margin-top:10px; border-top:1px solid rgba(255,255,255,0.06); padding-top:10px;">
+          <label style="font-size:0.72rem; color:var(--text-secondary);">Date</label>
+          <input type="date" id="studioDate-${i}" class="form-input" value="${defDate}" style="margin-bottom:6px; padding:6px; font-size:0.85rem;">
+          <label style="font-size:0.72rem; color:var(--text-secondary);">Time</label>
+          <input type="time" id="studioTime-${i}" class="form-input" value="21:00" style="margin-bottom:6px; padding:6px; font-size:0.85rem;">
+          <label style="display:flex; align-items:center; gap:6px; font-size:0.8rem; margin-bottom:6px;">
+            <input type="checkbox" id="studioPrem-${i}" checked> Publish as Premiere
+          </label>
+          <textarea id="studioComment-${i}" class="form-input" rows="2" placeholder="Auto-comment (optional). {title}, {videoId}" style="margin-bottom:8px; padding:6px; font-size:0.82rem;"></textarea>
+          <button class="btn btn-primary" style="width:100%;" onclick="submitStudioSchedule(${i}, event)">Confirm Schedule</button>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function toggleStudioScheduleForm(i) {
+  const f = document.getElementById(`studioForm-${i}`);
+  if (f) f.style.display = (f.style.display === 'none' || !f.style.display) ? 'block' : 'none';
+}
+
+async function submitStudioSchedule(i, ev) {
+  const sel = document.getElementById('studioChannelSelect');
+  const channelId = sel ? sel.value : '';
+  const v = state.studioDrafts[i];
+  if (!channelId || !v) return;
+  const date = document.getElementById(`studioDate-${i}`).value;
+  const time = document.getElementById(`studioTime-${i}`).value;
+  const isPremiere = document.getElementById(`studioPrem-${i}`).checked;
+  const comment = document.getElementById(`studioComment-${i}`).value;
+  if (!date || !time) { showToast('Pick a date and time first.', 'warning'); return; }
+  const scheduledAt = `${date}T${time}:00`;
+  const btn = ev ? ev.target : null;
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Scheduling… (~30s)'; }
+  try {
+    const res = await fetch(`${API_BASE}/studio/${channelId}/schedule`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ videoId: v.videoId, title: v.title, scheduledAt, isPremiere, comment })
+    });
+    if (!res.ok) throw new Error(await res.text());
+    const out = await res.json();
+    showToast(out.warning ? ('Scheduled. ' + out.warning) : 'Scheduled on YouTube!', out.warning ? 'warning' : 'success');
+    loadStudioDrafts();
+  } catch (err) {
+    showToast('Failed to schedule: ' + err.message, 'error');
+    if (btn) { btn.disabled = false; btn.textContent = 'Confirm Schedule'; }
   }
 }
 

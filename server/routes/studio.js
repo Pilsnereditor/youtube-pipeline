@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { queryOne, run } from '../db/database.js';
-import { listStudioDraftsBrowser, rescheduleVideoBrowser, withChannelLock } from '../services/puppet.js';
+import { listStudioDraftsBrowser, scheduleStudioDraftBrowser, rescheduleVideoBrowser, withChannelLock } from '../services/puppet.js';
 
 const router = Router();
 
@@ -39,7 +39,7 @@ router.get('/:channelId/drafts', async (req, res) => {
 router.post('/:channelId/schedule', async (req, res) => {
   const userId = req.session.userId;
   const channelId = Number(req.params.channelId);
-  const { videoId, title, scheduledAt, isPremiere, comment } = req.body;
+  const { videoId, title, scheduledAt, isPremiere, comment, status } = req.body;
 
   if (!ownsChannel(channelId, userId)) {
     return res.status(404).json({ error: 'Channel not found or does not belong to you.' });
@@ -50,9 +50,24 @@ router.post('/:channelId/schedule', async (req, res) => {
 
   const prem = isPremiere ? 1 : 0;
 
-  // 1) Apply the schedule on YouTube (edit-page reschedule of an existing video — no re-upload).
+  // 1) Apply the schedule on YouTube (no re-upload). A DRAFT has no Visibility control on its edit
+  //    page, so it must go through the "Edit draft" wizard; other videos use the edit-page path. If
+  //    the edit-page path fails because the Visibility control isn't present, fall back to the wizard.
   try {
-    await withChannelLock(channelId, () => rescheduleVideoBrowser(channelId, videoId, scheduledAt, prem, null));
+    if (status === 'draft') {
+      await withChannelLock(channelId, () => scheduleStudioDraftBrowser(channelId, videoId, scheduledAt, prem, console.log));
+    } else {
+      try {
+        await withChannelLock(channelId, () => rescheduleVideoBrowser(channelId, videoId, scheduledAt, prem, null));
+      } catch (editErr) {
+        if (/visibility trigger|visibility editor|not editable/i.test(editErr.message || '')) {
+          console.warn('[Studio] Edit-page schedule failed (likely a draft); trying the Edit-draft wizard:', editErr.message);
+          await withChannelLock(channelId, () => scheduleStudioDraftBrowser(channelId, videoId, scheduledAt, prem, console.log));
+        } else {
+          throw editErr;
+        }
+      }
+    }
   } catch (err) {
     return res.status(500).json({ error: 'Failed to schedule on YouTube: ' + err.message });
   }

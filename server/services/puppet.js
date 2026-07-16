@@ -3580,6 +3580,150 @@ export async function listStudioDraftsBrowser(channelId, logFn = console.log) {
   }
 }
 
+/**
+ * Schedule a DRAFT that already exists on Studio by driving the "Edit draft" wizard (the same
+ * upload dialog used during upload) — a draft's normal edit page has no Visibility control, so the
+ * edit-page reschedule cannot work on it. Reuses the tested dialog helpers. Does NOT re-upload.
+ * Hard guard: never clicks the primary button unless it is the "Schedule" button (so it can never
+ * accidentally publish the video immediately).
+ */
+export async function scheduleStudioDraftBrowser(channelId, videoId, scheduledAt, isPremiere = false, logFn = console.log) {
+  await closeBrowserSession(channelId);
+  try { await stopVncSessionForProfile(getProfilePath(channelId)); } catch (e) {}
+  await new Promise(r => setTimeout(r, 800));
+
+  const profilePath = getProfilePath(channelId);
+  const chromePath = getChromePath();
+  try {
+    for (const f of ['SingletonLock', 'SingletonSocket', 'SingletonCookie']) {
+      const lp = path.join(profilePath, f);
+      if (fs.existsSync(lp)) fs.unlinkSync(lp);
+    }
+  } catch (e) {}
+
+  const channel = queryOne('SELECT * FROM channels WHERE id = @id', { id: channelId });
+  if (!channel) throw new Error(`Channel ${channelId} not found.`);
+  const proxyConfig = resolveChannelProxy(channel);
+  const proxyUrl = proxyConfig ? proxyConfig.proxyUrl : null;
+  const opts = { scheduledAt, isPremiere: isPremiere ? 1 : 0 };
+
+  const runHeadless = process.env.PUPPET_HEADLESS !== 'false';
+  logFn(`[Puppet Draft] Scheduling draft ${videoId} on channel ${channelId} (headless: ${runHeadless})`);
+  const browser = await launchBrowserWithRetry(chromePath, profilePath, runHeadless, 3, 3000, proxyUrl);
+
+  let page;
+  try {
+    page = await browser.newPage();
+    if (proxyConfig && (proxyConfig.username || proxyConfig.password)) {
+      await page.authenticate({ username: proxyConfig.username || '', password: proxyConfig.password || '' });
+    }
+    await page.setExtraHTTPHeaders({ 'Accept-Language': 'en-US,en;q=0.9' });
+    await page.setUserAgent(getUserAgent());
+    await page.setViewport({ width: 1280, height: 900 });
+    await page.evaluateOnNewDocument(() => { Object.defineProperty(navigator, 'webdriver', { get: () => false }); });
+
+    const targetUrl = channel.youtube_channel_id
+      ? `https://studio.youtube.com/channel/${channel.youtube_channel_id}/videos/upload?hl=en&persist_hl=1`
+      : `https://studio.youtube.com/channel/videos?hl=en&persist_hl=1`;
+    logFn(`[Puppet Draft] Opening content page: ${targetUrl}`);
+    await page.goto(targetUrl, { waitUntil: 'networkidle2', timeout: 60000 });
+    if (page.url().includes('accounts.google.com')) {
+      throw new Error('Not logged in for this channel. Set up the browser session first.');
+    }
+
+    let rowsReady = false;
+    for (let a = 1; a <= 4 && !rowsReady; a++) {
+      rowsReady = await page.waitForSelector('ytcp-video-row', { timeout: 20000 }).then(() => true).catch(() => false);
+      if (!rowsReady && a < 4) await new Promise(r => setTimeout(r, 4000));
+    }
+    await new Promise(r => setTimeout(r, 2000));
+
+    // Tag the "Edit draft" control on the row that matches this video id, then TRUSTED-click it.
+    const tagged = await page.evaluate((vid) => {
+      const rows = Array.from(document.querySelectorAll('ytcp-video-row'));
+      for (const row of rows) {
+        const hasId = Array.from(row.querySelectorAll('a,img')).some(e => ((e.href || e.src || '')).includes(vid));
+        if (!hasId) continue;
+        const cands = Array.from(row.querySelectorAll('button, a, ytcp-button, [role="button"]'));
+        const editBtn = cands.find(b => /edit draft|taslağı düzenle/i.test(b.textContent || ''));
+        const target = editBtn || row.querySelector('a#video-title, #video-title a, #thumbnail, a');
+        if (target) { target.setAttribute('data-gag-target', '1'); return true; }
+      }
+      return false;
+    }, videoId);
+    if (!tagged) throw new Error('Could not find this draft on the content page (it may have been published or removed).');
+
+    const editHandle = await page.$('[data-gag-target="1"]');
+    if (!editHandle) throw new Error('Could not access the Edit draft button.');
+    await editHandle.click();
+    logFn('[Puppet Draft] Clicked Edit draft; waiting for the upload dialog...');
+
+    let dialogReady = false;
+    for (let a = 1; a <= 4 && !dialogReady; a++) {
+      dialogReady = await page.waitForSelector('ytcp-uploads-dialog, #details, ytcp-uploads-details', { timeout: 20000 }).then(() => true).catch(() => false);
+      if (!dialogReady && a < 4) await new Promise(r => setTimeout(r, 3000));
+    }
+    if (!dialogReady) throw new Error('The Edit draft dialog did not open (slow proxy, or the draft is not editable).');
+    await new Promise(r => setTimeout(r, 2500));
+
+    // Details -> Video elements -> Checks -> Visibility (mirror upload flow: up to 3 Next).
+    for (let i = 1; i <= 3; i++) {
+      const nb = await page.waitForSelector('#next-button', { timeout: 15000 }).catch(() => null);
+      if (!nb) { logFn(`[Puppet Draft] No #next-button at step ${i} - assuming already at Visibility.`); break; }
+      await safeClick(page, nb, { scroll: true });
+      await new Promise(r => setTimeout(r, 1500));
+    }
+
+    logFn('[Puppet Draft] Activating Schedule mode + applying date/time...');
+    await activateScheduleMode(page, logFn);
+    await new Promise(r => setTimeout(r, 800));
+    await reapplyDateTime(page, opts, logFn);
+    await new Promise(r => setTimeout(r, 800));
+
+    if (opts.isPremiere) {
+      logFn('[Puppet Draft] Setting premiere...');
+      await togglePremiere(page, true, logFn);
+      await new Promise(r => setTimeout(r, 1000));
+      if (!scheduleIsIntact(await readScheduleValues(page), opts).ok) {
+        await reapplyDateTime(page, opts, logFn);
+        await new Promise(r => setTimeout(r, 800));
+      }
+    }
+
+    let { handle: primaryBtn, id: primaryId } = await getPrimaryButtonHandle(page);
+    for (let attempt = 1; attempt <= 2 && !/schedule/i.test(primaryId || ''); attempt++) {
+      logFn(`[Puppet Draft] Primary button is "${primaryId}" (not schedule) - re-activating (attempt ${attempt}).`);
+      await activateScheduleMode(page, logFn);
+      if (!scheduleIsIntact(await readScheduleValues(page), opts).ok) await reapplyDateTime(page, opts, logFn);
+      await new Promise(r => setTimeout(r, 1000));
+      if (primaryBtn) { await primaryBtn.dispose(); }
+      ({ handle: primaryBtn, id: primaryId } = await getPrimaryButtonHandle(page));
+    }
+    if (!primaryBtn) throw new Error('Could not find the Schedule button in the draft dialog.');
+    if (!/schedule/i.test(primaryId || '')) {
+      throw new Error(`Draft would not enter Schedule mode (button stayed "${primaryId}") - not committing, to avoid publishing immediately.`);
+    }
+
+    logFn(`[Puppet Draft] Clicking "${primaryId}" (trusted)...`);
+    await trustedClickHandle(page, primaryBtn, logFn);
+    try { await primaryBtn.dispose(); } catch (e) {}
+    await new Promise(r => setTimeout(r, 4000));
+
+    logFn('[Puppet Draft] Schedule committed. Closing browser.');
+    await browser.close();
+    return { videoId, scheduled: true };
+  } catch (err) {
+    logFn(`[Puppet Draft] Error scheduling draft: ${err.message}`);
+    try {
+      const sp = path.join(profilePath, 'puppet_draft_error.png');
+      await page.screenshot({ path: sp });
+      logFn(`[Puppet Draft] Saved error screenshot: ${sp}`);
+    } catch (e) {}
+    try { await browser.close(); } catch (e) {}
+    throw err;
+  }
+}
+
 export async function syncChannelWithYouTubeBrowser(channelId, logFn = console.log) {
   await closeBrowserSession(channelId);
   try { await stopVncSessionForProfile(getProfilePath(channelId)); } catch (e) {}

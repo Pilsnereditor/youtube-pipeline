@@ -550,7 +550,7 @@ async function submitStudioSchedule(i, ev) {
     const res = await fetch(`${API_BASE}/studio/${channelId}/schedule`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ videoId: v.videoId, title: v.title, scheduledAt, isPremiere, comment })
+      body: JSON.stringify({ videoId: v.videoId, title: v.title, scheduledAt, isPremiere, comment, status: v.status })
     });
     if (!res.ok) throw new Error(await res.text());
     const out = await res.json();

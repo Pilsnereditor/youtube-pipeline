@@ -497,7 +497,7 @@ router.post('/:id/retry', (req, res) => {
 
   try {
     // Reset status to pending and clear retry counters
-    run("UPDATE scheduled_posts SET status = 'pending', retry_count = 0, next_retry_at = NULL, error_message = NULL WHERE id = @id", { id });
+    run("UPDATE scheduled_posts SET status = 'pending', retry_count = 0, schedule_defer_count = 0, next_retry_at = NULL, error_message = NULL WHERE id = @id", { id });
     
     const updated = queryOne('SELECT * FROM scheduled_posts WHERE id = @id', { id });
     

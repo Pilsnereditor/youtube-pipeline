@@ -216,6 +216,18 @@ export function initDb() {
     console.error(`[DB Migration] Error adding comment retry columns:`, err);
   }
 
+  // Dedicated counter for schedule-apply retries (3x at 15/30/60m) — kept separate from retry_count
+  // (general failures) so the two retry budgets never interfere.
+  try {
+    const pragma2 = db.prepare(`PRAGMA table_info(scheduled_posts)`).all();
+    if (!pragma2.some(col => col.name === 'schedule_defer_count')) {
+      db.prepare(`ALTER TABLE scheduled_posts ADD COLUMN schedule_defer_count INTEGER DEFAULT 0`).run();
+      console.log(`[DB Migration] Added schedule_defer_count column to scheduled_posts.`);
+    }
+  } catch (err) {
+    console.error(`[DB Migration] Error adding schedule_defer_count column:`, err);
+  }
+
   // Self-healing migration for pipeline_runs constraints
   try {
     const schemaInfo = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='pipeline_runs'").get();

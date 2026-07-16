@@ -312,11 +312,15 @@ export async function processPost(post) {
     };
     emitProgress(8, 'Starting upload…');
 
+    // Declared at processPost scope (NOT inside the browser branch) so the API branch and the
+    // completion guard below can both see them — previously these were block-scoped, which threw
+    // ReferenceError on every browser upload and silently broke the "never complete a draft" gate.
+    const intendedToSchedule = !!post.scheduled_at;
+    const scheduleStillPossible = post.scheduled_at && new Date(post.scheduled_at).getTime() > Date.now() + 60 * 1000;
+    let scheduleConfirmed = false;   // becomes true ONLY when the schedule is actually applied
+
     let videoId = '';
     if (channel.upload_mode === 'browser') {
-      const intendedToSchedule = !!post.scheduled_at;
-      const scheduleStillPossible = post.scheduled_at && new Date(post.scheduled_at).getTime() > Date.now() + 60 * 1000;
-      let scheduleConfirmed = false;   // becomes true ONLY when the schedule is actually applied
 
       if (post.youtube_video_id) {
         // A previous attempt already uploaded this video. Do NOT upload it again (that would
@@ -479,46 +483,50 @@ export async function processPost(post) {
     // retry takes the "already uploaded" branch and never re-uploads a duplicate.
     const _vidRow = queryOne('SELECT youtube_video_id FROM scheduled_posts WHERE id = @id', { id: post.id });
     const _transient = /visibility editor|still processing|processing delayed|will retry automatically|detached frame|execution context was destroyed|target closed/i.test(err.message || '');
-    if (_transient && _vidRow && _vidRow.youtube_video_id) {
+    // Any failure AFTER the video exists on YouTube funnels here (still-processing, hard-guard,
+    // etc.) so it ends honestly as 'uploaded but not scheduled' rather than re-uploading a duplicate.
+    if (_vidRow && _vidRow.youtube_video_id) {
       // The video is uploaded, but the schedule couldn't be applied yet — almost always because
       // YouTube is still PROCESSING it. Slow/proxied uploads take a long time to process, so the edit
       // page's visibility editor isn't available yet ("Visibility editor not ready" in the logs).
       // Keep retrying at a sensible interval so the schedule applies AS SOON AS processing finishes.
       // Do NOT fake-complete — that would leave an unscheduled private draft on YouTube that never
       // publishes. The target publish time is normally days out, so there is plenty of time to retry.
-      const transientCount = (post.retry_count || 0) + 1;
-      const MAX_TRANSIENT_DEFERS = 24;      // ~4 hours at 10-min intervals
-      const RETRY_MINUTES = 10;
+      // Recovery policy: retry applying the schedule 3 times at 15 / 30 / 60 min. Then STOP and leave
+      // the post visibly in the queue as an ERROR ("uploaded but NOT scheduled") with a manual Retry
+      // button. Never fake-complete. Uses a DEDICATED counter (schedule_defer_count) so it never
+      // collides with handlePostFailure's retry_count budget.
+      const INTERVALS = [15, 30, 60];                 // minutes before retry #1 / #2 / #3
+      const prior = post.schedule_defer_count || 0;   // 0,1,2 = retries already spent
       const schedMs = post.scheduled_at ? new Date(post.scheduled_at).getTime() : 0;
       const scheduledTimePassed = schedMs && schedMs <= Date.now();
 
-      if (transientCount >= MAX_TRANSIENT_DEFERS || scheduledTimePassed) {
-        // Genuinely could not apply the schedule (video never finished processing, or its publish
-        // time already passed). Mark ERROR — NOT complete — so it's honest and the user can fix it.
+      if (prior >= INTERVALS.length || scheduledTimePassed) {
         run(
           `UPDATE scheduled_posts SET status = 'error', next_retry_at = NULL,
-                  error_message = 'Video uploaded to YouTube, but the schedule could not be applied automatically (YouTube kept the video in "processing" too long). Open it in YouTube Studio and set the publish time / premiere manually.'
+                  error_message = 'Video uploaded to YouTube but NOT scheduled — automatic scheduling failed after 3 attempts. Press Retry, or set the publish time / premiere manually in YouTube Studio.'
             WHERE id = @id`,
           { id: post.id }
         );
-        notify(`Post ${post.id}: video ${_vidRow.youtube_video_id} uploaded but schedule NOT applied after ${transientCount} attempts — marked error for manual scheduling.`);
+        notify(`Post ${post.id}: video ${_vidRow.youtube_video_id} uploaded but schedule NOT applied after ${prior} retries — left in queue as error (manual Retry available).`);
         if (broadcastFn) {
-          broadcastFn({ type: 'schedule:error', postId: post.id, error: 'Uploaded but not scheduled — set the publish time manually in YouTube Studio.' }, post.user_id);
+          broadcastFn({ type: 'schedule:error', postId: post.id, error: 'Uploaded but NOT scheduled — press Retry, or set the time manually in YouTube Studio.' }, post.user_id);
         }
         return;
       }
 
+      const waitMin = INTERVALS[prior];
       const tzOff = new Date().getTimezoneOffset() * 60000;
-      const retryAt = new Date(Date.now() + RETRY_MINUTES * 60 * 1000 - tzOff).toISOString().slice(0, 19);
+      const retryAt = new Date(Date.now() + waitMin * 60 * 1000 - tzOff).toISOString().slice(0, 19);
+      const attemptMsg = `Video uploaded — waiting to apply the schedule (attempt ${prior + 1}/3). Retrying automatically.`;
       run(
-        `UPDATE scheduled_posts SET status = 'pending', retry_count = @rc, next_retry_at = @retryAt,
-                error_message = 'Video uploaded — waiting for YouTube to finish processing so the schedule can be applied. Retrying automatically.'
+        `UPDATE scheduled_posts SET status = 'pending', schedule_defer_count = @n, next_retry_at = @retryAt, error_message = @msg
           WHERE id = @id`,
-        { id: post.id, rc: transientCount, retryAt }
+        { id: post.id, n: prior + 1, retryAt, msg: attemptMsg }
       );
-      notify(`Post ${post.id} deferred (attempt ${transientCount}/${MAX_TRANSIENT_DEFERS}, next in ${RETRY_MINUTES}m): YouTube still processing — will apply the schedule once it's ready.`);
+      notify(`Post ${post.id} deferred (attempt ${prior + 1}/3, next in ${waitMin}m): applying the schedule once YouTube is ready.`);
       if (broadcastFn) {
-        broadcastFn({ type: 'schedule:deferred', postId: post.id, title: post.title, message: 'Video uploaded — waiting for YouTube to finish processing to apply the schedule…' }, post.user_id);
+        broadcastFn({ type: 'schedule:deferred', postId: post.id, title: post.title, message: `Video uploaded — waiting to apply the schedule (attempt ${prior + 1}/3)…` }, post.user_id);
       }
       return;
     }

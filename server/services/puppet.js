@@ -987,12 +987,96 @@ async function togglePremiere(page, desired, logFn = console.log) {
   }
 }
 
-async function getPrimaryButtonId(page) {
-  return await page.evaluate(() => {
-    const b = document.querySelector('#schedule-button, #done-button, #publish-button, #save-button')
-      || document.querySelector('ytcp-button[id*="schedule"], ytcp-button[id*="done"], ytcp-button[id*="save"]');
-    return b ? (b.id || (b.getAttribute && b.getAttribute('id')) || '') : '';
+// ── Visible-button resolution + trusted clicks ─────────────────────────────────
+// querySelector('#a, #b') / waitForSelector('#a, #b') return the FIRST element in DOM order matching
+// ANY selector (not the first selector), with NO visibility filter. A hidden #done-button precedes
+// the visible #schedule-button in the uploads dialog, so old code read/CLICKED the wrong (hidden)
+// button → YouTube saved a private DRAFT. Always pick the VISIBLE, ENABLED button and click it TRUSTED.
+async function getPrimaryButtonHandle(page) {
+  const jsHandle = await page.evaluateHandle(() => {
+    function deep(sel, root = document, out = []) {
+      out.push(...root.querySelectorAll(sel));
+      for (const el of root.querySelectorAll('*')) if (el.shadowRoot) deep(sel, el.shadowRoot, out);
+      return out;
+    }
+    const cands = deep('#schedule-button, #done-button, #publish-button, #save-button, ' +
+      'ytcp-button[id*="schedule"], ytcp-button[id*="done"], ytcp-button[id*="publish"], ytcp-button[id*="save"]');
+    const enabled = el => !(el.disabled === true || el.hasAttribute('disabled') || el.getAttribute('aria-disabled') === 'true');
+    const visible = cands.filter(el => el && el.offsetParent !== null);
+    return visible.find(el => /schedule/i.test(el.id || '') && enabled(el))
+        || visible.find(enabled) || visible[0] || null;
   });
+  const el = jsHandle.asElement();
+  if (!el) { await jsHandle.dispose(); return { handle: null, id: '' }; }
+  const id = await el.evaluate(n => n.id || (n.getAttribute && n.getAttribute('id')) || '');
+  return { handle: el, id };
+}
+
+async function trustedClickHandle(page, handle, logFn = console.log) {
+  if (!handle) return false;
+  try {
+    await handle.evaluate(el => el.scrollIntoView({ block: 'center', inline: 'nearest' }));
+    await new Promise(r => setTimeout(r, 150));
+    await handle.click();
+    return true;
+  } catch (e) {
+    logFn(`[Puppet] Trusted click failed (${e.message}); trying inner node / untrusted.`);
+    try {
+      const inner = await handle.evaluateHandle(el =>
+        (el.shadowRoot && el.shadowRoot.querySelector('#button, [role="button"], button, #radio, [role="radio"], #checkbox')) || el);
+      const innerEl = inner.asElement();
+      if (innerEl) { try { await innerEl.click(); } catch (_) { await innerEl.evaluate(n => n.click()).catch(() => {}); } }
+      await inner.dispose();
+      return true;
+    } catch (e2) {
+      await handle.evaluate(el => el.click()).catch(() => {});
+      return false;
+    }
+  }
+}
+
+// Select the "Schedule" visibility option with a TRUSTED click and confirm the datetime picker opened.
+async function activateScheduleMode(page, logFn = console.log) {
+  const grabTarget = () => page.evaluateHandle(() => {
+    function deep(sel, root = document, out = []) {
+      out.push(...root.querySelectorAll(sel));
+      for (const el of root.querySelectorAll('*')) if (el.shadowRoot) deep(sel, el.shadowRoot, out);
+      return out;
+    }
+    const vis  = el => el && el.offsetParent !== null;
+    const norm = s => (s || '').trim().toLowerCase();
+    let t = deep('#schedule-radio-button, tp-yt-paper-radio-button, [role="radio"]')
+      .find(el => vis(el) && (/schedule/i.test(el.id || '') || /schedule|planla/.test(norm(el.textContent))));
+    if (!t) t = deep('ytcp-video-visibility-select *, #publish-from-private-non-sponsor-selector *')
+      .find(el => vis(el) && /^(schedule|planla)/.test(norm(el.textContent)) && el.children.length <= 3);
+    return t || null;
+  });
+  const pickerVisible = () => page.evaluate(() => {
+    function deep(sel, root = document, out = []) {
+      out.push(...root.querySelectorAll(sel));
+      for (const el of root.querySelectorAll('*')) if (el.shadowRoot) deep(sel, el.shadowRoot, out);
+      return out;
+    }
+    return deep('#datepicker-trigger, ytcp-datetime-picker, ytcp-visibility-scheduler ytcp-text-input')
+      .some(el => el && el.offsetParent !== null);
+  });
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const h = await grabTarget();
+    const el = h.asElement();
+    if (el) { await trustedClickHandle(page, el, logFn); await el.dispose(); }
+    await h.dispose();
+    await new Promise(r => setTimeout(r, 1500));
+    const picker = await pickerVisible();
+    logFn(`[Puppet] Schedule activation attempt ${attempt}: picker=${picker} button="${await getPrimaryButtonId(page)}"`);
+    if (picker) return true;
+  }
+  return false;
+}
+
+async function getPrimaryButtonId(page) {
+  const { handle, id } = await getPrimaryButtonHandle(page);
+  if (handle) await handle.dispose();
+  return id;
 }
 
 async function readScheduleValues(page) {
@@ -1002,9 +1086,20 @@ async function readScheduleValues(page) {
       for (const el of root.querySelectorAll('*')) if (el.shadowRoot) deep(sel, el.shadowRoot, out);
       return out;
     }
+    // Date: an OPEN calendar exposes an <input>; when CLOSED the date is only the TEXT of the
+    // dropdown-trigger button (e.g. "Jul 17, 2026") — reading only the input made date report "".
     const dateInput = deep('#datepicker-trigger input, ytcp-date-picker input, input[aria-label*="date" i], input[placeholder*="date" i]')[0];
+    let date = dateInput ? (dateInput.value || '') : '';
+    if (!date) {
+      const trig = deep('#datepicker-trigger, ytcp-datetime-picker ytcp-dropdown-trigger, ytcp-date-picker').find(el => el && el.offsetParent !== null);
+      if (trig) {
+        const txt = (trig.innerText || trig.textContent || '').replace(/\s+/g, ' ').trim();
+        const m = txt.match(/[A-Za-zÇĞİÖŞÜçğıöşü]{3,}\.?\s+\d{1,2},?\s+\d{4}|\d{1,2}[./]\d{1,2}[./]\d{2,4}/);
+        date = m ? m[0] : txt;
+      }
+    }
     const timeInput = deep('input').find(i => /\d{1,2}:\d{2}/.test(i.value || '')) || null;
-    return { date: dateInput ? dateInput.value : '', time: timeInput ? timeInput.value : '' };
+    return { date, time: timeInput ? timeInput.value : '' };
   });
 }
 
@@ -1327,51 +1422,14 @@ export async function uploadVideoBrowser(channelId, opts, logFn = console.log) {
     if (opts.scheduledAt && new Date(opts.scheduledAt).getTime() > Date.now() + 60 * 1000) {
       logFn(`[Puppet] Scheduling video for ${opts.scheduledAt}...`);
 
-      // Click the Schedule accordion header to expand it
-      // The header row for Schedule is the #publish-from-private-non-sponsor-selector container header
-      logFn('[Puppet] Expanding Schedule accordion...');
-      
-      // Use page.click on the accordion header — the chevron ▼ is inside ytcp-video-visibility-select
-      // We click the header-row div that contains "Schedule" text and the chevron
-      const scheduleHeaderClicked = await page.evaluate(() => {
-        // The Schedule row is a div with the text "Schedule" and a chevron inside ytcp-video-visibility-select
-        const container = document.querySelector('ytcp-video-visibility-select');
-        if (!container) return 'no-container';
-        
-        // Find the header-like div in the shadow or light DOM
-        const allDivs = Array.from(container.querySelectorAll('div, ytcp-paper-expandable-section, ytcp-checkbox, .header'));
-        const scheduleRow = allDivs.find(el => {
-          const t = (el.textContent || '').trim();
-          return t.startsWith('Schedule') && el.children.length <= 3;
-        });
-        if (scheduleRow) {
-          scheduleRow.click();
-          return 'clicked-row:' + scheduleRow.tagName + ' ' + scheduleRow.className.substring(0, 40);
-        }
-        
-        // Fallback: click the whole container
-        container.click();
-        return 'clicked-container';
-      });
-      logFn('[Puppet] Schedule accordion click: ' + scheduleHeaderClicked);
-      await new Promise(r => setTimeout(r, 2000));
-
-      // Wait for the datetime picker to appear inside ytcp-visibility-scheduler
-      logFn('[Puppet] Waiting for datetime picker to appear...');
-      try {
-        await page.waitForSelector('ytcp-datetime-picker, #datepicker-trigger, ytcp-visibility-scheduler ytcp-text-input', { timeout: 5000 });
-        logFn('[Puppet] Datetime picker appeared.');
-      } catch (e) {
-        logFn('[Puppet] Datetime picker not found after click, trying direct page.click on Schedule row...');
-        // Try page.click on the ytcp-video-visibility-select
-        try {
-          await page.click('#publish-from-private-non-sponsor-selector');
-          logFn('[Puppet] Clicked #publish-from-private-non-sponsor-selector');
-        } catch (e2) {
-          logFn('[Puppet] Fallback click failed: ' + e2.message);
-        }
-        await new Promise(r => setTimeout(r, 2000));
+      // Enter "Schedule" mode with a TRUSTED click (YouTube's Polymer ignores untrusted taps, which
+      // left the video on "Save/Done" mode → it saved a private DRAFT). Verify the datetime picker opened.
+      logFn('[Puppet] Selecting Schedule mode (trusted click + verify)...');
+      const scheduleActivated = await activateScheduleMode(page, logFn);
+      if (!scheduleActivated) {
+        logFn('[Puppet] Warning: datetime picker did not appear after schedule activation; the commit-time guard will re-try.');
       }
+      await new Promise(r => setTimeout(r, 800));
 
       // Now the datepicker should be visible — fill in date
       logFn('[Puppet] Entering scheduled date...');
@@ -1691,36 +1749,53 @@ export async function uploadVideoBrowser(channelId, opts, logFn = console.log) {
     // in Content). We click as soon as the button is enabled (checks passed), which commits the
     // schedule immediately. Right after, we KEEP THE BROWSER OPEN (see the background-upload monitor
     // further below) until the bytes finish — closing the tab mid-upload would abort the transfer.
-    logFn('[Puppet] Waiting for the Schedule/Save button to become enabled (checks passing)...');
-    const doneBtn = await page.waitForSelector(
-      '#schedule-button, #done-button, #publish-button, #save-button, ytcp-button[id*="schedule"], ytcp-button[id*="done"], ytcp-button[id*="save"]',
-      { timeout: 120000 }
-    );
-    // The button stays disabled until YouTube's checks pass. Wait (up to ~4 min) for it to enable.
+    logFn('[Puppet] Waiting for a VISIBLE, ENABLED primary button (checks passing)...');
     await page.waitForFunction(() => {
-      const b = document.querySelector('#schedule-button, #done-button, #publish-button, #save-button') ||
-                document.querySelector('ytcp-button[id*="schedule"], ytcp-button[id*="done"], ytcp-button[id*="save"]');
-      if (!b) return false;
-      const disabled = b.disabled === true || b.hasAttribute('disabled') || b.getAttribute('aria-disabled') === 'true';
-      return !disabled;
+      function deep(sel, root = document, out = []) {
+        out.push(...root.querySelectorAll(sel));
+        for (const el of root.querySelectorAll('*')) if (el.shadowRoot) deep(sel, el.shadowRoot, out);
+        return out;
+      }
+      const cands = deep('#schedule-button, #done-button, #publish-button, #save-button, ytcp-button[id*="schedule"], ytcp-button[id*="done"], ytcp-button[id*="publish"], ytcp-button[id*="save"]');
+      return cands.some(b => b && b.offsetParent !== null && !(b.disabled === true || b.hasAttribute('disabled') || b.getAttribute('aria-disabled') === 'true'));
     }, { timeout: 240000 }).catch(() => {
-      logFn('[Puppet] Warning: Schedule button still looks disabled after waiting; attempting the click anyway.');
+      logFn('[Puppet] Warning: no enabled primary button after waiting; the guard will re-check.');
     });
 
-    // YouTube only shows the "Schedule" button when a schedule is actually set. If we instead land on
-    // "Done"/"Save", the video was saved WITHOUT a schedule (private draft) — report that back so the
-    // caller can enforce the schedule on the edit page afterwards.
-    let scheduledOk = false;
-    try {
-      const finalBtnId = await page.evaluate(el => (el && (el.id || (el.getAttribute && el.getAttribute('id')))) || '', doneBtn);
-      scheduledOk = /schedule/i.test(finalBtnId || '');
-      logFn(`[Puppet] Final button: "${finalBtnId}" (scheduled=${scheduledOk})`);
-    } catch (e) {}
+    const mustSchedule = !!(opts.scheduledAt && new Date(opts.scheduledAt).getTime() > Date.now() + 60 * 1000);
+    let { handle: primaryBtn, id: primaryId } = await getPrimaryButtonHandle(page);
+    logFn(`[Puppet] Primary button resolved: "${primaryId}" (mustSchedule=${mustSchedule})`);
 
-    onProgress(15, 'Scheduling on YouTube…');
-    await safeClick(page, doneBtn, { scroll: true });
-    await new Promise(r => setTimeout(r, 4000));
-    logFn('[Puppet] Schedule/Save clicked mid-upload — video committed. Keeping browser open until bytes finish.');
+    // HARD GUARD: for a scheduled video, never commit via a non-schedule button (that saves a DRAFT).
+    if (mustSchedule && !/schedule/i.test(primaryId)) {
+      logFn(`[Puppet] GUARD: primary is "${primaryId}" but a schedule was requested — re-activating schedule mode + re-applying date/time.`);
+      for (let attempt = 1; attempt <= 2 && !/schedule/i.test(primaryId); attempt++) {
+        await activateScheduleMode(page, logFn);
+        if (!scheduleIsIntact(await readScheduleValues(page), opts).ok) await reapplyDateTime(page, opts, logFn);
+        await new Promise(r => setTimeout(r, 1200));
+        if (primaryBtn) { await primaryBtn.dispose(); primaryBtn = null; }
+        ({ handle: primaryBtn, id: primaryId } = await getPrimaryButtonHandle(page));
+        logFn(`[Puppet] GUARD re-check ${attempt}: primary is now "${primaryId}"`);
+      }
+    }
+
+    let scheduledOk = /schedule/i.test(primaryId);
+
+    if (mustSchedule && !scheduledOk) {
+      // Could NOT enter schedule mode in-dialog. Do NOT silently finalize a draft. Commit the upload
+      // (keep a stable video ID, don't abandon the transfer) and return scheduled:false so the scheduler
+      // enforces the schedule on the EDIT PAGE. Loud, not silent.
+      logFn('[Puppet] ERROR: dialog would not enter Schedule mode. Committing upload, returning scheduled=false (edit-page enforce will apply the schedule — NOT a silent draft).');
+      if (primaryBtn) { await trustedClickHandle(page, primaryBtn, logFn); await primaryBtn.dispose(); primaryBtn = null; }
+      await new Promise(r => setTimeout(r, 4000));
+    } else {
+      logFn(`[Puppet] Final button: "${primaryId}" (scheduled=${scheduledOk})`);
+      onProgress(15, 'Scheduling on YouTube…');
+      await trustedClickHandle(page, primaryBtn, logFn);   // TRUSTED click on the VISIBLE button
+      if (primaryBtn) { await primaryBtn.dispose(); primaryBtn = null; }
+      await new Promise(r => setTimeout(r, 4000));
+      logFn('[Puppet] Committed with a trusted click on the visible ' + (scheduledOk ? 'schedule' : 'primary') + ' button.');
+    }
 
     // Try to get video ID again if we couldn't get it earlier
     if (!youtubeVideoId) {
@@ -2453,28 +2528,9 @@ export async function rescheduleVideoBrowser(channelId, youtubeVideoId, schedule
       }
       await new Promise(r => setTimeout(r, 800));
 
-      logFn(`[Puppet] Toggling "Set as Premiere" option to ${isPremiere}...`);
+      logFn(`[Puppet] Toggling "Set as Premiere" to ${isPremiere} (trusted click)...`);
       try {
-        const clickedPremiere = await page.evaluate((targetState) => {
-          const checkboxes = Array.from(document.querySelectorAll('ytcp-checkbox, tp-yt-paper-checkbox, paper-checkbox, ytcp-checkbox-group ytcp-checkbox, ytcp-checkbox-lit'));
-          const premiereCheckbox = checkboxes.find(el => {
-            const text = (el.textContent || '').trim().toLowerCase();
-            return text.includes('premiere') || text.includes('gösterim') || text.includes('gosterim');
-          });
-          if (premiereCheckbox) {
-            const isChecked = premiereCheckbox.checked || premiereCheckbox.hasAttribute('checked') || premiereCheckbox.getAttribute('aria-checked') === 'true';
-            if (targetState && !isChecked) {
-              premiereCheckbox.click();
-              return 'clicked_to_check';
-            } else if (!targetState && isChecked) {
-              premiereCheckbox.click();
-              return 'clicked_to_uncheck';
-            }
-            return 'already_correct';
-          }
-          return 'not_found';
-        }, isPremiere);
-        logFn(`[Puppet] Premiere checkbox status: ${clickedPremiere}`);
+        logFn(`[Puppet] Premiere checkbox status: ${await togglePremiere(page, !!isPremiere, logFn)}`);
       } catch (e) {
         logFn(`[Puppet] Warning: failed to toggle premiere checkbox: ${e.message}`);
       }
@@ -2546,6 +2602,29 @@ export async function rescheduleVideoBrowser(channelId, youtubeVideoId, schedule
       });
       logFn(`[Puppet] Fallback save clicked: ${mainSaveClicked}`);
       await new Promise(r => setTimeout(r, 5000));
+    }
+
+    // Verify the schedule actually applied. Previously "success" == "did not throw", so a save that
+    // quietly kept the video Private/Draft was reported as scheduled → false-complete. If a schedule
+    // was requested but the video isn't showing "Scheduled", throw a RETRYABLE error so the scheduler
+    // routes it to the retry/recovery path instead of marking the post complete.
+    if (scheduledAt) {
+      await new Promise(r => setTimeout(r, 2000));
+      const visState = await page.evaluate(() => {
+        function deep(sel, root = document, out = []) {
+          out.push(...root.querySelectorAll(sel));
+          for (const el of root.querySelectorAll('*')) if (el.shadowRoot) deep(sel, el.shadowRoot, out);
+          return out;
+        }
+        const els = deep('ytcp-video-metadata-visibility, ytcp-video-visibility-select, #visibility, .visibility-container');
+        const scoped = els.map(e => (e.textContent || '').trim()).join(' | ').toLowerCase();
+        return scoped || (document.body.innerText || '').toLowerCase();
+      }).catch(() => '');
+      const looksScheduled = /scheduled|zamanland|premiere|premiyer/.test(visState);
+      logFn(`[Puppet] Post-save visibility check: scheduled=${looksScheduled} (state: "${visState.slice(0, 80)}")`);
+      if (!looksScheduled) {
+        throw new Error('Schedule was not applied on the edit page (video still shows unscheduled) — will retry automatically.');
+      }
     }
 
     logFn('[Puppet] Video update complete.');

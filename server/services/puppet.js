@@ -3535,19 +3535,30 @@ export async function listStudioDraftsBrowser(channelId, logFn = console.log) {
       const norm = (s) => (s || '').replace(/\s+/g, ' ').trim();
       const out = [];
       for (const row of Array.from(document.querySelectorAll('ytcp-video-row'))) {
-        let videoId = '';
-        const a = row.querySelector('a[href*="/video/"]');
-        if (a) { const m = (a.href || '').match(/\/video\/([a-zA-Z0-9_-]{11})/); if (m) videoId = m[1]; }
         let title = '';
         const t = row.querySelector('#video-title, a#video-title, #video-title-container a, #video-title-container');
         if (t) title = norm(t.textContent);
         let thumbnail = '';
         const img = row.querySelector('img');
-        if (img) thumbnail = img.src || '';
+        if (img) thumbnail = img.src || img.getAttribute('src') || '';
+        // Draft rows have NO /video/ link (only an "Edit draft" button), so derive the id from the
+        // thumbnail URL (/vi/<id>/) or any id attribute, not just from an anchor href.
+        const idFrom = (s) => {
+          if (!s) return '';
+          const m = s.match(/\/vi(?:_webp)?\/([a-zA-Z0-9_-]{11})\//) || s.match(/\/video\/([a-zA-Z0-9_-]{11})/) || s.match(/[?&]v=([a-zA-Z0-9_-]{11})/);
+          return m ? m[1] : '';
+        };
+        let videoId = '';
+        for (const a of row.querySelectorAll('a')) { videoId = idFrom(a.href || ''); if (videoId) break; }
+        if (!videoId) videoId = idFrom(thumbnail);
+        if (!videoId) {
+          const idEl = row.querySelector('[video-id],[videoid]');
+          if (idEl) { const vv = idEl.getAttribute('video-id') || idEl.getAttribute('videoid'); if (vv && vv.length === 11) videoId = vv; }
+        }
         const rowText = norm(row.textContent).toLowerCase();
         let status = 'unknown';
         if (/schedul|zamanlan/.test(rowText)) status = 'scheduled';
-        else if (/draft|taslak/.test(rowText)) status = 'draft';
+        else if (/edit draft|taslağı düzenle|\bdraft\b|taslak/.test(rowText)) status = 'draft';
         else if (/public|herkese/.test(rowText)) status = 'public';
         else if (/unlisted|liste dış/.test(rowText)) status = 'unlisted';
         else if (/private|özel/.test(rowText)) status = 'private';

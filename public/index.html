@@ -25,12 +25,10 @@
       <h1 class="header-title">YouTube Pipeline Dashboard</h1>
     </div>
     <div class="header-right">
-      <!-- User Account Display & Logout -->
-      <div id="headerUserContainer" style="display:none; align-items:center; gap:10px; margin-right:12px; font-size:0.85rem; background:rgba(255,255,255,0.03); border:var(--border-glass); padding:4px 12px; border-radius:30px;">
+      <!-- User Account Identity -->
+      <div id="headerUserContainer" style="display:none; align-items:center; gap:6px; margin-right:8px; font-size:0.85rem; background:rgba(255,255,255,0.03); border:var(--border-glass); padding:4px 12px; border-radius:30px;">
+        <span style="font-size:0.9rem;">👤</span>
         <span id="headerUserEmail" style="color:var(--text-accent); font-weight:500;">...</span>
-        <button onclick="handleLogout()" style="background:none; border:none; color:var(--accent-red); cursor:pointer; font-size:1.15rem; padding:0; display:flex; align-items:center;" title="Logout">
-          🚪
-        </button>
       </div>
       <!-- Global Channel Filter -->
       <div class="global-channel-filter" style="display:flex; align-items:center; gap:8px; margin-right:8px;">
@@ -44,6 +42,7 @@
         <span>Connected</span>
       </div>
       <button class="header-btn" onclick="switchTab('settings')" title="Settings">⚙️</button>
+      <button class="header-btn" onclick="handleLogout()" title="Log out" style="color: var(--accent-red);">🚪</button>
     </div>
   </header>
 

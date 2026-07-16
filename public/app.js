@@ -4284,6 +4284,10 @@ async function checkAuth() {
     const emailEl = document.getElementById('headerUserEmail');
     if (emailEl) emailEl.textContent = data.user.email;
 
+    // Reveal the account pill + logout button (hidden by default in HTML)
+    const userContainer = document.getElementById('headerUserContainer');
+    if (userContainer) userContainer.style.display = 'flex';
+
     // Show Users tab for admins
     if (data.user.role === 'admin') {
       const navUsers = document.getElementById('nav-users');

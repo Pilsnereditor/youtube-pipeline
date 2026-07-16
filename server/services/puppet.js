@@ -1957,20 +1957,24 @@ export async function rescheduleVideoBrowser(channelId, youtubeVideoId, schedule
       // A just-uploaded / still-processing video sometimes hasn't rendered the visibility editor
       // yet. Wait for it (piercing shadow DOM); if it doesn't appear, reload the edit page and try
       // again a couple of times before giving up, instead of hard-failing on the first timeout.
+      // Slow/proxied channels render this heavy edit page much slower, so the visibility editor can
+      // take far longer than 20s to appear — reporting "not ready" even when the video IS schedulable
+      // (a fast-proxy channel renders it immediately and succeeds first try). Be patient: 6 tries at
+      // 30s each, with reloads and a broader selector, before giving up to the scheduler's retry.
       let visReady = false;
-      for (let vAttempt = 1; vAttempt <= 3 && !visReady; vAttempt++) {
+      for (let vAttempt = 1; vAttempt <= 6 && !visReady; vAttempt++) {
         visReady = await page.waitForFunction(() => {
           function q(sel, root = document) {
             const els = Array.from(root.querySelectorAll(sel));
             for (const c of root.querySelectorAll('*')) { if (c.shadowRoot) els.push(...q(sel, c.shadowRoot)); }
             return els;
           }
-          return q('ytcp-video-metadata-visibility, ytcp-video-visibility-select, #visibility-select').some(el => el && el.offsetParent !== null);
-        }, { timeout: 20000 }).then(() => true).catch(() => false);
-        if (!visReady && vAttempt < 3) {
-          logFn(`[Puppet] Visibility editor not ready (attempt ${vAttempt}); reloading edit page...`);
-          await page.goto(`https://studio.youtube.com/video/${youtubeVideoId}/edit?hl=en&persist_hl=1`, { waitUntil: 'networkidle2', timeout: 60000 });
-          await new Promise(r => setTimeout(r, 4000));
+          return q('ytcp-video-metadata-visibility, ytcp-video-visibility-select, #visibility-select, ytcp-video-metadata-editor-sidepanel, [test-id="VISIBILITY"], [aria-label*="Visibility" i]').some(el => el && el.offsetParent !== null);
+        }, { timeout: 30000 }).then(() => true).catch(() => false);
+        if (!visReady && vAttempt < 6) {
+          logFn(`[Puppet] Visibility editor not ready (attempt ${vAttempt}/6); reloading edit page (slow proxy may need more time)...`);
+          await page.goto(`https://studio.youtube.com/video/${youtubeVideoId}/edit?hl=en&persist_hl=1`, { waitUntil: 'networkidle2', timeout: 90000 }).catch(() => {});
+          await new Promise(r => setTimeout(r, 5000));
         }
       }
       if (!visReady) {

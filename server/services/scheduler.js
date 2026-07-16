@@ -492,41 +492,49 @@ export async function processPost(post) {
       // Keep retrying at a sensible interval so the schedule applies AS SOON AS processing finishes.
       // Do NOT fake-complete — that would leave an unscheduled private draft on YouTube that never
       // publishes. The target publish time is normally days out, so there is plenty of time to retry.
-      // Recovery policy: retry applying the schedule 3 times at 15 / 30 / 60 min. Then STOP and leave
-      // the post visibly in the queue as an ERROR ("uploaded but NOT scheduled") with a manual Retry
-      // button. Never fake-complete. Uses a DEDICATED counter (schedule_defer_count) so it never
-      // collides with handlePostFailure's retry_count budget.
-      const INTERVALS = [15, 30, 60];                 // minutes before retry #1 / #2 / #3
-      const prior = post.schedule_defer_count || 0;   // 0,1,2 = retries already spent
+      // ROOT CAUSE (from comparing a working User-1 run to a failing User-2 run): the edit-page
+      // reschedule SUCCEEDS as soon as YouTube finishes processing the video (proven — it works on
+      // fast-processing channels). Slow/proxied channels get "Processing delayed" and can take HOURS,
+      // so we must keep retrying until processing finishes — NOT give up after ~100 min. The publish
+      // time is normally days out, so there is ample runway. Back off gently to limit browser launches.
+      const prior = post.schedule_defer_count || 0;
       const schedMs = post.scheduled_at ? new Date(post.scheduled_at).getTime() : 0;
-      const scheduledTimePassed = schedMs && schedMs <= Date.now();
+      const nowMs = Date.now();
+      const SAFETY_MARGIN_MS = 2 * 60 * 60 * 1000;    // stop ~2h before publish so a human can still fix it
+      const MAX_ATTEMPTS = 48;                         // absolute backstop (~20h at 15-30m backoff)
+      const scheduledTimePassed = schedMs && schedMs <= nowMs;
+      const insideSafetyMargin = schedMs && nowMs >= (schedMs - SAFETY_MARGIN_MS);
 
-      if (prior >= INTERVALS.length || scheduledTimePassed) {
+      if (prior >= MAX_ATTEMPTS || scheduledTimePassed || insideSafetyMargin) {
+        // Genuinely out of runway (video never finished processing in time, or publish time is
+        // now too close/past). Leave it visibly in the queue as an ERROR with a manual Retry button.
         run(
           `UPDATE scheduled_posts SET status = 'error', next_retry_at = NULL,
-                  error_message = 'Video uploaded to YouTube but NOT scheduled — automatic scheduling failed after 3 attempts. Press Retry, or set the publish time / premiere manually in YouTube Studio.'
+                  error_message = 'Video uploaded to YouTube but NOT scheduled — YouTube did not finish processing it in time to apply the schedule. Press Retry once it has processed, or set the publish time / premiere manually in YouTube Studio.'
             WHERE id = @id`,
           { id: post.id }
         );
-        notify(`Post ${post.id}: video ${_vidRow.youtube_video_id} uploaded but schedule NOT applied after ${prior} retries — left in queue as error (manual Retry available).`);
+        notify(`Post ${post.id}: video ${_vidRow.youtube_video_id} uploaded but schedule NOT applied after ${prior} attempts (reason: ${scheduledTimePassed ? 'publish time passed' : insideSafetyMargin ? 'too close to publish time' : 'max attempts'}) — left in queue as error (manual Retry available).`);
         if (broadcastFn) {
-          broadcastFn({ type: 'schedule:error', postId: post.id, error: 'Uploaded but NOT scheduled — press Retry, or set the time manually in YouTube Studio.' }, post.user_id);
+          broadcastFn({ type: 'schedule:error', postId: post.id, error: 'Uploaded but NOT scheduled — press Retry once processed, or set the time manually in YouTube Studio.' }, post.user_id);
         }
         return;
       }
 
-      const waitMin = INTERVALS[prior];
+      // Fast-processing videos schedule within the first few tries (15-min cadence); slow ones then
+      // back off to 30 min so we patiently wait out a long "Processing delayed" without hammering.
+      const waitMin = prior < 4 ? 15 : 30;
       const tzOff = new Date().getTimezoneOffset() * 60000;
       const retryAt = new Date(Date.now() + waitMin * 60 * 1000 - tzOff).toISOString().slice(0, 19);
-      const attemptMsg = `Video uploaded — waiting to apply the schedule (attempt ${prior + 1}/3). Retrying automatically.`;
+      const attemptMsg = `Video uploaded — waiting for YouTube to finish processing so the schedule can be applied (attempt ${prior + 1}). Retrying automatically.`;
       run(
         `UPDATE scheduled_posts SET status = 'pending', schedule_defer_count = @n, next_retry_at = @retryAt, error_message = @msg
           WHERE id = @id`,
         { id: post.id, n: prior + 1, retryAt, msg: attemptMsg }
       );
-      notify(`Post ${post.id} deferred (attempt ${prior + 1}/3, next in ${waitMin}m): applying the schedule once YouTube is ready.`);
+      notify(`Post ${post.id} deferred (attempt ${prior + 1}, next in ${waitMin}m): waiting for YouTube to finish processing, then applying the schedule.`);
       if (broadcastFn) {
-        broadcastFn({ type: 'schedule:deferred', postId: post.id, title: post.title, message: `Video uploaded — waiting to apply the schedule (attempt ${prior + 1}/3)…` }, post.user_id);
+        broadcastFn({ type: 'schedule:deferred', postId: post.id, title: post.title, message: `Video uploaded — waiting for YouTube to finish processing to apply the schedule (attempt ${prior + 1})…` }, post.user_id);
       }
       return;
     }

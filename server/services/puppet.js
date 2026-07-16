@@ -1007,9 +1007,18 @@ async function getPrimaryButtonHandle(page) {
         || visible.find(enabled) || visible[0] || null;
   });
   const el = jsHandle.asElement();
-  if (!el) { await jsHandle.dispose(); return { handle: null, id: '' }; }
-  const id = await el.evaluate(n => n.id || (n.getAttribute && n.getAttribute('id')) || '');
-  return { handle: el, id };
+  if (!el) { await jsHandle.dispose(); return { handle: null, id: '', label: '' }; }
+  const info = await el.evaluate(n => ({
+    rawId: n.id || (n.getAttribute && n.getAttribute('id')) || '',
+    label: ((n.innerText || n.textContent || '').replace(/\s+/g, ' ').trim())
+  }));
+  // CRITICAL: the current YouTube uploads dialog keeps the primary button's id="done-button" and only
+  // changes its LABEL to "Schedule" when the video is in schedule mode (premieres default to this, and
+  // there are no visibility radios anymore). So schedule-ness must be judged by the LABEL, not the id.
+  // Report a schedule-aware id ("schedule-button") so every downstream /schedule/i check is correct.
+  const scheduled = /schedule/i.test(info.rawId) || /schedule|zamanla|planla/i.test(info.label);
+  const id = scheduled ? 'schedule-button' : info.rawId;
+  return { handle: el, id, label: info.label };
 }
 
 async function trustedClickHandle(page, handle, logFn = console.log) {

@@ -1035,22 +1035,11 @@ async function trustedClickHandle(page, handle, logFn = console.log) {
   }
 }
 
-// Select the "Schedule" visibility option with a TRUSTED click and confirm the datetime picker opened.
+// Select the "Schedule" visibility option with a TRUSTED click. SUCCESS = the primary button flips
+// to "schedule-button" (picker-visible is NOT sufficient — YouTube shows the schedule card even when
+// it is not selected, which made the old check falsely succeed while the button stayed "done-button").
 async function activateScheduleMode(page, logFn = console.log) {
-  const grabTarget = () => page.evaluateHandle(() => {
-    function deep(sel, root = document, out = []) {
-      out.push(...root.querySelectorAll(sel));
-      for (const el of root.querySelectorAll('*')) if (el.shadowRoot) deep(sel, el.shadowRoot, out);
-      return out;
-    }
-    const vis  = el => el && el.offsetParent !== null;
-    const norm = s => (s || '').trim().toLowerCase();
-    let t = deep('#schedule-radio-button, tp-yt-paper-radio-button, [role="radio"]')
-      .find(el => vis(el) && (/schedule/i.test(el.id || '') || /schedule|planla/.test(norm(el.textContent))));
-    if (!t) t = deep('ytcp-video-visibility-select *, #publish-from-private-non-sponsor-selector *')
-      .find(el => vis(el) && /^(schedule|planla)/.test(norm(el.textContent)) && el.children.length <= 3);
-    return t || null;
-  });
+  const isArmed = async () => /schedule/i.test(await getPrimaryButtonId(page) || '');
   const pickerVisible = () => page.evaluate(() => {
     function deep(sel, root = document, out = []) {
       out.push(...root.querySelectorAll(sel));
@@ -1060,16 +1049,63 @@ async function activateScheduleMode(page, logFn = console.log) {
     return deep('#datepicker-trigger, ytcp-datetime-picker, ytcp-visibility-scheduler ytcp-text-input')
       .some(el => el && el.offsetParent !== null);
   });
-  for (let attempt = 1; attempt <= 3; attempt++) {
-    const h = await grabTarget();
+  if (await isArmed()) return true;
+  for (let attempt = 1; attempt <= 4; attempt++) {
+    const h = await page.evaluateHandle(() => {
+      function deep(sel, root = document, out = []) {
+        out.push(...root.querySelectorAll(sel));
+        for (const el of root.querySelectorAll('*')) if (el.shadowRoot) deep(sel, el.shadowRoot, out);
+        return out;
+      }
+      const vis  = el => el && el.offsetParent !== null;
+      const norm = s => (s || '').trim().toLowerCase();
+      // Prefer the real radio control for Schedule; then a radio whose label is Schedule; then a
+      // Schedule row inside the visibility select.
+      let t = deep('#schedule-radio-button, tp-yt-paper-radio-button[name="SCHEDULE"], [role="radio"][id*="schedule" i]').find(vis);
+      if (!t) t = deep('tp-yt-paper-radio-button, [role="radio"]').find(el => vis(el) && /^(schedule|planla)/.test(norm(el.textContent)));
+      if (!t) t = deep('ytcp-video-visibility-select *, #publish-from-private-non-sponsor-selector *').find(el => vis(el) && /^(schedule|planla)/.test(norm(el.textContent)) && el.children.length <= 3);
+      return t || null;
+    });
     const el = h.asElement();
-    if (el) { await trustedClickHandle(page, el, logFn); await el.dispose(); }
+    if (el) {
+      await trustedClickHandle(page, el, logFn);   // trusted click on the radio
+      await new Promise(r => setTimeout(r, 400));
+      try {
+        // Also trusted-click the inner radio node (Polymer sometimes only reacts to the inner control).
+        const inner = await el.evaluateHandle(n => (n.shadowRoot && n.shadowRoot.querySelector('#radioContainer, [role="radio"], #radio, input')) || null);
+        const innerEl = inner.asElement();
+        if (innerEl) { await innerEl.click().catch(() => {}); }
+        await inner.dispose();
+      } catch (e) {}
+      await el.dispose();
+    }
     await h.dispose();
-    await new Promise(r => setTimeout(r, 1500));
-    const picker = await pickerVisible();
-    logFn(`[Puppet] Schedule activation attempt ${attempt}: picker=${picker} button="${await getPrimaryButtonId(page)}"`);
-    if (picker) return true;
+    await new Promise(r => setTimeout(r, 1200));
+    const armed = await isArmed();
+    logFn(`[Puppet] Schedule activation attempt ${attempt}: armed=${armed} picker=${await pickerVisible()} button="${await getPrimaryButtonId(page)}"`);
+    if (armed) return true;
   }
+  // Could not arm schedule mode — dump the visibility-step controls so a precise selector can be written.
+  try {
+    const dump = await page.evaluate(() => {
+      function deep(sel, root = document, out = []) {
+        out.push(...root.querySelectorAll(sel));
+        for (const el of root.querySelectorAll('*')) if (el.shadowRoot) deep(sel, el.shadowRoot, out);
+        return out;
+      }
+      const vis = el => el && el.offsetParent !== null;
+      const desc = el => `${el.tagName.toLowerCase()}${el.id ? '#' + el.id : ''}` +
+        `${el.getAttribute('role') ? '[role=' + el.getAttribute('role') + ']' : ''}` +
+        `${el.getAttribute('aria-checked') ? '[aria-checked=' + el.getAttribute('aria-checked') + ']' : ''}` +
+        `${el.getAttribute('name') ? '[name=' + el.getAttribute('name') + ']' : ''}` +
+        ` "${(el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 40)}"`;
+      const radios = deep('tp-yt-paper-radio-button, [role="radio"]').filter(vis).map(desc).slice(0, 14);
+      const buttons = deep('ytcp-button, button').filter(el => vis(el) && el.id).map(desc).slice(0, 14);
+      return { radios, buttons };
+    });
+    logFn(`[Puppet] SCHEDULE-STEP DUMP radios: ${JSON.stringify(dump.radios)}`);
+    logFn(`[Puppet] SCHEDULE-STEP DUMP buttons: ${JSON.stringify(dump.buttons)}`);
+  } catch (e) { logFn(`[Puppet] schedule-step dump failed: ${e.message}`); }
   return false;
 }
 

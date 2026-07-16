@@ -314,7 +314,9 @@ export async function processPost(post) {
 
     let videoId = '';
     if (channel.upload_mode === 'browser') {
-      const wantsSchedule = post.scheduled_at && new Date(post.scheduled_at).getTime() > Date.now() + 60 * 1000;
+      const intendedToSchedule = !!post.scheduled_at;
+      const scheduleStillPossible = post.scheduled_at && new Date(post.scheduled_at).getTime() > Date.now() + 60 * 1000;
+      let scheduleConfirmed = false;   // becomes true ONLY when the schedule is actually applied
 
       if (post.youtube_video_id) {
         // A previous attempt already uploaded this video. Do NOT upload it again (that would
@@ -322,9 +324,15 @@ export async function processPost(post) {
         // dashboard doesn't misleadingly show "uploading" again.
         videoId = post.youtube_video_id;
         emitProgress(45, 'Video already uploaded — applying the schedule on YouTube…');
-        if (wantsSchedule) {
+        if (intendedToSchedule && scheduleStillPossible) {
           notify(`Video ${videoId} was already uploaded — applying the schedule on the edit page...`);
+          // rescheduleVideoBrowser THROWS on any failure (incl. still-processing) → only a clean return confirms it.
           await withChannelLock(post.channel_id, () => rescheduleVideoBrowser(post.channel_id, videoId, post.scheduled_at, post.is_premiere || 0));
+          scheduleConfirmed = true;
+        } else if (intendedToSchedule && !scheduleStillPossible) {
+          notify(`Video ${videoId} uploaded but its scheduled time has already passed — needs manual scheduling.`);
+        } else {
+          scheduleConfirmed = true; // immediate publish; nothing to schedule
         }
       } else {
         const result = await withChannelLock(post.channel_id, ({ heartbeat }) => uploadVideoBrowser(post.channel_id, {
@@ -350,12 +358,20 @@ export async function processPost(post) {
           run(`UPDATE scheduled_posts SET youtube_video_id = @vid WHERE id = @id`, { vid: videoId, id: post.id });
         }
 
-        // If the in-dialog scheduling didn't take (YouTube saved the video as a private draft —
-        // this can happen when YouTube shows "Processing delayed"), enforce the schedule on the
-        // edit page so the video still publishes at the intended time once processing finishes.
-        if (videoId && wantsSchedule && result.scheduled === false) {
-          notify(`Upload saved without a schedule — enforcing the schedule on the edit page...`);
-          await withChannelLock(post.channel_id, () => rescheduleVideoBrowser(post.channel_id, videoId, post.scheduled_at, post.is_premiere || 0));
+        // Confirm the schedule actually applied. If the in-dialog "Schedule" click took
+        // (result.scheduled === true) we're done. Otherwise (e.g. premiere flipped the button to
+        // "Done") enforce it on the edit page — that call THROWS if the video is still processing,
+        // routing to the transient retry. Only a clean return counts as confirmed.
+        if (videoId && intendedToSchedule) {
+          if (result.scheduled === true) {
+            scheduleConfirmed = true;
+          } else if (scheduleStillPossible) {
+            notify(`Upload saved without a schedule — enforcing the schedule on the edit page...`);
+            await withChannelLock(post.channel_id, () => rescheduleVideoBrowser(post.channel_id, videoId, post.scheduled_at, post.is_premiere || 0));
+            scheduleConfirmed = true;
+          }
+        } else if (!intendedToSchedule) {
+          scheduleConfirmed = true;
         }
       }
     } else {
@@ -369,6 +385,7 @@ export async function processPost(post) {
         scheduledAt: post.scheduled_at,
       });
       videoId = result.videoId;
+      scheduleConfirmed = true; // API upload applies the schedule directly
     }
 
     notify(`Uploaded: YouTube video ID ${videoId}`);
@@ -412,6 +429,20 @@ export async function processPost(post) {
       } catch (err) {
         notify(`Comment error on ${videoId} (will retry when video goes public): ${err.message}`);
       }
+    }
+
+    // Never mark a scheduled post complete unless the schedule was actually confirmed applied —
+    // otherwise an unscheduled private draft would be silently reported as done and never publish.
+    if (intendedToSchedule && !scheduleConfirmed) {
+      run(
+        `UPDATE scheduled_posts SET status = 'error', next_retry_at = NULL,
+                error_message = 'Video uploaded to YouTube, but it could not be confirmed as scheduled. Open it in YouTube Studio and set the publish time / premiere manually.'
+          WHERE id = @id`,
+        { id: post.id }
+      );
+      notify(`Post ${post.id}: uploaded but schedule NOT confirmed — marked for manual attention (no false complete).`);
+      if (broadcastFn) broadcastFn({ type: 'schedule:error', postId: post.id, error: 'Uploaded but not confirmed scheduled — set the publish time manually in YouTube Studio.' }, post.user_id);
+      return;
     }
 
     // --- Record upload in uploads table ---

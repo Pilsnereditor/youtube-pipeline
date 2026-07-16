@@ -923,6 +923,158 @@ async function setEditableText(page, elementHandle, text, logFn = console.log) {
   await new Promise(r => setTimeout(r, 300));
 }
 
+// ── Premiere / schedule helpers (trusted clicks + verify/re-apply) ───────────
+// The premiere checkbox must be clicked with a REAL (trusted) mouse event; an untrusted
+// el.click() inside page.evaluate() left YouTube's premiere half-set and flipped the primary
+// button to "Done" (root cause of scheduled=false on premieres).
+async function findPremiereCheckboxHandle(page) {
+  const handle = await page.evaluateHandle(() => {
+    const nodes = Array.from(document.querySelectorAll(
+      'ytcp-checkbox, tp-yt-paper-checkbox, paper-checkbox, ytcp-checkbox-group ytcp-checkbox, ytcp-checkbox-lit'
+    ));
+    return nodes.find(el => {
+      const t = (el.textContent || '').trim().toLowerCase();
+      return t.includes('premiere') || t.includes('gösterim') || t.includes('gosterim');
+    }) || null;
+  });
+  const el = handle.asElement();
+  if (!el) { await handle.dispose(); return null; }
+  return el;
+}
+
+async function isPremiereChecked(page, handle) {
+  if (!handle) return false;
+  return await page.evaluate(
+    cb => !!(cb && (cb.checked || cb.hasAttribute('checked') || cb.getAttribute('aria-checked') === 'true')),
+    handle
+  );
+}
+
+async function togglePremiere(page, desired, logFn = console.log) {
+  const handle = await findPremiereCheckboxHandle(page);
+  if (!handle) { logFn('[Puppet] Premiere checkbox not found.'); return 'not_found'; }
+  try {
+    if (await isPremiereChecked(page, handle) === desired) {
+      return 'already_' + (desired ? 'checked' : 'unchecked');
+    }
+    try {
+      await handle.evaluate(el => el.scrollIntoView({ block: 'center', inline: 'nearest' }));
+      await new Promise(r => setTimeout(r, 150));
+      await handle.click();                                   // TRUSTED CDP mouse click
+    } catch (e) {
+      logFn(`[Puppet] Trusted premiere click failed (${e.message}); trying inner target.`);
+    }
+    await new Promise(r => setTimeout(r, 900));
+    if (await isPremiereChecked(page, handle) !== desired) {  // retry via inner clickable node
+      try {
+        const inner = await handle.evaluateHandle(el =>
+          (el.shadowRoot && el.shadowRoot.querySelector('#checkbox, [role="checkbox"], .checkbox-container'))
+          || el.querySelector('#checkbox, [role="checkbox"]') || el);
+        const innerEl = inner.asElement();
+        if (innerEl) { await innerEl.click().catch(() => {}); }
+        await inner.dispose();
+      } catch (e) {}
+      await new Promise(r => setTimeout(r, 700));
+    }
+    if (await isPremiereChecked(page, handle) !== desired) {  // last resort: untrusted toggle
+      await handle.evaluate(el => el.click()).catch(() => {});
+      await new Promise(r => setTimeout(r, 700));
+    }
+    return (await isPremiereChecked(page, handle) === desired)
+      ? (desired ? 'checked' : 'unchecked') : 'toggle_failed';
+  } finally {
+    await handle.dispose();
+  }
+}
+
+async function getPrimaryButtonId(page) {
+  return await page.evaluate(() => {
+    const b = document.querySelector('#schedule-button, #done-button, #publish-button, #save-button')
+      || document.querySelector('ytcp-button[id*="schedule"], ytcp-button[id*="done"], ytcp-button[id*="save"]');
+    return b ? (b.id || (b.getAttribute && b.getAttribute('id')) || '') : '';
+  });
+}
+
+async function readScheduleValues(page) {
+  return await page.evaluate(() => {
+    function deep(sel, root = document, out = []) {
+      out.push(...root.querySelectorAll(sel));
+      for (const el of root.querySelectorAll('*')) if (el.shadowRoot) deep(sel, el.shadowRoot, out);
+      return out;
+    }
+    const dateInput = deep('#datepicker-trigger input, ytcp-date-picker input, input[aria-label*="date" i], input[placeholder*="date" i]')[0];
+    const timeInput = deep('input').find(i => /\d{1,2}:\d{2}/.test(i.value || '')) || null;
+    return { date: dateInput ? dateInput.value : '', time: timeInput ? timeInput.value : '' };
+  });
+}
+
+function scheduleIsIntact(vals, opts) {
+  const tok = s => ((s || '').toLowerCase().match(/[a-zçğıöşü]+|\d+/g) || []).map(t => t.replace(/^0+(\d)/, '$1'));
+  const dWant = tok(formatDateLikeInitial(vals.date, opts.scheduledAt));
+  const dGot = new Set(tok(vals.date));
+  const tWant = tok(formatTimeLikeInitial(vals.time, opts.scheduledAt));
+  const tGot = new Set(tok(vals.time));
+  const dateOk = !!vals.date && dWant.length > 0 && dWant.every(t => dGot.has(t));
+  const timeOk = !!vals.time && tWant.length > 0 && tWant.every(t => tGot.has(t));
+  return { dateOk, timeOk, ok: dateOk && timeOk };
+}
+
+async function reapplyDateTime(page, opts, logFn = console.log) {
+  const opened = await page.evaluate(() => {
+    function deep(sel, root = document, out = []) {
+      out.push(...root.querySelectorAll(sel));
+      for (const el of root.querySelectorAll('*')) if (el.shadowRoot) deep(sel, el.shadowRoot, out);
+      return out;
+    }
+    const trig = deep('#datepicker-trigger, ytcp-datetime-picker ytcp-dropdown-trigger, ytcp-date-picker, [id*="datepicker"] [role="button"]')[0];
+    if (trig) { trig.scrollIntoView({ block: 'center', inline: 'nearest' }); trig.click(); return true; }
+    return false;
+  });
+  if (opened) {
+    await new Promise(r => setTimeout(r, 600));
+    const dInit = await page.evaluate(() => {
+      function deep(sel, root = document, out = []) {
+        out.push(...root.querySelectorAll(sel));
+        for (const el of root.querySelectorAll('*')) if (el.shadowRoot) deep(sel, el.shadowRoot, out);
+        return out;
+      }
+      const i = deep('#datepicker-trigger input, ytcp-date-picker input, input[aria-label*="date" i], input[placeholder*="date" i]')[0];
+      if (i) { i.click(); i.focus(); return i.value || ''; }
+      return '';
+    });
+    const targetDateStr = formatDateLikeInitial(dInit, opts.scheduledAt);
+    await page.keyboard.down('Control'); await page.keyboard.press('A'); await page.keyboard.up('Control');
+    await page.keyboard.press('Backspace');
+    for (let i = 0; i < 25; i++) await page.keyboard.press('Backspace');
+    await page.keyboard.type(targetDateStr, { delay: 50 });
+    await page.keyboard.press('Enter'); await new Promise(r => setTimeout(r, 400));
+    await page.keyboard.press('Escape'); await new Promise(r => setTimeout(r, 400));
+    logFn(`[Puppet] Re-applied date: "${targetDateStr}"`);
+  }
+  const tInit = await page.evaluate(() => {
+    function deep(sel, root = document, out = []) {
+      out.push(...root.querySelectorAll(sel));
+      for (const el of root.querySelectorAll('*')) if (el.shadowRoot) deep(sel, el.shadowRoot, out);
+      return out;
+    }
+    const inputs = deep('input');
+    const t = inputs.find(i => /\d{1,2}:\d{2}/.test(i.value || '')) || inputs[inputs.length - 1];
+    if (t) { t.scrollIntoView({ block: 'center', inline: 'nearest' }); t.click(); t.focus(); return t.value || ''; }
+    return null;
+  });
+  if (tInit !== null) {
+    const targetTimeStr = formatTimeLikeInitial(tInit, opts.scheduledAt);
+    await page.keyboard.down('Control'); await page.keyboard.press('A'); await page.keyboard.up('Control');
+    await page.keyboard.press('Backspace');
+    for (let i = 0; i < 25; i++) await page.keyboard.press('Backspace');
+    await page.keyboard.type(targetTimeStr, { delay: 50 });
+    await page.keyboard.press('Enter'); await new Promise(r => setTimeout(r, 400));
+    await page.keyboard.press('Escape'); await new Promise(r => setTimeout(r, 400));
+    logFn(`[Puppet] Re-applied time: "${targetTimeStr}"`);
+  }
+}
+
+
 export async function uploadVideoBrowser(channelId, opts, logFn = console.log) {
   // Auto-close any active login window to release profile lock
   await closeBrowserSession(channelId);
@@ -1440,83 +1592,61 @@ export async function uploadVideoBrowser(channelId, opts, logFn = console.log) {
       await new Promise(r => setTimeout(r, 800));
 
       if (opts.isPremiere) {
-        logFn('[Puppet] Checking "Set as Premiere" option...');
+        logFn('[Puppet] Setting "Set as Premiere" (trusted click)...');
         try {
-          const clickedPremiere = await page.evaluate(() => {
-            const checkboxes = Array.from(document.querySelectorAll('ytcp-checkbox, tp-yt-paper-checkbox, paper-checkbox, ytcp-checkbox-group ytcp-checkbox, ytcp-checkbox-lit'));
-            const premiereCheckbox = checkboxes.find(el => {
-              const text = (el.textContent || '').trim().toLowerCase();
-              return text.includes('premiere') || text.includes('gösterim') || text.includes('gosterim');
-            });
-            if (premiereCheckbox) {
-              const isChecked = premiereCheckbox.checked || premiereCheckbox.hasAttribute('checked') || premiereCheckbox.getAttribute('aria-checked') === 'true';
-              if (!isChecked) {
-                premiereCheckbox.click();
-                return 'clicked';
-              }
-              return 'already_checked';
-            }
-            return 'not_found';
-          });
-          logFn(`[Puppet] Premiere checkbox status: ${clickedPremiere}`);
+          const before = await readScheduleValues(page);
+          logFn(`[Puppet] Pre-premiere: date="${before.date}" time="${before.time}" button="${await getPrimaryButtonId(page)}"`);
+
+          // TRUSTED tick — replicates the manual click that keeps the button on "Schedule".
+          // (An untrusted evaluate().click() flipped the button to "Done" — the root cause.)
+          const tick = await togglePremiere(page, true, logFn);
+          logFn(`[Puppet] Premiere checkbox status: ${tick}`);
           await new Promise(r => setTimeout(r, 1200));
 
-          // Ticking "Set as Premiere" alone flips the primary button from "Schedule" to "Done" until
-          // the premiere is actually SET UP. Click "Set up premiere" and confirm its panel so YouTube
-          // treats it as a schedulable premiere (otherwise scheduled=false → unscheduled draft).
-          const setupClicked = await page.evaluate(() => {
-            const btns = Array.from(document.querySelectorAll('button, ytcp-button, tp-yt-paper-button, a')).filter(b => b.offsetParent !== null);
-            const setup = btns.find(b => {
-              const t = (b.textContent || '').trim().toLowerCase();
-              return t.includes('set up premiere') || t.includes('gösterimi ayarla') || t.includes('premiyeri ayarla') || (t.includes('premiere') && t.includes('set up'));
-            });
-            if (setup) { setup.click(); return true; }
-            return false;
-          });
-          logFn(`[Puppet] "Set up premiere" clicked: ${setupClicked}`);
-          if (setupClicked) {
-            await new Promise(r => setTimeout(r, 2500));
-            // Only click a confirm button that lives INSIDE the premiere setup dialog — never fall
-            // back to the page's main "Done" button (that would submit the whole thing prematurely).
-            const confirmed = await page.evaluate(() => {
-              const dialog = document.querySelector('tp-yt-paper-dialog[opened], ytcp-dialog[opened], tp-yt-paper-dialog, [role="dialog"]');
-              if (!dialog) return 'no-dialog';
-              const btns = Array.from(dialog.querySelectorAll('ytcp-button, tp-yt-paper-button, button')).filter(b => b.offsetParent !== null);
-              const cand = btns.find(b => {
-                const t = (b.textContent || '').trim().toLowerCase();
-                return ['done','continue','set up premiere','save','confirm','ok','bitti','devam','kaydet','tamam'].includes(t);
-              });
-              if (cand) { cand.click(); return (cand.textContent || '').trim(); }
-              return 'no-confirm-button';
-            });
-            logFn(`[Puppet] Premiere setup confirm: "${confirmed}"`);
-            await new Promise(r => setTimeout(r, 2000));
-          }
+          // Do NOT click "Set up premiere" / confirm any dialog — verified manually that a plain
+          // premiere tick keeps the button on "Schedule"; the extra clicks corrupted state.
 
-          // Snapshot the premiere state (helps refine this flow later if YouTube changes it).
+          // Ticking premiere can re-render the scheduler and wipe date/time — re-verify + re-apply.
+          let vals = await readScheduleValues(page);
+          if (!scheduleIsIntact(vals, opts).ok) {
+            logFn(`[Puppet] Schedule drifted after premiere tick (date="${vals.date}" time="${vals.time}") — re-applying.`);
+            await reapplyDateTime(page, opts, logFn);
+            await new Promise(r => setTimeout(r, 800));
+            vals = await readScheduleValues(page);
+          }
+          const chk = scheduleIsIntact(vals, opts);
+          logFn(`[Puppet] Post-premiere schedule: date="${vals.date}" time="${vals.time}" (dateOk=${chk.dateOk}, timeOk=${chk.timeOk})`);
+
           try { await page.screenshot({ path: path.join(profilePath, 'puppet_premiere_debug.png') }); } catch (e) {}
 
-          // SAFETY NET: if premiere STILL left the primary button as non-"Schedule", the premiere
-          // could not be completed — revert the premiere tick so the SCHEDULE is preserved and the
-          // video still publishes on time (a scheduled public video beats an unscheduled draft).
-          const btnAfter = await page.evaluate(() => {
-            const b = document.querySelector('#schedule-button, #done-button, #publish-button, #save-button') ||
-                      document.querySelector('ytcp-button[id*="schedule"], ytcp-button[id*="done"]');
-            return b ? (b.id || (b.getAttribute && b.getAttribute('id')) || '') : '';
-          });
-          logFn(`[Puppet] Primary button after premiere setup: "${btnAfter}"`);
-          if (btnAfter && !/schedule/i.test(btnAfter)) {
-            logFn('[Puppet] Premiere did not become schedulable — reverting the premiere tick to preserve the schedule.');
-            await page.evaluate(() => {
-              const checkboxes = Array.from(document.querySelectorAll('ytcp-checkbox, tp-yt-paper-checkbox, paper-checkbox, ytcp-checkbox-lit'));
-              const cb = checkboxes.find(el => {
-                const t = (el.textContent || '').trim().toLowerCase();
-                return t.includes('premiere') || t.includes('gösterim') || t.includes('gosterim');
-              });
-              const on = cb && (cb.checked || cb.hasAttribute('checked') || cb.getAttribute('aria-checked') === 'true');
-              if (cb && on) cb.click();
-            });
-            await new Promise(r => setTimeout(r, 1200));
+          // Confirm the primary button became "Schedule"; retry re-applying date/time if not.
+          let btnId = await getPrimaryButtonId(page);
+          for (let attempt = 0; attempt < 2 && !/schedule/i.test(btnId); attempt++) {
+            logFn(`[Puppet] Primary button is "${btnId}" (not schedulable) — re-applying schedule (attempt ${attempt + 1}).`);
+            await reapplyDateTime(page, opts, logFn);
+            await new Promise(r => setTimeout(r, 1000));
+            btnId = await getPrimaryButtonId(page);
+          }
+          logFn(`[Puppet] Primary button after premiere: "${btnId}"`);
+
+          // ── BULLETPROOF FALLBACK ──────────────────────────────────────────────────────────────
+          // If premiere STILL won't schedule, untick premiere (trusted) so the video is at least
+          // SCHEDULED (non-premiere) and never gets stuck as a private draft.
+          if (!/schedule/i.test(btnId)) {
+            logFn('[Puppet] Premiere still not schedulable — reverting premiere to preserve the schedule.');
+            logFn(`[Puppet] Premiere revert status: ${await togglePremiere(page, false, logFn)}`);
+            await new Promise(r => setTimeout(r, 1000));
+            if (!scheduleIsIntact(await readScheduleValues(page), opts).ok) {
+              await reapplyDateTime(page, opts, logFn);
+              await new Promise(r => setTimeout(r, 800));
+            }
+            btnId = await getPrimaryButtonId(page);
+            for (let attempt = 0; attempt < 2 && !/schedule/i.test(btnId); attempt++) {
+              await reapplyDateTime(page, opts, logFn);
+              await new Promise(r => setTimeout(r, 1000));
+              btnId = await getPrimaryButtonId(page);
+            }
+            logFn(`[Puppet] Primary button after reverting premiere: "${btnId}" (scheduled=${/schedule/i.test(btnId)})`);
           }
         } catch (e) {
           logFn(`[Puppet] Warning: premiere handling error: ${e.message}`);

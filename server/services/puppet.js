@@ -1291,8 +1291,42 @@ export async function uploadVideoBrowser(channelId, opts, logFn = console.log) {
     logFn('[Puppet] Video file submitted, waiting for upload details to load...');
     onProgress(10, 'Uploading video…');
 
-    // Wait for the title input box to appear (confirms upload dialog loaded)
-    const titleInput = await page.waitForSelector('#title-textarea #textbox', { timeout: 30000 });
+    // Wait for the upload details dialog (title box) to appear. On slow proxies / under load this can
+    // take much longer than a few seconds, so be patient AND self-diagnosing: if it never appears, log
+    // exactly what WAS on the page so we can tell slow-render apart from an upload block (daily limit,
+    // verify-it's-you, consent wall, logged out) instead of an opaque "selector failed".
+    let titleInput = null;
+    const _titleDeadline = Date.now() + 90000;   // up to 90s (was a flat 30s)
+    let _lastSnap = '';
+    let _pollN = 0;
+    while (Date.now() < _titleDeadline) {
+      titleInput = await page.$('#title-textarea #textbox');
+      if (titleInput) break;
+      const _st = await page.evaluate(() => {
+        const txt = (document.body.innerText || document.body.textContent || '').replace(/\s+/g, ' ').trim();
+        const low = txt.toLowerCase();
+        let block = '';
+        if (/reached your daily upload limit|daily upload limit|upload limit/.test(low)) block = 'DAILY_UPLOAD_LIMIT';
+        else if (/verify (it'?s|its) you|confirm it'?s you|unusual traffic|verify your account|do\u011frula/.test(low)) block = 'VERIFY_REQUIRED';
+        else if (/sign in|oturum a\u00e7/.test(low) || location.href.includes('accounts.google.com')) block = 'LOGGED_OUT';
+        else if (/before you continue|accept all|reject all|consent|\u00e7erez/.test(low)) block = 'CONSENT_WALL';
+        const hasDialog = !!document.querySelector('ytcp-uploads-dialog, ytcp-video-metadata-editor, ytcp-uploads-details');
+        return { snippet: txt.slice(0, 400), block, hasDialog };
+      }).catch(() => ({ snippet: '', block: '', hasDialog: false }));
+      if (_st.block) {
+        throw new Error(`Upload blocked by YouTube (${_st.block}). Page said: "${_st.snippet}"`);
+      }
+      _lastSnap = _st.snippet;
+      if (_pollN++ % 5 === 0) {
+        logFn(`[Puppet] Waiting for upload details dialog... ${Math.round((Date.now() - (_titleDeadline - 90000)) / 1000)}s (dialog present: ${_st.hasDialog})`);
+      }
+      await new Promise(r => setTimeout(r, 2000));
+    }
+    if (!titleInput) {
+      logFn(`[Puppet] Upload details title box never appeared. URL: ${page.url()}`);
+      logFn(`[Puppet] Visible page text at timeout: "${_lastSnap}"`);
+      throw new Error(`Upload details dialog (title box) did not appear within 90s. Page text: "${_lastSnap.slice(0, 200)}"`);
+    }
     
     // Extract the Video ID early from the dialog (since YouTube generates it immediately)
     let youtubeVideoId = '';
@@ -1865,6 +1899,8 @@ export async function uploadVideoBrowser(channelId, opts, logFn = console.log) {
     logFn(`[Puppet] Error during automated upload: ${err.message}`);
     try {
       logFn(`[Puppet] Current page URL at failure: ${page.url()}`);
+      const _snap = await page.evaluate(() => (document.body.innerText || document.body.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 500)).catch(() => '');
+      if (_snap) logFn(`[Puppet] Visible page text at failure: "${_snap}"`);
       const screenshotPath = path.join(profilePath, 'puppet_upload_error.png');
       await page.screenshot({ path: screenshotPath });
       logFn(`[Puppet] Saved error screenshot to: ${screenshotPath}`);

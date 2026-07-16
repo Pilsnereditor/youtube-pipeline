@@ -3451,6 +3451,7 @@ function openEditScheduledPostModal(postId) {
   document.getElementById('btnCancelSchedPost').style.display = canCancel ? 'inline-block' : 'none';
 
   // Toggle link section
+  const _vr = document.getElementById('viewSchedVerifyReport'); if (_vr) { _vr.style.display='none'; _vr.innerHTML=''; }
   const publishedSec = document.getElementById('viewSchedPublishedSection');
   if (post.status === 'complete' && post.youtube_video_id) {
     publishedSec.style.display = 'block';
@@ -3461,6 +3462,51 @@ function openEditScheduledPostModal(postId) {
   }
 
   openModal('viewScheduledPostModal');
+}
+
+async function verifySchedPost() {
+  const id = state.activeEditPostId;
+  if (!id) return;
+  const btn = document.getElementById('btnVerifySchedPost');
+  const reportDiv = document.getElementById('viewSchedVerifyReport');
+  if (btn) { btn.disabled = true; btn.textContent = '🔍 Checking on YouTube…'; }
+  if (reportDiv) { reportDiv.style.display = 'block'; reportDiv.innerHTML = '<span class="muted">Opening the video on YouTube and checking… this can take 20–40 seconds.</span>'; }
+  try {
+    const res = await fetch(`${API_BASE}/schedule/${id}/verify`, { method: 'POST' });
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    renderVerifyReport(data.report);
+  } catch (err) {
+    if (reportDiv) reportDiv.innerHTML = `<span style="color:#fca5a5;">Verification failed: ${escapeHTML(err.message)}</span>`;
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '🔍 Verify on YouTube'; }
+  }
+}
+
+function renderVerifyReport(report) {
+  const reportDiv = document.getElementById('viewSchedVerifyReport');
+  if (!reportDiv || !report) return;
+  const icon = (ok) => ok === true ? '✅' : ok === false ? '❌' : '➖';
+  const row = (label, item) => `<div style="display:flex; gap:8px; padding:3px 0;"><span>${icon(item.ok)}</span><span style="min-width:90px; font-weight:600;">${label}</span><span class="muted">${escapeHTML(item.detail || '')}</span></div>`;
+  let html = '';
+  if (report.loggedIn === false) {
+    html = `<div style="color:#fca5a5;">❌ Not logged in — set up the browser login for this channel, then verify again.</div>`;
+  } else if (report.videoFound === false) {
+    html = `<div style="color:#fca5a5;">❌ Video not found on YouTube (it may have been deleted).</div>`;
+  } else {
+    html += `<div style="font-weight:700; margin-bottom:6px;">YouTube health check ${report.processing ? '<span class="muted">(still processing on YouTube)</span>' : ''}</div>`;
+    html += row('Scheduled', report.schedule);
+    html += row('Premiere', report.premiere);
+    html += row('Thumbnail', report.thumbnail);
+    html += row('Title', report.title);
+    html += row('Comment', report.comment);
+    if (report.issues && report.issues.length) {
+      html += `<div style="margin-top:8px; padding:8px; border-radius:6px; background:rgba(239,68,68,0.08); border:1px solid rgba(239,68,68,0.2);"><strong>Issues found:</strong><ul style="margin:4px 0 0 16px;">${report.issues.map(i => `<li>${escapeHTML(i)}</li>`).join('')}</ul></div>`;
+    } else {
+      html += `<div style="margin-top:8px; color:#a7f3d0;">✅ Everything checks out.</div>`;
+    }
+  }
+  reportDiv.innerHTML = html;
 }
 
 async function saveSchedPostChanges() {

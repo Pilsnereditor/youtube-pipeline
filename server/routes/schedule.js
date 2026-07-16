@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { queryAll, queryOne, run, getDb } from '../db/database.js';
 import { schedulePost, cancelPost, getUpcoming, processPost, reclaimPostAssets } from '../services/scheduler.js';
 import { syncChannelWithYouTube, updateVideoSchedule, updateOrAddComment, setThumbnail, updateVideoMetadataAPI } from '../services/youtube.js';
-import { rescheduleVideoBrowser, postCommentBrowser, updateThumbnailBrowser, withChannelLock } from '../services/puppet.js';
+import { rescheduleVideoBrowser, postCommentBrowser, updateThumbnailBrowser, withChannelLock, verifyVideoOnYouTube } from '../services/puppet.js';
 
 const router = Router();
 
@@ -458,6 +458,37 @@ router.delete('/:id', (req, res) => {
 /**
  * POST /api/schedule/:id/retry — Retry a failed scheduled post
  */
+/**
+ * POST /:id/verify — Inspect the video's real state on YouTube (schedule / premiere / comment /
+ * thumbnail / title) and return a health report with issues + likely reasons. Browser mode only.
+ */
+router.post('/:id/verify', async (req, res) => {
+  const userId = req.session.userId;
+  const { id } = req.params;
+  const post = queryOne('SELECT * FROM scheduled_posts WHERE id = @id AND user_id = @userId', { id, userId });
+  if (!post) return res.status(404).json({ error: 'Scheduled post not found.' });
+  if (!post.youtube_video_id) return res.status(400).json({ error: 'This post has no YouTube video yet \u2014 nothing to verify.' });
+  const channel = queryOne('SELECT * FROM channels WHERE id = @id', { id: post.channel_id });
+  if (!channel) return res.status(404).json({ error: 'Channel not found.' });
+  if (channel.upload_mode !== 'browser') {
+    return res.status(400).json({ error: 'Verification is currently available for browser-mode channels only.' });
+  }
+  try {
+    const rawComment = post.custom_comment || channel.comment_template || '';
+    const expected = {
+      scheduledAt: post.scheduled_at,
+      isPremiere: !!post.is_premiere,
+      hasComment: !!(rawComment && rawComment.trim()),
+      hasThumbnail: !!post.thumbnail_id,
+      title: post.title,
+    };
+    const report = await withChannelLock(post.channel_id, () => verifyVideoOnYouTube(post.channel_id, post.youtube_video_id, expected));
+    return res.json({ success: true, report });
+  } catch (err) {
+    return res.status(500).json({ error: 'Verification failed: ' + err.message });
+  }
+});
+
 router.post('/:id/retry', (req, res) => {
   const userId = req.session.userId;
   const { id } = req.params;

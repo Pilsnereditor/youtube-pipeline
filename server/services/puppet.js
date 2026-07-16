@@ -2565,6 +2565,171 @@ export async function rescheduleVideoBrowser(channelId, youtubeVideoId, schedule
 /**
  * Update the custom thumbnail for a YouTube video using Puppeteer browser session.
  */
+/**
+ * Verify a video's real state on YouTube and compare it to what was intended.
+ * Reads the edit page (schedule / premiere / thumbnail / title) and the watch page (pinned comment),
+ * and returns a health report with a list of issues + likely reasons. Best-effort: anything it can't
+ * read is reported as "unknown" rather than a false failure.
+ */
+export async function verifyVideoOnYouTube(channelId, youtubeVideoId, expected = {}, logFn = console.log) {
+  await closeBrowserSession(channelId);
+  const profilePath = getProfilePath(channelId);
+  const chromePath = getChromePath();
+  try {
+    for (const f of ['SingletonLock', 'SingletonSocket', 'SingletonCookie']) {
+      const p = path.join(profilePath, f);
+      if (fs.existsSync(p)) fs.unlinkSync(p);
+    }
+  } catch (e) {}
+
+  const channel = queryOne('SELECT * FROM channels WHERE id = @id', { id: channelId });
+  const proxyConfig = resolveChannelProxy(channel);
+  const proxyUrl = proxyConfig ? proxyConfig.proxyUrl : null;
+  const runHeadless = process.env.PUPPET_HEADLESS !== 'false';
+  logFn(`[Verify] Inspecting video ${youtubeVideoId} on YouTube (headless: ${runHeadless})`);
+  const browser = await launchBrowserWithRetry(chromePath, profilePath, runHeadless, 3, 3000, proxyUrl);
+
+  const report = {
+    videoId: youtubeVideoId,
+    checkedAt: new Date().toISOString(),
+    loggedIn: true,
+    videoFound: null,
+    processing: null,
+    schedule: { ok: null, actual: '', detail: '' },
+    premiere: { ok: null, actual: '', detail: '' },
+    thumbnail: { ok: null, detail: '' },
+    title: { ok: null, actual: '', detail: '' },
+    comment: { ok: null, detail: '' },
+    issues: []
+  };
+
+  let page;
+  try {
+    page = await browser.newPage();
+    if (proxyConfig && (proxyConfig.username || proxyConfig.password)) {
+      await page.authenticate({ username: proxyConfig.username || '', password: proxyConfig.password || '' });
+    }
+    await page.setExtraHTTPHeaders({ 'Accept-Language': 'en-US,en;q=0.9' });
+    await page.setUserAgent(getUserAgent());
+    await page.setViewport({ width: 1280, height: 800 });
+    await page.evaluateOnNewDocument(() => { Object.defineProperty(navigator, 'webdriver', { get: () => false }); });
+
+    // ---- Edit page: schedule / premiere / thumbnail / title ----
+    logFn('[Verify] Loading edit page...');
+    await page.goto(`https://studio.youtube.com/video/${youtubeVideoId}/edit?hl=en&persist_hl=1`, { waitUntil: 'networkidle2', timeout: 60000 });
+    if (page.url().includes('accounts.google.com')) {
+      report.loggedIn = false;
+      report.issues.push('Not logged in — cannot verify. Re-run the browser login for this channel.');
+      await browser.close();
+      return report;
+    }
+    await new Promise(r => setTimeout(r, 2500));
+    const edit = await page.evaluate(() => {
+      function deep(sel, root = document, out = []) {
+        out.push(...root.querySelectorAll(sel));
+        for (const el of root.querySelectorAll('*')) if (el.shadowRoot) deep(sel, el.shadowRoot, out);
+        return out;
+      }
+      const bodyText = (document.body.innerText || '').toLowerCase();
+      const notFound = bodyText.includes("this page isn't available") || bodyText.includes('video unavailable') || bodyText.includes('kullanılamıyor');
+      const processing = bodyText.includes('processing') || bodyText.includes('checks in progress') || bodyText.includes('ışleniyor');
+      const titleEl = deep('#title-textarea #textbox, ytcp-social-suggestions-textbox #textbox')[0];
+      const title = titleEl ? (titleEl.textContent || '').trim() : '';
+      const visEls = deep('ytcp-video-visibility-select, #visibility, .visibility-container, ytcp-video-metadata-visibility');
+      let visText = '';
+      for (const v of visEls) { const t = (v.textContent || '').trim(); if (t) visText += ' | ' + t; }
+      if (!visText) {
+        const m = bodyText.match(/(scheduled|zamanland[ıi]|premiere|premiyer|public|private|özel|unlisted|draft|taslak)/);
+        visText = m ? m[1] : '';
+      }
+      const premiere = /premiere|premiyer|g[öo]sterim/.test((visText + ' ' + bodyText).toLowerCase());
+      const thumbImgs = deep('ytcp-video-thumbnail-with-edit img, #still-1 img, ytcp-thumbnail-editor img, img.thumbnail');
+      const hasCustomThumb = thumbImgs.some(i => i.src && (i.src.startsWith('http') || i.src.startsWith('data:')) && !i.src.includes('default'));
+      return { notFound, processing, title, visText: visText.trim(), premiere, hasCustomThumb };
+    }).catch(() => null);
+
+    if (edit && edit.notFound) {
+      report.videoFound = false;
+      report.issues.push('Video not found on YouTube — it may have been deleted.');
+      await browser.close();
+      return report;
+    }
+    report.videoFound = true;
+    report.processing = !!(edit && edit.processing);
+
+    if (edit) {
+      const vt = (edit.visText || '').toLowerCase();
+      const looksScheduled = /scheduled|zamanland/.test(vt);
+      report.schedule.actual = edit.visText || (edit.processing ? 'Processing' : 'Unknown');
+      if (expected.scheduledAt) {
+        report.schedule.ok = looksScheduled ? true : (edit.processing ? null : false);
+        report.schedule.detail = looksScheduled
+          ? 'Video is scheduled on YouTube.'
+          : (edit.processing ? 'Still processing — schedule not confirmable yet, try again shortly.' : `NOT scheduled (YouTube shows: "${edit.visText || 'unknown'}").`);
+        if (report.schedule.ok === false) report.issues.push(report.schedule.detail);
+      } else { report.schedule.detail = 'Not a scheduled upload.'; }
+
+      report.premiere.actual = edit.premiere ? 'Premiere' : 'Not premiere';
+      if (expected.isPremiere) {
+        report.premiere.ok = !!edit.premiere;
+        report.premiere.detail = edit.premiere ? 'Set as premiere.' : 'Expected a premiere, but no premiere indicator was found.';
+        if (!edit.premiere) report.issues.push(report.premiere.detail);
+      } else { report.premiere.detail = 'Premiere not requested.'; }
+
+      if (expected.hasThumbnail) {
+        report.thumbnail.ok = !!edit.hasCustomThumb;
+        report.thumbnail.detail = edit.hasCustomThumb ? 'Custom thumbnail present.' : 'Expected a custom thumbnail, but none was detected.';
+        if (!edit.hasCustomThumb) report.issues.push(report.thumbnail.detail);
+      } else { report.thumbnail.detail = 'No custom thumbnail requested.'; }
+
+      if (expected.title) {
+        const norm = s => (s || '').replace(/\s+/g, ' ').trim();
+        const match = norm(edit.title) === norm(expected.title) || (edit.title && norm(expected.title).startsWith(norm(edit.title)));
+        report.title.actual = edit.title || '';
+        report.title.ok = !!match;
+        report.title.detail = match ? 'Title matches.' : `Title on YouTube ("${edit.title}") differs from intended.`;
+        if (!match && edit.title) report.issues.push(report.title.detail);
+      }
+    } else {
+      report.issues.push('Could not read the edit page (YouTube layout changed or video still loading).');
+    }
+
+    // ---- Watch page: pinned / owner comment ----
+    if (expected.hasComment) {
+      try {
+        logFn('[Verify] Loading watch page for comment...');
+        await page.goto(`https://www.youtube.com/watch?v=${youtubeVideoId}`, { waitUntil: 'networkidle2', timeout: 60000 });
+        await new Promise(r => setTimeout(r, 2500));
+        await page.evaluate(() => window.scrollBy(0, 900));
+        await new Promise(r => setTimeout(r, 2500));
+        const c = await page.evaluate(() => {
+          const bodyText = (document.body.innerText || '').toLowerCase();
+          const commentsOff = bodyText.includes('comments are turned off') || bodyText.includes('yorumlar kapalı');
+          const threads = Array.from(document.querySelectorAll('ytd-comment-thread-renderer'));
+          const ownerOrPinned = threads.some(t => t.querySelector('ytd-author-comment-badge-renderer, #author-comment-badge, ytd-pinned-comment-badge-renderer'));
+          const premiereWaiting = bodyText.includes('premieres') || bodyText.includes('waiting');
+          return { commentsOff, ownerOrPinned, premiereWaiting };
+        }).catch(() => null);
+        if (c) {
+          if (c.commentsOff) { report.comment.ok = false; report.comment.detail = 'Comments are turned off on this video.'; report.issues.push(report.comment.detail); }
+          else if (c.ownerOrPinned) { report.comment.ok = true; report.comment.detail = 'Pinned/owner comment found.'; }
+          else if (c.premiereWaiting) { report.comment.detail = 'Premiere has not aired yet — the comment posts once it goes live.'; }
+          else { report.comment.ok = false; report.comment.detail = 'No pinned/owner comment found yet.'; report.issues.push(report.comment.detail); }
+        } else { report.comment.detail = 'Could not read the comments section.'; }
+      } catch (e) { report.comment.detail = 'Comment check failed: ' + e.message; }
+    } else { report.comment.detail = 'No auto-comment configured.'; }
+
+    await browser.close();
+    logFn(`[Verify] Done for ${youtubeVideoId}. Issues: ${report.issues.length ? report.issues.join(' ; ') : 'none'}`);
+    return report;
+  } catch (err) {
+    logFn(`[Verify] Error: ${err.message}`);
+    try { await browser.close(); } catch {}
+    report.issues.push('Verification could not complete: ' + err.message);
+    return report;
+  }
+}
+
 export async function updateThumbnailBrowser(channelId, youtubeVideoId, thumbnailPath, logFn = console.log) {
   await closeBrowserSession(channelId);
 

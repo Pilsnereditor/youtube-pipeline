@@ -1680,11 +1680,15 @@
         <!-- Video file & YouTube Link if published -->
         <div id="viewSchedPublishedSection" style="display:none; background:rgba(255,255,255,0.02); border:1px solid rgba(255,255,255,0.05); padding:12px; border-radius:8px; margin-top:15px;">
           <p class="muted" style="margin: 0; font-size: 0.8rem;" id="viewSchedFilename">File: --</p>
-          <div style="margin-top: 10px; display: flex; gap: 10px;">
+          <div style="margin-top: 10px; display: flex; gap: 10px; align-items:center; flex-wrap:wrap;">
             <a id="viewSchedYoutubeLink" href="#" target="_blank" class="btn-primary btn-sm" style="display: inline-flex; align-items: center; gap: 6px; text-decoration: none; font-weight: 600;">
               📺 View on YouTube
             </a>
+            <button id="btnVerifySchedPost" class="btn-secondary btn-sm" onclick="verifySchedPost()" style="display:inline-flex; align-items:center; gap:6px;">
+              🔍 Verify on YouTube
+            </button>
           </div>
+          <div id="viewSchedVerifyReport" style="display:none; margin-top:12px; font-size:0.82rem; line-height:1.4;"></div>
         </div>
       </div>
       <div class="modal-footer" style="display:flex; justify-content:space-between; align-items:center;">

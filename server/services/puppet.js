@@ -1299,41 +1299,51 @@ export async function uploadVideoBrowser(channelId, opts, logFn = console.log) {
     await createBtn.click();
     await new Promise(r => setTimeout(r, 2000));
 
-    logFn('[Puppet] Selecting Upload videos...');
-    // Find item by text using page.evaluate to click it reliably (supports English and Turkish)
-    const itemClicked = await page.evaluate(() => {
-      const items = Array.from(document.querySelectorAll('tp-yt-paper-item, paper-item, ytcp-menu-item-text, ytcp-menu-service-item-renderer, ytd-menu-service-item-renderer'));
-      const uploadItem = items.find(el => {
-        const txt = el.textContent.toLowerCase();
-        return txt.includes('upload') || txt.includes('yükle') || txt.includes('video ekle');
-      });
-      if (uploadItem) {
-        uploadItem.click();
-        return true;
-      }
-      // Fallback: click the first item in the dropdown
-      if (items.length > 0) {
-        items[0].click();
-        return true;
-      }
-      return false;
-    });
-
-    if (!itemClicked) {
-      throw new Error('Could not find or click the "Upload videos" option in the Create dropdown.');
-    }
-
+    // Verify the file exists first — a missing file would leave an empty dialog and a confusing timeout.
     if (!opts.videoPath || !fs.existsSync(opts.videoPath)) {
       throw new Error(`Video file not found on server: ${opts.videoPath || '(empty path)'} - it may have been moved or cleaned up before this scheduled upload ran.`);
     }
-    logFn('[Puppet] File picker open. Uploading video file...');
-    const fileChooserPromise = page.waitForFileChooser({ timeout: 30000 });
-    // Click select files button inside the file picker modal
-    await page.evaluate(() => {
-      const btn = document.querySelector('ytcp-uploads-file-picker input[type="file"], input[type="file"]');
-      if (btn) btn.click();
-    });
 
+    // Click "Upload videos" with a TRUSTED click and CONFIRM the upload dialog actually opens. YouTube's
+    // Polymer menu intermittently IGNORES untrusted (page.evaluate) clicks — the same failure mode as the
+    // schedule radio — which left the dialog unopened, so the file went to a stray input and the page just
+    // sat on the dashboard ("title box did not appear within 90s"). Retry, reopening Create, up to 3x.
+    logFn('[Puppet] Selecting "Upload videos" (trusted) and confirming the dialog opens...');
+    let uploadDialogOpen = false;
+    for (let attempt = 1; attempt <= 3 && !uploadDialogOpen; attempt++) {
+      const menu = await page.evaluate(() => {
+        const items = Array.from(document.querySelectorAll('tp-yt-paper-item, paper-item, ytcp-menu-item-text, ytcp-menu-service-item-renderer, ytd-menu-service-item-renderer, [role="menuitem"]'));
+        const up = items.find(el => { const t = (el.textContent || '').toLowerCase(); return t.includes('upload') || t.includes('yükle') || t.includes('video ekle'); });
+        if (up) { up.setAttribute('data-gag-upload', '1'); return { found: true, count: items.length }; }
+        return { found: false, count: items.length };
+      });
+      logFn(`[Puppet] Create menu: ${menu.count} items, "Upload videos" found: ${menu.found} (attempt ${attempt})`);
+      if (menu.found) {
+        const h = await page.$('[data-gag-upload="1"]');
+        if (h) {
+          await h.click().catch(() => {});                                   // TRUSTED click
+          await h.evaluate(el => el.removeAttribute('data-gag-upload')).catch(() => {});
+          await h.dispose();
+        }
+      } else {
+        // Menu not rendered yet (slow proxy) — reopen the Create menu and wait longer before retrying.
+        await createBtn.click().catch(() => {});
+        await new Promise(r => setTimeout(r, 3000));
+      }
+      uploadDialogOpen = await page.waitForSelector('ytcp-uploads-dialog, ytcp-uploads-file-picker, #select-files-button', { timeout: 12000 }).then(() => true).catch(() => false);
+      logFn(`[Puppet] Upload dialog open after attempt ${attempt}: ${uploadDialogOpen}`);
+    }
+    if (!uploadDialogOpen) {
+      throw new Error('The upload dialog did not open after selecting "Upload videos" (the menu click was ignored, or the page was too slow to render the dialog).');
+    }
+
+    logFn('[Puppet] Upload dialog open. Opening the file chooser for the video...');
+    const fileChooserPromise = page.waitForFileChooser({ timeout: 30000 });
+    await page.evaluate(() => {
+      function deep(sel, root = document, out = []) { out.push(...root.querySelectorAll(sel)); for (const el of root.querySelectorAll('*')) if (el.shadowRoot) deep(sel, el.shadowRoot, out); return out; }
+      const input = deep('ytcp-uploads-file-picker input[type="file"]')[0] || deep('input[type="file"]')[0];
+      if (input) input.click();
+    });
     const fileChooser = await fileChooserPromise;
     await fileChooser.accept([opts.videoPath]);
     logFn('[Puppet] Video file submitted, waiting for upload details to load...');

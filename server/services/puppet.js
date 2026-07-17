@@ -1337,15 +1337,35 @@ export async function uploadVideoBrowser(channelId, opts, logFn = console.log) {
       throw new Error('The upload dialog did not open after selecting "Upload videos" (the menu click was ignored, or the page was too slow to render the dialog).');
     }
 
-    logFn('[Puppet] Upload dialog open. Opening the file chooser for the video...');
-    const fileChooserPromise = page.waitForFileChooser({ timeout: 30000 });
-    await page.evaluate(() => {
-      function deep(sel, root = document, out = []) { out.push(...root.querySelectorAll(sel)); for (const el of root.querySelectorAll('*')) if (el.shadowRoot) deep(sel, el.shadowRoot, out); return out; }
-      const input = deep('ytcp-uploads-file-picker input[type="file"]')[0] || deep('input[type="file"]')[0];
-      if (input) input.click();
-    });
-    const fileChooser = await fileChooserPromise;
-    await fileChooser.accept([opts.videoPath]);
+    logFn('[Puppet] Upload dialog open. Attaching the video file...');
+    // Set the file DIRECTLY on the dialog's <input type=file> (robust — no native-chooser timing, no
+    // risk of accepting to a stray input). Fall back to the file-chooser flow only if we can't grab it.
+    let _attached = false;
+    try {
+      const inputHandle = await page.evaluateHandle(() => {
+        function deep(sel, root = document, out = []) { out.push(...root.querySelectorAll(sel)); for (const el of root.querySelectorAll('*')) if (el.shadowRoot) deep(sel, el.shadowRoot, out); return out; }
+        return deep('ytcp-uploads-file-picker input[type="file"]')[0] || deep('input[type="file"]')[0] || null;
+      });
+      const inputEl = inputHandle.asElement();
+      if (inputEl) {
+        await inputEl.uploadFile(opts.videoPath);
+        _attached = true;
+        logFn('[Puppet] Attached the video file directly to the upload input.');
+      }
+      await inputHandle.dispose();
+    } catch (e) {
+      logFn(`[Puppet] Direct attach failed (${e.message}); falling back to file chooser.`);
+    }
+    if (!_attached) {
+      const fileChooserPromise = page.waitForFileChooser({ timeout: 30000 });
+      await page.evaluate(() => {
+        function deep(sel, root = document, out = []) { out.push(...root.querySelectorAll(sel)); for (const el of root.querySelectorAll('*')) if (el.shadowRoot) deep(sel, el.shadowRoot, out); return out; }
+        const input = deep('ytcp-uploads-file-picker input[type="file"]')[0] || deep('input[type="file"]')[0];
+        if (input) input.click();
+      });
+      const fileChooser = await fileChooserPromise;
+      await fileChooser.accept([opts.videoPath]);
+    }
     logFn('[Puppet] Video file submitted, waiting for upload details to load...');
     onProgress(10, 'Uploading video…');
 
@@ -1383,6 +1403,27 @@ export async function uploadVideoBrowser(channelId, opts, logFn = console.log) {
     if (!titleInput) {
       logFn(`[Puppet] Upload details title box never appeared. URL: ${page.url()}`);
       logFn(`[Puppet] Visible page text at timeout: "${_lastSnap}"`);
+      // Pinpoint WHY: is the dialog actually open+visible? still on the "select files" screen (file never
+      // attached)? how many file inputs exist? any error toast? This separates file-not-attached from
+      // dialog-closed from an upload error.
+      try {
+        const diag = await page.evaluate(() => {
+          function deep(sel, root = document, out = []) { out.push(...root.querySelectorAll(sel)); for (const el of root.querySelectorAll('*')) if (el.shadowRoot) deep(sel, el.shadowRoot, out); return out; }
+          const vis = el => el && el.offsetParent !== null;
+          const dlg = deep('ytcp-uploads-dialog')[0];
+          const picker = deep('ytcp-uploads-file-picker')[0];
+          const errs = deep('[role="alert"], tp-yt-paper-toast, ytcp-uploads-error-dialog, .error-short').filter(vis).map(e => (e.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 140)).filter(Boolean);
+          return {
+            dialogPresent: !!dlg, dialogVisible: vis(dlg),
+            pickerPresent: !!picker, pickerVisible: vis(picker),
+            selectFilesVisible: deep('#select-files-button').some(vis),
+            fileInputCount: deep('input[type="file"]').length,
+            dialogText: dlg ? (dlg.innerText || dlg.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 220) : '',
+            errors: errs
+          };
+        });
+        logFn(`[Puppet] TITLE-TIMEOUT DIAG: ${JSON.stringify(diag)}`);
+      } catch (e) { logFn(`[Puppet] title-timeout diag failed: ${e.message}`); }
       throw new Error(`Upload details dialog (title box) did not appear within 90s. Page text: "${_lastSnap.slice(0, 200)}"`);
     }
     

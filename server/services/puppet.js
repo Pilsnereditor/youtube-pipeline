@@ -1515,8 +1515,18 @@ export async function uploadVideoBrowser(channelId, opts, logFn = console.log) {
     await setEditableText(page, titleInput, opts.title, logFn);
 
     logFn('[Puppet] Inputting description...');
-    const descInput = await page.waitForSelector('#description-textarea #textbox', { timeout: 5000 });
-    await setEditableText(page, descInput, opts.description || '', logFn);
+    // Patient + non-fatal: right after a big upload starts, the description box can lag. Description is
+    // optional on YouTube, so if it never shows we log and continue rather than failing the whole upload.
+    let descInput = null;
+    for (let a = 1; a <= 8 && !descInput; a++) {
+      descInput = await page.$('#description-textarea #textbox');
+      if (!descInput) await new Promise(r => setTimeout(r, 2500));
+    }
+    if (descInput) {
+      await setEditableText(page, descInput, opts.description || '', logFn);
+    } else {
+      logFn('[Puppet] WARNING: description box did not appear (~20s); continuing without a description.');
+    }
 
     // Set "Made for kids" to No
     logFn('[Puppet] Setting audience (Not Made for Kids)...');
@@ -1558,7 +1568,7 @@ export async function uploadVideoBrowser(channelId, opts, logFn = console.log) {
 
     if (!kidsClicked) {
       logFn('[Puppet] Warning: could not find "Not Made for Kids" radio button via evaluate, trying selector...');
-      const kidsRadio = await page.waitForSelector('tp-yt-paper-radio-button[name="VIDEO_MADE_FOR_KIDS_NOT_FOR_KIDS"]', { timeout: 5000 });
+      const kidsRadio = await page.waitForSelector('tp-yt-paper-radio-button[name="VIDEO_MADE_FOR_KIDS_NOT_FOR_KIDS"]', { timeout: 10000 });
       await safeClick(page, kidsRadio, { scroll: true });
     }
 
@@ -1576,19 +1586,19 @@ export async function uploadVideoBrowser(channelId, opts, logFn = console.log) {
 
     // Step 1: Details -> Video Elements
     logFn('[Puppet] Transitioning from Details to Video Elements...');
-    const nextBtn1 = await page.waitForSelector('#next-button', { timeout: 10000 });
+    const nextBtn1 = await page.waitForSelector('#next-button', { timeout: 20000 });
     await safeClick(page, nextBtn1, { scroll: true });
     await new Promise(r => setTimeout(r, 1500));
 
     // Step 2: Video Elements -> Checks
     logFn('[Puppet] Transitioning from Video Elements to Checks...');
-    const nextBtn2 = await page.waitForSelector('#next-button', { timeout: 10000 });
+    const nextBtn2 = await page.waitForSelector('#next-button', { timeout: 20000 });
     await safeClick(page, nextBtn2, { scroll: true });
     await new Promise(r => setTimeout(r, 1500));
 
     // Step 3: Checks -> Visibility
     logFn('[Puppet] Transitioning from Checks to Visibility...');
-    const nextBtn3 = await page.waitForSelector('#next-button', { timeout: 10000 });
+    const nextBtn3 = await page.waitForSelector('#next-button', { timeout: 20000 });
     await safeClick(page, nextBtn3, { scroll: true });
     await new Promise(r => setTimeout(r, 1500));
 

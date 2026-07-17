@@ -1,7 +1,7 @@
 import cron from 'node-cron';
 import { queryAll, queryOne, run, insert } from '../db/database.js';
 import { uploadVideo, setThumbnail, addComment, syncChannelWithYouTube } from './youtube.js';
-import { uploadVideoBrowser, rescheduleVideoBrowser, postCommentBrowser, syncChannelWithYouTubeBrowser, withChannelLock } from './puppet.js';
+import { uploadVideoBrowser, rescheduleVideoBrowser, scheduleStudioDraftBrowser, postCommentBrowser, syncChannelWithYouTubeBrowser, withChannelLock } from './puppet.js';
 import { runWeeklyCleanup } from './videoCleanup.js';
 
 let broadcastFn = null;
@@ -222,6 +222,25 @@ export async function checkPendingComments() {
  *  4. Post auto-comment from the channel's comment_template
  *  5. Record the upload and mark post as complete
  */
+// Finalize a video's schedule on the EDIT PAGE — the reliable path that commits even while the video
+// is still processing (unlike the in-upload-dialog "Schedule" click, which clicks but often does not
+// commit, especially for premieres). For a bare DRAFT the edit page has no visibility control, so fall
+// back to the "Edit draft" wizard — the same two-path logic the Studio Videos tab uses successfully.
+async function enforceScheduleOnEdit(channelId, videoId, scheduledAt, isPremiere, notify = () => {}) {
+  await withChannelLock(channelId, async () => {
+    try {
+      await rescheduleVideoBrowser(channelId, videoId, scheduledAt, isPremiere ? 1 : 0);
+    } catch (editErr) {
+      if (/visibility trigger|visibility editor|not editable/i.test(editErr.message || '')) {
+        notify('Edit page had no visibility control (draft) — scheduling via the Edit-draft wizard...');
+        await scheduleStudioDraftBrowser(channelId, videoId, scheduledAt, !!isPremiere, notify);
+      } else {
+        throw editErr;
+      }
+    }
+  });
+}
+
 export async function processPost(post) {
   const notify = (msg) => {
     console.log(`[Scheduler] ${msg}`);
@@ -330,8 +349,7 @@ export async function processPost(post) {
         emitProgress(45, 'Video already uploaded — applying the schedule on YouTube…');
         if (intendedToSchedule && scheduleStillPossible) {
           notify(`Video ${videoId} was already uploaded — applying the schedule on the edit page...`);
-          // rescheduleVideoBrowser THROWS on any failure (incl. still-processing) → only a clean return confirms it.
-          await withChannelLock(post.channel_id, () => rescheduleVideoBrowser(post.channel_id, videoId, post.scheduled_at, post.is_premiere || 0));
+          await enforceScheduleOnEdit(post.channel_id, videoId, post.scheduled_at, post.is_premiere || 0, notify);
           scheduleConfirmed = true;
         } else if (intendedToSchedule && !scheduleStillPossible) {
           notify(`Video ${videoId} uploaded but its scheduled time has already passed — needs manual scheduling.`);
@@ -367,12 +385,15 @@ export async function processPost(post) {
         // "Done") enforce it on the edit page — that call THROWS if the video is still processing,
         // routing to the transient retry. Only a clean return counts as confirmed.
         if (videoId && intendedToSchedule) {
-          if (result.scheduled === true) {
+          if (scheduleStillPossible) {
+            // Do NOT trust the in-upload-dialog "Schedule" click — it clicks but often does not commit
+            // (premieres especially). The edit-page schedule reliably commits even while the video is
+            // still processing, so always finalize there regardless of what the dialog reported.
+            notify(`Finalizing the schedule on the edit page...`);
+            await enforceScheduleOnEdit(post.channel_id, videoId, post.scheduled_at, post.is_premiere || 0, notify);
             scheduleConfirmed = true;
-          } else if (scheduleStillPossible) {
-            notify(`Upload saved without a schedule — enforcing the schedule on the edit page...`);
-            await withChannelLock(post.channel_id, () => rescheduleVideoBrowser(post.channel_id, videoId, post.scheduled_at, post.is_premiere || 0));
-            scheduleConfirmed = true;
+          } else {
+            notify(`Video ${videoId} uploaded but its scheduled time has already passed — needs manual scheduling.`);
           }
         } else if (!intendedToSchedule) {
           scheduleConfirmed = true;

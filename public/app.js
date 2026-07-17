@@ -456,6 +456,28 @@ function switchTab(tabId) {
 // ---------------------------------------------------------------------------
 state.studioDrafts = [];
 
+async function syncStudioVideos(btn) {
+  const sel = document.getElementById('studioChannelSelect');
+  const channelId = sel ? sel.value : '';
+  if (!channelId) { showToast('Pick a channel first.', 'warning'); return; }
+  if (!confirm('Scan this channel on YouTube and import any videos gageditor is missing into the Schedule? Safe to re-run.')) return;
+  const orig = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = '\u23F3 Scanning YouTube\u2026'; }
+  try {
+    const res = await fetch(`${API_BASE}/studio/${channelId}/import`, { method: 'POST' });
+    if (!res.ok) throw new Error(await res.text());
+    const out = await res.json();
+    showToast(`Sync complete: ${out.imported} imported, ${out.skipped} already tracked (of ${out.total} on YouTube).`, 'success');
+    if (typeof loadScheduledPosts === 'function') { await loadScheduledPosts(); }
+    if (typeof renderScheduleCalendar === 'function') { renderScheduleCalendar(); }
+    loadStudioDrafts();
+  } catch (err) {
+    showToast('Sync failed: ' + err.message, 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = orig || '\u{1F501} Sync from YouTube'; }
+  }
+}
+
 function populateStudioChannels() {
   const sel = document.getElementById('studioChannelSelect');
   if (!sel) return;

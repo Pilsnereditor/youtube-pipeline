@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { queryOne, run } from '../db/database.js';
-import { listStudioDraftsBrowser, scheduleStudioDraftBrowser, rescheduleVideoBrowser, withChannelLock } from '../services/puppet.js';
+import { listStudioDraftsBrowser, listAllStudioVideosBrowser, scheduleStudioDraftBrowser, rescheduleVideoBrowser, withChannelLock } from '../services/puppet.js';
 
 const router = Router();
 
@@ -102,6 +102,49 @@ router.post('/:channelId/schedule', async (req, res) => {
   }
 
   res.json({ ok: true });
+});
+
+/**
+ * POST /api/studio/:channelId/import
+ * "Sync from YouTube": scan every video on the channel's Studio and, for any that gageditor is not
+ * already tracking (by youtube_video_id), insert a status='complete' record so it shows up in the
+ * Schedule/calendar and is never re-uploaded. Safe to re-run (dedupes by video id).
+ */
+router.post('/:channelId/import', async (req, res) => {
+  const userId = req.session.userId;
+  const channelId = Number(req.params.channelId);
+  if (!ownsChannel(channelId, userId)) {
+    return res.status(404).json({ error: 'Channel not found or does not belong to you.' });
+  }
+  const channel = queryOne('SELECT upload_mode FROM channels WHERE id = @id', { id: channelId });
+  if (channel && channel.upload_mode !== 'browser') {
+    return res.status(400).json({ error: 'Sync from YouTube is only available for browser-mode (puppet) channels.' });
+  }
+  try {
+    const videos = await withChannelLock(channelId, () => listAllStudioVideosBrowser(channelId));
+    let imported = 0, skipped = 0;
+    for (const v of (Array.isArray(videos) ? videos : [])) {
+      if (!v.videoId) continue;
+      const existing = queryOne(
+        'SELECT id FROM scheduled_posts WHERE channel_id = @channelId AND youtube_video_id = @vid',
+        { channelId, vid: v.videoId }
+      );
+      if (existing) { skipped++; continue; }
+      let scheduledAt = null;
+      if (v.dateText) { const d = new Date(v.dateText); if (!isNaN(d.getTime())) scheduledAt = d.toISOString().slice(0, 19); }
+      if (!scheduledAt) scheduledAt = new Date().toISOString().slice(0, 19);
+      run(
+        `INSERT INTO scheduled_posts
+           (user_id, channel_id, youtube_video_id, title, scheduled_at, is_premiere, status, comment_status)
+         VALUES (@userId, @channelId, @vid, @title, @scheduledAt, @prem, 'complete', 'none')`,
+        { userId, channelId, vid: v.videoId, title: (v.title || 'Imported from YouTube'), scheduledAt, prem: v.isPremiere ? 1 : 0 }
+      );
+      imported++;
+    }
+    res.json({ ok: true, imported, skipped, total: (Array.isArray(videos) ? videos.length : 0) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 export default router;

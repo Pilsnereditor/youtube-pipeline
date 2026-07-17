@@ -3871,6 +3871,107 @@ export async function scheduleStudioDraftBrowser(channelId, videoId, scheduledAt
   }
 }
 
+/**
+ * Scan ALL videos on a channel's YouTube Studio content page (scheduled, published, private, draft…)
+ * for the "Sync from YouTube" reconcile. Returns { videoId, title, thumbnail, status, isPremiere, dateText }.
+ * Best-effort DOM scrape; throws only on hard failures (not logged in / page never loads).
+ */
+export async function listAllStudioVideosBrowser(channelId, logFn = console.log) {
+  await closeBrowserSession(channelId);
+  try { await stopVncSessionForProfile(getProfilePath(channelId)); } catch (e) {}
+  await new Promise(r => setTimeout(r, 800));
+
+  const profilePath = getProfilePath(channelId);
+  const chromePath = getChromePath();
+  try {
+    for (const f of ['SingletonLock', 'SingletonSocket', 'SingletonCookie']) {
+      const lp = path.join(profilePath, f);
+      if (fs.existsSync(lp)) fs.unlinkSync(lp);
+    }
+  } catch (e) {}
+
+  const channel = queryOne('SELECT * FROM channels WHERE id = @id', { id: channelId });
+  if (!channel) throw new Error(`Channel ${channelId} not found.`);
+  const proxyConfig = resolveChannelProxy(channel);
+  const proxyUrl = proxyConfig ? proxyConfig.proxyUrl : null;
+
+  const runHeadless = process.env.PUPPET_HEADLESS !== 'false';
+  logFn(`[Puppet Studio] Scanning ALL videos for channel ${channelId} (headless: ${runHeadless})`);
+  const browser = await launchBrowserWithRetry(chromePath, profilePath, runHeadless, 3, 3000, proxyUrl);
+
+  let page;
+  try {
+    page = await browser.newPage();
+    if (proxyConfig && (proxyConfig.username || proxyConfig.password)) {
+      await page.authenticate({ username: proxyConfig.username || '', password: proxyConfig.password || '' });
+    }
+    await page.setExtraHTTPHeaders({ 'Accept-Language': 'en-US,en;q=0.9' });
+    await page.setUserAgent(getUserAgent());
+    await page.setViewport({ width: 1280, height: 900 });
+    await page.evaluateOnNewDocument(() => { Object.defineProperty(navigator, 'webdriver', { get: () => false }); });
+
+    const targetUrl = channel.youtube_channel_id
+      ? `https://studio.youtube.com/channel/${channel.youtube_channel_id}/videos/upload?hl=en&persist_hl=1`
+      : `https://studio.youtube.com/channel/videos?hl=en&persist_hl=1`;
+    logFn(`[Puppet Studio] Navigating to: ${targetUrl}`);
+    await page.goto(targetUrl, { waitUntil: 'networkidle2', timeout: 60000 });
+    if (page.url().includes('accounts.google.com')) {
+      throw new Error('Not logged in for this channel. Set up the browser session in channel settings first.');
+    }
+
+    let rowsReady = false;
+    for (let a = 1; a <= 4 && !rowsReady; a++) {
+      rowsReady = await page.waitForSelector('ytcp-video-row', { timeout: 20000 }).then(() => true).catch(() => false);
+      if (!rowsReady && a < 4) await new Promise(r => setTimeout(r, 4000));
+    }
+    await new Promise(r => setTimeout(r, 2500));
+
+    const rows = await page.evaluate(() => {
+      const norm = (s) => (s || '').replace(/\s+/g, ' ').trim();
+      const idFrom = (s) => {
+        if (!s) return '';
+        const m = s.match(/\/vi(?:_webp)?\/([a-zA-Z0-9_-]{11})\//) || s.match(/\/video\/([a-zA-Z0-9_-]{11})/) || s.match(/[?&]v=([a-zA-Z0-9_-]{11})/);
+        return m ? m[1] : '';
+      };
+      const out = [];
+      for (const row of Array.from(document.querySelectorAll('ytcp-video-row'))) {
+        let title = '';
+        const t = row.querySelector('#video-title, a#video-title, #video-title-container a, #video-title-container');
+        if (t) title = norm(t.textContent);
+        let thumbnail = '';
+        const img = row.querySelector('img');
+        if (img) thumbnail = img.src || img.getAttribute('src') || '';
+        let videoId = '';
+        for (const a of row.querySelectorAll('a')) { videoId = idFrom(a.href || ''); if (videoId) break; }
+        if (!videoId) videoId = idFrom(thumbnail);
+        if (!videoId) { const idEl = row.querySelector('[video-id],[videoid]'); if (idEl) { const vv = idEl.getAttribute('video-id') || idEl.getAttribute('videoid'); if (vv && vv.length === 11) videoId = vv; } }
+        const rowText = norm(row.textContent);
+        const low = rowText.toLowerCase();
+        let status = 'unknown';
+        if (/schedul|zamanlan|upcoming|premieres/.test(low)) status = 'scheduled';
+        else if (/edit draft|taslağı düzenle|\bdraft\b|taslak/.test(low)) status = 'draft';
+        else if (/public|herkese/.test(low)) status = 'public';
+        else if (/unlisted|liste dış/.test(low)) status = 'unlisted';
+        else if (/private|özel/.test(low)) status = 'private';
+        const isPremiere = /premiere|premieres|pr[oö]miyer/i.test(rowText) ? 1 : 0;
+        let dateText = '';
+        const dm = rowText.match(/[A-Z][a-z]{2,8}\s+\d{1,2},?\s+\d{4}(?:,?\s+\d{1,2}:\d{2}\s*(?:AM|PM))?/) || rowText.match(/\d{1,2}[.\/]\d{1,2}[.\/]\d{2,4}/);
+        if (dm) dateText = dm[0];
+        if (videoId) out.push({ videoId, title, thumbnail, status, isPremiere, dateText });
+      }
+      return out;
+    });
+
+    await browser.close();
+    logFn(`[Puppet Studio] Scanned ${rows.length} videos on the channel.`);
+    return rows;
+  } catch (err) {
+    logFn(`[Puppet Studio] Error scanning videos: ${err.message}`);
+    try { await browser.close(); } catch (e) {}
+    throw err;
+  }
+}
+
 export async function syncChannelWithYouTubeBrowser(channelId, logFn = console.log) {
   await closeBrowserSession(channelId);
   try { await stopVncSessionForProfile(getProfilePath(channelId)); } catch (e) {}

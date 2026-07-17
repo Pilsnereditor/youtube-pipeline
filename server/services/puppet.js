@@ -1337,11 +1337,25 @@ export async function uploadVideoBrowser(channelId, opts, logFn = console.log) {
       throw new Error('The upload dialog did not open after selecting "Upload videos" (the menu click was ignored, or the page was too slow to render the dialog).');
     }
 
-    logFn('[Puppet] Upload dialog open. Attaching the video file...');
-    // Set the file DIRECTLY on the dialog's <input type=file> (robust — no native-chooser timing, no
-    // risk of accepting to a stray input). Fall back to the file-chooser flow only if we can't grab it.
-    let _attached = false;
-    try {
+    logFn('[Puppet] Upload dialog open. Selecting the video file...');
+
+    // Wait until the picker is fully ready before attaching (avoids attaching to a half-rendered dialog).
+    await page.waitForFunction(() => {
+      function deep(sel, root = document, out = []) { out.push(...root.querySelectorAll(sel)); for (const el of root.querySelectorAll('*')) if (el.shadowRoot) deep(sel, el.shadowRoot, out); return out; }
+      const vis = el => el && el.offsetParent !== null;
+      return deep('#select-files-button').some(vis) || deep('ytcp-uploads-file-picker input[type="file"]').length > 0;
+    }, { timeout: 15000 }).catch(() => {});
+
+    // Are we still stuck on the "Select files / drag & drop" screen (i.e. the upload never started)?
+    const onSelectScreen = async () => await page.evaluate(() => {
+      function deep(sel, root = document, out = []) { out.push(...root.querySelectorAll(sel)); for (const el of root.querySelectorAll('*')) if (el.shadowRoot) deep(sel, el.shadowRoot, out); return out; }
+      const vis = el => el && el.offsetParent !== null;
+      return deep('#select-files-button').some(vis) && !deep('#title-textarea #textbox')[0];
+    }).catch(() => false);
+
+    // Method A: direct file-set on the input, then EXPLICITLY fire input/change (YouTube sometimes misses
+    // the programmatic set — the observed failure: "Attached" logged but dialog stayed on Select files).
+    const attachViaInput = async () => {
       const inputHandle = await page.evaluateHandle(() => {
         function deep(sel, root = document, out = []) { out.push(...root.querySelectorAll(sel)); for (const el of root.querySelectorAll('*')) if (el.shadowRoot) deep(sel, el.shadowRoot, out); return out; }
         return deep('ytcp-uploads-file-picker input[type="file"]')[0] || deep('input[type="file"]')[0] || null;
@@ -1349,23 +1363,50 @@ export async function uploadVideoBrowser(channelId, opts, logFn = console.log) {
       const inputEl = inputHandle.asElement();
       if (inputEl) {
         await inputEl.uploadFile(opts.videoPath);
-        _attached = true;
-        logFn('[Puppet] Attached the video file directly to the upload input.');
+        await inputEl.evaluate(el => { el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); }).catch(() => {});
       }
       await inputHandle.dispose();
-    } catch (e) {
-      logFn(`[Puppet] Direct attach failed (${e.message}); falling back to file chooser.`);
-    }
-    if (!_attached) {
-      const fileChooserPromise = page.waitForFileChooser({ timeout: 30000 });
-      await page.evaluate(() => {
+      return !!inputEl;
+    };
+
+    // Method B: TRUSTED click on the visible "SELECT FILES" button -> native chooser -> accept (YouTube's
+    // real flow; a trusted click is what its Polymer UI reliably honours).
+    const attachViaChooser = async () => {
+      const fileChooserPromise = page.waitForFileChooser({ timeout: 20000 });
+      const tagged = await page.evaluate(() => {
         function deep(sel, root = document, out = []) { out.push(...root.querySelectorAll(sel)); for (const el of root.querySelectorAll('*')) if (el.shadowRoot) deep(sel, el.shadowRoot, out); return out; }
-        const input = deep('ytcp-uploads-file-picker input[type="file"]')[0] || deep('input[type="file"]')[0];
-        if (input) input.click();
+        const vis = el => el && el.offsetParent !== null;
+        const btn = deep('#select-files-button').find(vis) || deep('ytcp-button, button').find(el => vis(el) && /select files|dosya seç/i.test(el.textContent || ''));
+        if (btn) { btn.setAttribute('data-gag-selectfiles', '1'); return true; }
+        return false;
       });
+      if (!tagged) { await fileChooserPromise.catch(() => {}); return false; }
+      const h = await page.$('[data-gag-selectfiles="1"]');
+      if (h) { await h.click().catch(() => {}); await h.evaluate(el => el.removeAttribute('data-gag-selectfiles')).catch(() => {}); await h.dispose(); }
       const fileChooser = await fileChooserPromise;
       await fileChooser.accept([opts.videoPath]);
+      return true;
+    };
+
+    // Try up to 3 times, alternating methods, and VERIFY the dialog actually left the select-files screen.
+    let _fileStarted = false;
+    for (let attempt = 1; attempt <= 3 && !_fileStarted; attempt++) {
+      try {
+        if (attempt === 1) { await attachViaChooser(); logFn('[Puppet] Selected file via SELECT FILES chooser (attempt 1).'); }
+        else { await attachViaInput(); logFn(`[Puppet] Attached file via direct input + events (attempt ${attempt}).`); }
+      } catch (e) {
+        logFn(`[Puppet] File-select attempt ${attempt} error: ${e.message}`);
+      }
+      for (let w = 0; w < 6 && !_fileStarted; w++) {
+        await new Promise(r => setTimeout(r, 2000));
+        _fileStarted = !(await onSelectScreen());
+      }
+      logFn(`[Puppet] Upload started (left select-files screen) after attempt ${attempt}: ${_fileStarted}`);
     }
+    if (!_fileStarted) {
+      logFn('[Puppet] WARNING: file did not start uploading (still on select-files screen after 3 attempts).');
+    }
+
     logFn('[Puppet] Video file submitted, waiting for upload details to load...');
     onProgress(10, 'Uploading video…');
 

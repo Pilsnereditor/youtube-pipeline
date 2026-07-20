@@ -787,7 +787,10 @@ router.post('/bulk', async (req, res) => {
               postTitle = titleRow.text;
               run('UPDATE titles SET used = 1 WHERE id = @id', { id: titleRow.id });
             } else {
-              postTitle = video.original_filename.replace(/\.[^/.]+$/, "");
+              const fnameTitle = video.original_filename.replace(/\.[^/.]+$/, '').trim();
+              // Never upload a purely-numeric/timestamp filename as the title (that is the "title shows
+              // only numbers" bug). Fall back to the channel niche/name instead.
+              postTitle = /^[\d\s._-]+$/.test(fnameTitle) ? (channel.niche || channel.name || 'New Video') : fnameTitle;
             }
           }
 

@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { queryOne, run } from '../db/database.js';
+import { queryOne, queryAll, run } from '../db/database.js';
 import { listStudioDraftsBrowser, listAllStudioVideosBrowser, scheduleStudioDraftBrowser, rescheduleVideoBrowser, withChannelLock } from '../services/puppet.js';
 
 const router = Router();
@@ -122,17 +122,40 @@ router.post('/:channelId/import', async (req, res) => {
   }
   try {
     const videos = await withChannelLock(channelId, () => listAllStudioVideosBrowser(channelId));
-    let imported = 0, skipped = 0;
-    for (const v of (Array.isArray(videos) ? videos : [])) {
+    const list = Array.isArray(videos) ? videos : [];
+
+    // Load existing records once, so we can (a) fix stuck error/pending records that actually went
+    // live, and (b) link failed attempts that never captured a video id — not just import missing ones.
+    const existing = queryAll('SELECT id, status, youtube_video_id AS yt, title FROM scheduled_posts WHERE channel_id = @channelId', { channelId });
+    const norm = (x) => (x || '').replace(/\s+/g, ' ').trim().toLowerCase();
+    const byVid = new Map();
+    for (const r of existing) { if (r.yt) byVid.set(r.yt, r); }
+
+    let imported = 0, fixed = 0, linked = 0, skipped = 0;
+    for (const v of list) {
       if (!v.videoId) continue;
-      const existing = queryOne(
-        'SELECT id FROM scheduled_posts WHERE channel_id = @channelId AND youtube_video_id = @vid',
-        { channelId, vid: v.videoId }
-      );
-      if (existing) { skipped++; continue; }
       let scheduledAt = null;
       if (v.dateText) { const d = new Date(v.dateText); if (!isNaN(d.getTime())) scheduledAt = d.toISOString().slice(0, 19); }
       if (!scheduledAt) scheduledAt = new Date().toISOString().slice(0, 19);
+
+      // 1) Already linked by video id -> ensure it is marked complete (fixes "not published" stuck records).
+      const rec = byVid.get(v.videoId);
+      if (rec) {
+        if (rec.status !== 'complete') {
+          run("UPDATE scheduled_posts SET status='complete', error_message=NULL, next_retry_at=NULL WHERE id=@id", { id: rec.id });
+          fixed++;
+        } else { skipped++; }
+        continue;
+      }
+      // 2) A record with the SAME title but no video id (a failed attempt) -> link it + mark complete.
+      const match = v.title ? existing.find(r => !r.yt && norm(r.title) === norm(v.title)) : null;
+      if (match) {
+        run("UPDATE scheduled_posts SET youtube_video_id=@vid, status='complete', error_message=NULL, next_retry_at=NULL WHERE id=@id", { id: match.id, vid: v.videoId });
+        match.yt = v.videoId;   // prevent re-matching another live video to the same record
+        linked++;
+        continue;
+      }
+      // 3) Not tracked at all -> create a complete record.
       run(
         `INSERT INTO scheduled_posts
            (user_id, channel_id, youtube_video_id, title, scheduled_at, is_premiere, status, comment_status)
@@ -141,7 +164,7 @@ router.post('/:channelId/import', async (req, res) => {
       );
       imported++;
     }
-    res.json({ ok: true, imported, skipped, total: (Array.isArray(videos) ? videos.length : 0) });
+    res.json({ ok: true, imported, fixed, linked, skipped, total: list.length });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

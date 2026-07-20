@@ -467,7 +467,7 @@ async function syncStudioVideos(btn) {
     const res = await fetch(`${API_BASE}/studio/${channelId}/import`, { method: 'POST' });
     if (!res.ok) throw new Error(await res.text());
     const out = await res.json();
-    showToast(`Sync complete: ${out.imported} imported, ${out.skipped} already tracked (of ${out.total} on YouTube).`, 'success');
+    showToast(`Sync: ${out.imported} imported, ${out.fixed||0} fixed, ${out.linked||0} linked, ${out.skipped} already OK (of ${out.total} on YouTube).`, 'success');
     if (typeof loadScheduledPosts === 'function') { await loadScheduledPosts(); }
     if (typeof renderScheduleCalendar === 'function') { renderScheduleCalendar(); }
     loadStudioDrafts();

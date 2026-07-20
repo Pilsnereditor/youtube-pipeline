@@ -1,7 +1,7 @@
 import cron from 'node-cron';
 import { queryAll, queryOne, run, insert } from '../db/database.js';
 import { uploadVideo, setThumbnail, addComment, syncChannelWithYouTube } from './youtube.js';
-import { uploadVideoBrowser, rescheduleVideoBrowser, scheduleStudioDraftBrowser, postCommentBrowser, syncChannelWithYouTubeBrowser, withChannelLock } from './puppet.js';
+import { uploadVideoBrowser, rescheduleVideoBrowser, scheduleStudioDraftBrowser, updateThumbnailBrowser, postCommentBrowser, syncChannelWithYouTubeBrowser, withChannelLock } from './puppet.js';
 import { runWeeklyCleanup } from './videoCleanup.js';
 
 let broadcastFn = null;
@@ -426,7 +426,15 @@ export async function processPost(post) {
           notify(`Thumbnail error for ${videoId}: ${err.message}`);
         }
       } else {
-        notify(`Thumbnail was uploaded during browser upload flow for video ${videoId}`);
+        // Browser mode: apply the thumbnail on the EDIT PAGE (reliable), instead of relying only on the
+        // upload dialog's brief 5s attempt, which is silently skipped on slow proxies. Same edit-page
+        // pattern as the schedule fix.
+        try {
+          await withChannelLock(post.channel_id, () => updateThumbnailBrowser(post.channel_id, videoId, thumbnailPath));
+          notify(`Thumbnail applied on the edit page for video ${videoId}`);
+        } catch (err) {
+          notify(`Thumbnail (edit page) failed for ${videoId}: ${err.message}`);
+        }
       }
       // Mark thumbnail as used
       if (post.thumbnail_id) {

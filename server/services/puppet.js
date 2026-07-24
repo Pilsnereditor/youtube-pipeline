@@ -3813,6 +3813,30 @@ export async function scheduleStudioDraftBrowser(channelId, videoId, scheduledAt
     if (!dialogReady) throw new Error('The Edit draft dialog did not open (slow proxy, or the draft is not editable).');
     await new Promise(r => setTimeout(r, 2500));
 
+    // Make sure "Made for kids" is set to No so the wizard isn't blocked on step 1.
+    try {
+      await page.evaluate(() => {
+        function deep(sel, root = document, out = []) {
+          out.push(...root.querySelectorAll(sel));
+          for (const el of root.querySelectorAll('*')) if (el.shadowRoot) deep(sel, el.shadowRoot, out);
+          return out;
+        }
+        const vis = el => el && el.offsetParent !== null;
+        const radios = deep('tp-yt-paper-radio-button, [role="radio"]').filter(vis);
+        const notForKids = radios.find(el => {
+          const text = (el.textContent || '').toLowerCase();
+          return text.includes('not made for kids') || text.includes('çocuklara özel değil') || (el.getAttribute('name') === 'VIDEO_MADE_FOR_KIDS_NOT_FOR_KIDS');
+        });
+        if (notForKids) {
+          const isChecked = notForKids.checked || notForKids.hasAttribute('checked') || notForKids.getAttribute('aria-checked') === 'true';
+          if (!isChecked) notForKids.click();
+        }
+      });
+      await new Promise(r => setTimeout(r, 800));
+    } catch (e) {
+      logFn(`[Puppet Draft] Warning during audience selection check: ${e.message}`);
+    }
+
     // Details -> Video elements -> Checks -> Visibility (mirror upload flow: up to 3 Next).
     for (let i = 1; i <= 3; i++) {
       const nb = await page.waitForSelector('#next-button', { timeout: 15000 }).catch(() => null);
@@ -3828,12 +3852,29 @@ export async function scheduleStudioDraftBrowser(channelId, videoId, scheduledAt
     await new Promise(r => setTimeout(r, 800));
 
     if (opts.isPremiere) {
-      logFn('[Puppet Draft] Setting premiere...');
-      await togglePremiere(page, true, logFn);
-      await new Promise(r => setTimeout(r, 1000));
-      if (!scheduleIsIntact(await readScheduleValues(page), opts).ok) {
-        await reapplyDateTime(page, opts, logFn);
-        await new Promise(r => setTimeout(r, 800));
+      // Premiere is optional here. In the Edit-draft dialog, toggling it can WIPE the schedule step
+      // (observed: picker + button vanish -> "Could not find the Schedule button"). So attempt it only
+      // while the schedule is armed, and if it breaks the step, recover (Escape the premiere modal +
+      // untick) and schedule the video as a normal scheduled video rather than failing outright.
+      if (/schedule/i.test(await getPrimaryButtonId(page) || '')) {
+        logFn('[Puppet Draft] Attempting premiere...');
+        await togglePremiere(page, true, logFn).catch(() => {});
+        await new Promise(r => setTimeout(r, 1200));
+        if (!/schedule/i.test(await getPrimaryButtonId(page) || '')) {
+          logFn('[Puppet Draft] Premiere broke the schedule step - recovering (Escape + untick); will schedule WITHOUT premiere.');
+          await page.keyboard.press('Escape').catch(() => {});
+          await new Promise(r => setTimeout(r, 700));
+          await togglePremiere(page, false, logFn).catch(() => {});
+          await new Promise(r => setTimeout(r, 700));
+          if (!/schedule/i.test(await getPrimaryButtonId(page) || '')) {
+            await activateScheduleMode(page, logFn);
+            await reapplyDateTime(page, opts, logFn);
+            await new Promise(r => setTimeout(r, 700));
+          }
+        } else if (!scheduleIsIntact(await readScheduleValues(page), opts).ok) {
+          await reapplyDateTime(page, opts, logFn);
+          await new Promise(r => setTimeout(r, 700));
+        }
       }
     }
 
@@ -3846,7 +3887,23 @@ export async function scheduleStudioDraftBrowser(channelId, videoId, scheduledAt
       if (primaryBtn) { await primaryBtn.dispose(); }
       ({ handle: primaryBtn, id: primaryId } = await getPrimaryButtonHandle(page));
     }
-    if (!primaryBtn) throw new Error('Could not find the Schedule button in the draft dialog.');
+    if (!primaryBtn) {
+      // Dump the dialog state so we can see WHERE it stopped (wrong step? processing screen? different
+      // commit button id?) instead of guessing.
+      try {
+        const dump = await page.evaluate(() => {
+          function deep(sel, root = document, out = []) { out.push(...root.querySelectorAll(sel)); for (const el of root.querySelectorAll('*')) if (el.shadowRoot) deep(sel, el.shadowRoot, out); return out; }
+          const vis = el => el && el.offsetParent !== null;
+          const desc = el => `${el.tagName.toLowerCase()}${el.id ? '#' + el.id : ''} "${(el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 28)}"`;
+          const buttons = deep('ytcp-button, button').filter(el => vis(el) && el.id).map(desc).slice(0, 16);
+          const steps = deep('[id^="step-badge"]').map(el => `${el.id}${el.getAttribute('aria-selected') === 'true' ? '(active)' : ''}`);
+          const dlg = deep('ytcp-uploads-dialog')[0];
+          return { buttons, steps, dialogVisible: vis(dlg), dialogText: dlg ? (dlg.innerText || dlg.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 200) : '(no uploads dialog)' };
+        });
+        logFn(`[Puppet Draft] BUTTON-MISSING DUMP: ${JSON.stringify(dump)}`);
+      } catch (e) { logFn(`[Puppet Draft] button-missing dump failed: ${e.message}`); }
+      throw new Error('Could not find the Schedule button in the draft dialog.');
+    }
     if (!/schedule/i.test(primaryId || '')) {
       throw new Error(`Draft would not enter Schedule mode (button stayed "${primaryId}") - not committing, to avoid publishing immediately.`);
     }

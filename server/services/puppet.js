@@ -3851,31 +3851,13 @@ export async function scheduleStudioDraftBrowser(channelId, videoId, scheduledAt
     await reapplyDateTime(page, opts, logFn);
     await new Promise(r => setTimeout(r, 800));
 
+    // NOTE: premiere is intentionally NOT toggled in this draft-recovery path. In the Edit-draft dialog
+    // toggling premiere collapses the schedule step (picker + commit button vanish -> "Could not find
+    // the Schedule button"), and recovery is unreliable. This path exists to RELIABLY schedule a video
+    // that got stuck as a draft, so we schedule it as a normal scheduled video (it still goes live at
+    // the chosen time). Premieres should be set at upload time via the edit-page enforce path.
     if (opts.isPremiere) {
-      // Premiere is optional here. In the Edit-draft dialog, toggling it can WIPE the schedule step
-      // (observed: picker + button vanish -> "Could not find the Schedule button"). So attempt it only
-      // while the schedule is armed, and if it breaks the step, recover (Escape the premiere modal +
-      // untick) and schedule the video as a normal scheduled video rather than failing outright.
-      if (/schedule/i.test(await getPrimaryButtonId(page) || '')) {
-        logFn('[Puppet Draft] Attempting premiere...');
-        await togglePremiere(page, true, logFn).catch(() => {});
-        await new Promise(r => setTimeout(r, 1200));
-        if (!/schedule/i.test(await getPrimaryButtonId(page) || '')) {
-          logFn('[Puppet Draft] Premiere broke the schedule step - recovering (Escape + untick); will schedule WITHOUT premiere.');
-          await page.keyboard.press('Escape').catch(() => {});
-          await new Promise(r => setTimeout(r, 700));
-          await togglePremiere(page, false, logFn).catch(() => {});
-          await new Promise(r => setTimeout(r, 700));
-          if (!/schedule/i.test(await getPrimaryButtonId(page) || '')) {
-            await activateScheduleMode(page, logFn);
-            await reapplyDateTime(page, opts, logFn);
-            await new Promise(r => setTimeout(r, 700));
-          }
-        } else if (!scheduleIsIntact(await readScheduleValues(page), opts).ok) {
-          await reapplyDateTime(page, opts, logFn);
-          await new Promise(r => setTimeout(r, 700));
-        }
-      }
+      logFn('[Puppet Draft] Scheduling as a normal scheduled video (premiere is skipped here to keep draft scheduling reliable).');
     }
 
     let { handle: primaryBtn, id: primaryId } = await getPrimaryButtonHandle(page);

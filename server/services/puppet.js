@@ -1187,8 +1187,10 @@ async function reapplyDateTime(page, opts, logFn = console.log) {
     await page.keyboard.press('Backspace');
     for (let i = 0; i < 25; i++) await page.keyboard.press('Backspace');
     await page.keyboard.type(targetDateStr, { delay: 50 });
-    await page.keyboard.press('Enter'); await new Promise(r => setTimeout(r, 400));
-    await page.keyboard.press('Escape'); await new Promise(r => setTimeout(r, 400));
+    await page.keyboard.press('Enter'); await new Promise(r => setTimeout(r, 600));
+    // NO Escape here: in the Edit-draft dialog, Escape closes the WHOLE dialog (not just the calendar
+    // popup), which wiped the schedule step -> "Could not find the Schedule button". Enter confirms the
+    // value; focusing the next field closes the popup naturally.
     logFn(`[Puppet] Re-applied date: "${targetDateStr}"`);
   }
   const tInit = await page.evaluate(() => {
@@ -1208,8 +1210,10 @@ async function reapplyDateTime(page, opts, logFn = console.log) {
     await page.keyboard.press('Backspace');
     for (let i = 0; i < 25; i++) await page.keyboard.press('Backspace');
     await page.keyboard.type(targetTimeStr, { delay: 50 });
-    await page.keyboard.press('Enter'); await new Promise(r => setTimeout(r, 400));
-    await page.keyboard.press('Escape'); await new Promise(r => setTimeout(r, 400));
+    await page.keyboard.press('Enter'); await new Promise(r => setTimeout(r, 600));
+    // NO Escape here: in the Edit-draft dialog, Escape closes the WHOLE dialog (not just the calendar
+    // popup), which wiped the schedule step -> "Could not find the Schedule button". Enter confirms the
+    // value; focusing the next field closes the popup naturally.
     logFn(`[Puppet] Re-applied time: "${targetTimeStr}"`);
   }
 }

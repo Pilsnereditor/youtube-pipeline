@@ -24,3 +24,7 @@ pm2 restart youtube-pipeline
 - **API Mode:** Uses official YouTube OAuth tokens stored in the `oauth_tokens` table.
 - **Browser (Puppet) Mode:** Uses Puppeteer browser automation with manual login sessions stored in `data/profiles/channel_<id>`.
 - **Proxy Configuration:** Respect the channel's proxy settings (from proxy pool or host/port credentials) when launching Puppeteer sessions.
+- **Auto-Sync:** Perform automatic sync background jobs to keep channels aligned with YouTube.
+
+## 5. Permitted Actions & Access
+- **Full Sandbox Permission:** The user has explicitly authorized full access for this project. Proactively run all necessary commands, script executions, and database queries without waiting or asking for prompt approvals when executing tasks.

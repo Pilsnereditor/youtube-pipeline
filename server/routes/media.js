@@ -28,6 +28,14 @@ function decodeFilename(filename) {
   }
 }
 
+function sanitizeFilenameTitle(filename, niche, channelName) {
+  const base = filename.replace(/\.[^/.]+$/, '').trim();
+  if (/^[\d\s._-]+$/.test(base)) {
+    return niche || channelName || 'New Video';
+  }
+  return base;
+}
+
 
 // ---------------------------------------------------------------------------
 // Upload directories
@@ -180,10 +188,12 @@ Return ONLY a JSON object with these keys:
 async function generateMetadataForVideoAsync(videoId, channelId, userId, videoFilePath = null) {
   try {
     let niche = 'General';
+    let channelName = '';
     if (channelId) {
       const channel = queryOne('SELECT name, niche, description FROM channels WHERE id = @channelId', { channelId });
       if (channel) {
         niche = channel.niche || channel.description || channel.name || 'General';
+        channelName = channel.name || '';
       }
     }
 
@@ -194,8 +204,8 @@ async function generateMetadataForVideoAsync(videoId, channelId, userId, videoFi
     const { gameName, videoTitle } = parseGameAndTitle(video.original_filename);
     if (gameName) console.log(`[Metadata Gen] Game detected: "${gameName}" | Title hint: "${videoTitle}"`);
 
-    // Use the original filename (without extension) as the title — no AI title generation
-    const filenameTitle = video.original_filename.replace(/\.[^/.]+$/, '').slice(0, 99);
+    // Use sanitized filename or videoTitle, falling back to niche/channel if purely numeric
+    const filenameTitle = sanitizeFilenameTitle(videoTitle || video.original_filename, niche, channelName).slice(0, 99);
     
     // Still generate description and tags via AI
     let metadata = null;
@@ -254,7 +264,7 @@ async function generateMetadataForVideoAsync(videoId, channelId, userId, videoFi
       const video = queryOne('SELECT original_filename FROM videos WHERE id = @videoId', { videoId });
       if (video) {
         const { gameName: fbGame, videoTitle: fbTitle } = parseGameAndTitle(video.original_filename);
-        const fallbackTitle = (fbTitle || video.original_filename.replace(/\.[^/.]+$/, '')).slice(0, 99);
+        const fallbackTitle = sanitizeFilenameTitle(fbTitle || video.original_filename, niche, channelName).slice(0, 99);
         run(
           `UPDATE videos SET title = @title, description = @description, tags = @tags WHERE id = @videoId`,
           {

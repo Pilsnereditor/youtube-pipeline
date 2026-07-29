@@ -450,7 +450,9 @@ export async function launchVncSession(profileName = 'yt_setup_new', userId = nu
       '--start-maximized',
       '--no-sandbox',
       '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
       '--disable-gpu',
+      '--disable-software-rasterizer',
       '--password-store=basic',
       '--use-mock-keychain'
     ];

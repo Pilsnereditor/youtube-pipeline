@@ -2542,7 +2542,10 @@ export async function rescheduleVideoBrowser(channelId, youtubeVideoId, schedule
           await page.keyboard.type(targetDateStr, { delay: 50 });
           await page.keyboard.press('Enter');
           await new Promise(r => setTimeout(r, 500));
-          await page.keyboard.press('Escape');
+          // NO Escape here: in the visibility popup, Escape closes/reverts the entire popup
+          // (same root cause as the draft dialog crash). Enter commits the value; Tab moves
+          // focus, which naturally closes the calendar dropdown.
+          await page.keyboard.press('Tab');
           await new Promise(r => setTimeout(r, 500));
 
           // Read final value for verification/logging
@@ -2725,11 +2728,138 @@ export async function rescheduleVideoBrowser(channelId, youtubeVideoId, schedule
       }
       await new Promise(r => setTimeout(r, 800));
 
+      // ── Premiere toggle with full re-verification (mirrors upload flow at lines 1843-1904) ──
+      // Toggling premiere can re-render the schedule section, wiping the date/time picker and
+      // flipping the commit button from "Schedule" to "Done" — which saves as Private/Draft.
+      // The upload flow already had recovery for this; the edit-page enforce path didn't, which
+      // was the root cause of videos staying Private instead of scheduled as premieres.
       logFn(`[Puppet] Toggling "Set as Premiere" to ${isPremiere} (trusted click)...`);
       try {
-        logFn(`[Puppet] Premiere checkbox status: ${await togglePremiere(page, !!isPremiere, logFn)}`);
+        const tick = await togglePremiere(page, !!isPremiere, logFn);
+        logFn(`[Puppet] Premiere checkbox status: ${tick}`);
+        await new Promise(r => setTimeout(r, 1200));
+
+        if (isPremiere) {
+          // Re-verify the schedule survived the premiere toggle.
+          // Check that the datepicker is still visible and date/time haven't been reset.
+          const postPremiereState = await page.evaluate(() => {
+            function queryAllShadow(selector, root = document) {
+              const elements = Array.from(root.querySelectorAll(selector));
+              const children = Array.from(root.querySelectorAll('*'));
+              for (const child of children) {
+                if (child.shadowRoot) {
+                  elements.push(...queryAllShadow(selector, child.shadowRoot));
+                }
+              }
+              return elements;
+            }
+            const popup = queryAllShadow('ytcp-video-visibility-edit-popup')[0];
+            if (!popup) return { popupGone: true };
+            const picker = queryAllShadow('#datepicker-trigger, ytcp-datetime-picker, ytcp-date-picker', popup)[0];
+            const pickerVisible = picker && picker.offsetParent !== null;
+            const dateInput = queryAllShadow('#datepicker-trigger input, ytcp-date-picker input', popup)[0];
+            const timeInputs = queryAllShadow('input', popup).filter(i => /\d{1,2}:\d{2}/.test(i.value || ''));
+            const doneBtn = queryAllShadow('#save-button, #done-button, #schedule-button', popup).find(el => el && el.offsetParent !== null);
+            return {
+              popupGone: false,
+              pickerVisible,
+              dateValue: dateInput ? dateInput.value : '',
+              timeValue: timeInputs.length ? timeInputs[0].value : '',
+              buttonId: doneBtn ? doneBtn.id : '',
+              bodySnippet: (popup.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 120)
+            };
+          });
+          logFn(`[Puppet] Post-premiere state: ${JSON.stringify(postPremiereState)}`);
+
+          if (postPremiereState.popupGone || !postPremiereState.pickerVisible) {
+            // Premiere toggle COLLAPSED the schedule section. This is the exact bug scenario.
+            logFn('[Puppet] WARNING: Premiere toggle collapsed the schedule section — the date picker vanished.');
+            logFn('[Puppet] Reverting premiere to preserve the schedule (video will be scheduled non-premiere).');
+            const revert = await togglePremiere(page, false, logFn);
+            logFn(`[Puppet] Premiere revert status: ${revert}`);
+            await new Promise(r => setTimeout(r, 1000));
+
+            // If the popup itself closed, we need to re-open visibility, re-activate schedule mode.
+            if (postPremiereState.popupGone) {
+              logFn('[Puppet] Re-opening visibility popup after premiere revert...');
+              const visHost = await page.waitForSelector('ytcp-video-metadata-visibility', { timeout: 10000 }).catch(() => null);
+              if (visHost) {
+                await page.evaluate(() => {
+                  const host = document.querySelector('ytcp-video-metadata-visibility');
+                  if (host) { host.scrollIntoView({ block: 'center' }); host.click(); }
+                });
+                await new Promise(r => setTimeout(r, 1500));
+                await page.waitForSelector('ytcp-video-visibility-edit-popup', { timeout: 10000 }).catch(() => null);
+              }
+            }
+          } else {
+            // Picker is still visible — verify the date/time values weren't reset.
+            // If they look empty or defaulted, re-enter them.
+            const dateOk = postPremiereState.dateValue && postPremiereState.dateValue.length > 3;
+            const timeOk = postPremiereState.timeValue && postPremiereState.timeValue.length > 2;
+            if (!dateOk || !timeOk) {
+              logFn(`[Puppet] Schedule values look reset after premiere (date="${postPremiereState.dateValue}" time="${postPremiereState.timeValue}") — re-entering.`);
+              // Re-enter date
+              const dateInput2 = await page.evaluate(() => {
+                function queryAllShadow(selector, root = document) {
+                  const elements = Array.from(root.querySelectorAll(selector));
+                  for (const child of root.querySelectorAll('*')) { if (child.shadowRoot) elements.push(...queryAllShadow(selector, child.shadowRoot)); }
+                  return elements;
+                }
+                const inp = queryAllShadow('#datepicker-trigger input, ytcp-date-picker input')[0];
+                if (inp) { inp.click(); inp.focus(); return inp.value || ''; }
+                return null;
+              });
+              if (dateInput2 !== null) {
+                const targetDate = formatDateLikeInitial(dateInput2, scheduledAt);
+                await page.keyboard.down('Control'); await page.keyboard.press('A'); await page.keyboard.up('Control');
+                await page.keyboard.press('Backspace');
+                for (let i = 0; i < 25; i++) await page.keyboard.press('Backspace');
+                await page.keyboard.type(targetDate, { delay: 50 });
+                await page.keyboard.press('Enter');
+                await new Promise(r => setTimeout(r, 500));
+                await page.keyboard.press('Tab');
+                await new Promise(r => setTimeout(r, 500));
+                logFn(`[Puppet] Re-applied date after premiere: "${targetDate}"`);
+              }
+              // Re-enter time
+              const timeInput2 = await page.evaluate(() => {
+                function queryAllShadow(selector, root = document) {
+                  const elements = Array.from(root.querySelectorAll(selector));
+                  for (const child of root.querySelectorAll('*')) { if (child.shadowRoot) elements.push(...queryAllShadow(selector, child.shadowRoot)); }
+                  return elements;
+                }
+                const inputs = queryAllShadow('input');
+                const t = inputs.find(i => /\d{1,2}:\d{2}/.test(i.value || ''));
+                if (t) { t.click(); t.focus(); return t.value || ''; }
+                return null;
+              });
+              if (timeInput2 !== null) {
+                const targetTime = formatTimeLikeInitial(timeInput2, scheduledAt);
+                await page.keyboard.down('Control'); await page.keyboard.press('A'); await page.keyboard.up('Control');
+                await page.keyboard.press('Backspace');
+                for (let i = 0; i < 25; i++) await page.keyboard.press('Backspace');
+                await page.keyboard.type(targetTime, { delay: 50 });
+                await new Promise(r => setTimeout(r, 700));
+                // Try to pick from dropdown
+                const norm = (s) => (s || '').replace(/\s+/g, '').toLowerCase();
+                const picked = await page.evaluate((target) => {
+                  function queryAllShadow(s, r = document) { const e = [...r.querySelectorAll(s)]; for (const c of r.querySelectorAll('*')) { if (c.shadowRoot) e.push(...queryAllShadow(s, c.shadowRoot)); } return e; }
+                  const n = (s) => (s || '').replace(/\s+/g, '').toLowerCase();
+                  const opts = queryAllShadow('tp-yt-paper-item, [role="option"]').filter(o => o.offsetParent !== null);
+                  let m = opts.find(o => n(o.textContent) === n(target)) || opts.find(o => n(o.textContent).includes(n(target)));
+                  if (m) { m.scrollIntoView({ block: 'center' }); m.click(); return 'clicked'; }
+                  return 'no-option';
+                }, targetTime);
+                if (picked === 'no-option') await page.keyboard.press('Enter');
+                await new Promise(r => setTimeout(r, 600));
+                logFn(`[Puppet] Re-applied time after premiere: "${targetTime}" (pick=${picked})`);
+              }
+            }
+          }
+        }
       } catch (e) {
-        logFn(`[Puppet] Warning: failed to toggle premiere checkbox: ${e.message}`);
+        logFn(`[Puppet] Warning: premiere handling error: ${e.message}`);
       }
       await new Promise(r => setTimeout(r, 800));
 

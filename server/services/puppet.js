@@ -932,13 +932,39 @@ async function setEditableText(page, elementHandle, text, logFn = console.log) {
 // button to "Done" (root cause of scheduled=false on premieres).
 async function findPremiereCheckboxHandle(page) {
   const handle = await page.evaluateHandle(() => {
-    const nodes = Array.from(document.querySelectorAll(
-      'ytcp-checkbox, tp-yt-paper-checkbox, paper-checkbox, ytcp-checkbox-group ytcp-checkbox, ytcp-checkbox-lit'
-    ));
-    return nodes.find(el => {
-      const t = (el.textContent || '').trim().toLowerCase();
-      return t.includes('premiere') || t.includes('gösterim') || t.includes('gosterim');
-    }) || null;
+    function deep(sel, root = document, out = []) {
+      out.push(...root.querySelectorAll(sel));
+      for (const el of root.querySelectorAll('*')) if (el.shadowRoot) deep(sel, el.shadowRoot, out);
+      return out;
+    }
+    const selectors = 'ytcp-checkbox, tp-yt-paper-checkbox, paper-checkbox, ytcp-checkbox-group ytcp-checkbox, ytcp-checkbox-lit, [role="checkbox"], ytcp-checkbox-test';
+    const nodes = deep(selectors).filter(el => el && el.offsetParent !== null);
+    
+    // Find node with text containing "premiere" / "gösterim" / "premiyer"
+    let match = nodes.find(el => {
+      const t = (el.textContent || el.innerText || el.getAttribute('aria-label') || '').trim().toLowerCase();
+      return t.includes('premiere') || t.includes('gösterim') || t.includes('gosterim') || t.includes('premiyer');
+    });
+
+    // If not found directly, look for any element containing premiere text and find its closest checkbox
+    if (!match) {
+      const textNodes = deep('*').filter(el => {
+        const t = (el.textContent || '').trim().toLowerCase();
+        return el.children.length === 0 && (t.includes('premiere') || t.includes('gösterim') || t.includes('gosterim') || t.includes('premiyer'));
+      });
+      for (const tn of textNodes) {
+        let p = tn.parentElement;
+        while (p) {
+          if (p.tagName && (p.tagName.toLowerCase().includes('checkbox') || p.getAttribute('role') === 'checkbox')) {
+            match = p;
+            break;
+          }
+          p = p.parentElement;
+        }
+        if (match) break;
+      }
+    }
+    return match || null;
   });
   const el = handle.asElement();
   if (!el) { await handle.dispose(); return null; }
@@ -947,10 +973,19 @@ async function findPremiereCheckboxHandle(page) {
 
 async function isPremiereChecked(page, handle) {
   if (!handle) return false;
-  return await page.evaluate(
-    cb => !!(cb && (cb.checked || cb.hasAttribute('checked') || cb.getAttribute('aria-checked') === 'true')),
-    handle
-  );
+  return await page.evaluate(cb => {
+    if (!cb) return false;
+    if (cb.checked || cb.hasAttribute('checked') || cb.getAttribute('aria-checked') === 'true' || cb.getAttribute('checked') === 'true') {
+      return true;
+    }
+    if (cb.shadowRoot) {
+      const inner = cb.shadowRoot.querySelector('#checkbox, [role="checkbox"], .checkbox-container');
+      if (inner && (inner.classList.contains('checked') || inner.hasAttribute('checked') || inner.getAttribute('aria-checked') === 'true')) {
+        return true;
+      }
+    }
+    return false;
+  }, handle);
 }
 
 async function togglePremiere(page, desired, logFn = console.log) {

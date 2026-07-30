@@ -903,33 +903,95 @@ async function safeClick(page, elementHandle, opts = {}) {
 // emoji, and can stop early — which truncated titles like "…KASA KAT". Falls back to keyboard
 // typing only if insertText fails, so worst case is no worse than before.
 async function setEditableText(page, elementHandle, text, logFn = console.log) {
+  if (!elementHandle) {
+    logFn('[Puppet] Warning: setEditableText received null elementHandle.');
+    return false;
+  }
   try {
-    await safeClick(page, elementHandle, { scroll: true, focus: true });
-    await new Promise(r => setTimeout(r, 120));
-    const ok = await page.evaluate((el, value) => {
+    const success = await page.evaluate((el, value) => {
       if (!el) return false;
+      el.scrollIntoView({ block: 'center', inline: 'nearest' });
       el.focus();
-      try { document.execCommand('selectAll', false, null); } catch (e) {}
-      return document.execCommand('insertText', false, value);
+      
+      // Select all content inside contenteditable to erase default filename
+      const selection = window.getSelection();
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      selection.removeAllRanges();
+      selection.addRange(range);
+      
+      let inserted = false;
+      try {
+        inserted = document.execCommand('insertText', false, value);
+      } catch (e) {}
+
+      if (!inserted || (el.innerText || el.textContent || '').trim() !== value.trim()) {
+        // Fallback: set innerText directly and dispatch input, change, value-changed events
+        el.innerText = value;
+        el.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+        el.dispatchEvent(new CustomEvent('value-changed', { bubbles: true, composed: true, detail: { value } }));
+      }
+      return (el.innerText || el.textContent || '').trim() === value.trim();
     }, elementHandle, text || '');
-    if (ok) { await new Promise(r => setTimeout(r, 300)); return; }
+
+    if (success) {
+      logFn(`[Puppet] Successfully set editable text: "${(text || '').slice(0, 40)}"`);
+      await new Promise(r => setTimeout(r, 300));
+      return true;
+    }
   } catch (e) {
     logFn(`[Puppet] setEditableText insertText failed (${e.message}); falling back to keyboard typing.`);
   }
-  // Fallback: clear + keyboard type
-  await safeClick(page, elementHandle, { scroll: true, focus: true });
-  await page.keyboard.down('Control');
-  await page.keyboard.press('A');
-  await page.keyboard.up('Control');
-  await page.keyboard.press('Backspace');
-  await page.keyboard.type(text || '');
-  await new Promise(r => setTimeout(r, 300));
+
+  // Fallback: clear + CDP keyboard typing
+  try {
+    await safeClick(page, elementHandle, { scroll: true, focus: true });
+    await page.keyboard.down('Control');
+    await page.keyboard.press('A');
+    await page.keyboard.up('Control');
+    await page.keyboard.press('Backspace');
+    for (let i = 0; i < 15; i++) await page.keyboard.press('Backspace');
+    await page.keyboard.type(text || '', { delay: 20 });
+    await new Promise(r => setTimeout(r, 300));
+    return true;
+  } catch (e) {
+    logFn(`[Puppet] setEditableText keyboard fallback failed: ${e.message}`);
+    return false;
+  }
+}
+
+async function getTitleInputHandle(page) {
+  const jsHandle = await page.evaluateHandle(() => {
+    function deep(sel, root = document, out = []) {
+      out.push(...root.querySelectorAll(sel));
+      for (const el of root.querySelectorAll('*')) if (el.shadowRoot) deep(sel, el.shadowRoot, out);
+      return out;
+    }
+    const cands = deep('#title-textarea #textbox, ytcp-social-suggestions-textbox#title-textarea #textbox, ytcp-social-suggestions-textbox #textbox, ytcp-video-title #textbox, #textbox[contenteditable="true"]');
+    return cands.find(el => el && el.offsetParent !== null) || cands[0] || null;
+  });
+  const el = jsHandle.asElement();
+  if (!el) { await jsHandle.dispose(); return null; }
+  return el;
+}
+
+async function getDescriptionInputHandle(page) {
+  const jsHandle = await page.evaluateHandle(() => {
+    function deep(sel, root = document, out = []) {
+      out.push(...root.querySelectorAll(sel));
+      for (const el of root.querySelectorAll('*')) if (el.shadowRoot) deep(sel, el.shadowRoot, out);
+      return out;
+    }
+    const cands = deep('#description-textarea #textbox, ytcp-social-suggestions-textbox#description-textarea #textbox, ytcp-video-description #textbox');
+    return cands.find(el => el && el.offsetParent !== null) || cands[0] || null;
+  });
+  const el = jsHandle.asElement();
+  if (!el) { await jsHandle.dispose(); return null; }
+  return el;
 }
 
 // ── Premiere / schedule helpers (trusted clicks + verify/re-apply) ───────────
-// The premiere checkbox must be clicked with a REAL (trusted) mouse event; an untrusted
-// el.click() inside page.evaluate() left YouTube's premiere half-set and flipped the primary
-// button to "Done" (root cause of scheduled=false on premieres).
 async function findPremiereCheckboxHandle(page) {
   const handle = await page.evaluateHandle(() => {
     function deep(sel, root = document, out = []) {
@@ -937,34 +999,45 @@ async function findPremiereCheckboxHandle(page) {
       for (const el of root.querySelectorAll('*')) if (el.shadowRoot) deep(sel, el.shadowRoot, out);
       return out;
     }
-    const selectors = 'ytcp-checkbox, tp-yt-paper-checkbox, paper-checkbox, ytcp-checkbox-group ytcp-checkbox, ytcp-checkbox-lit, [role="checkbox"], ytcp-checkbox-test';
-    const nodes = deep(selectors).filter(el => el && el.offsetParent !== null);
-    
-    // Find node with text containing "premiere" / "gösterim" / "premiyer"
-    let match = nodes.find(el => {
-      const t = (el.textContent || el.innerText || el.getAttribute('aria-label') || '').trim().toLowerCase();
-      return t.includes('premiere') || t.includes('gösterim') || t.includes('gosterim') || t.includes('premiyer');
-    });
 
-    // If not found directly, look for any element containing premiere text and find its closest checkbox
-    if (!match) {
-      const textNodes = deep('*').filter(el => {
-        const t = (el.textContent || '').trim().toLowerCase();
-        return el.children.length === 0 && (t.includes('premiere') || t.includes('gösterim') || t.includes('gosterim') || t.includes('premiyer'));
-      });
-      for (const tn of textNodes) {
-        let p = tn.parentElement;
-        while (p) {
-          if (p.tagName && (p.tagName.toLowerCase().includes('checkbox') || p.getAttribute('role') === 'checkbox')) {
-            match = p;
-            break;
-          }
-          p = p.parentElement;
-        }
-        if (match) break;
+    // Strategy 1: Explicit ID or test-id
+    const explicit = deep('#premiere-checkbox, [id*="premiere" i], [test-id*="premiere" i]').find(el => el && el.offsetParent !== null);
+    if (explicit) {
+      if (explicit.tagName.toLowerCase().includes('checkbox') || explicit.getAttribute('role') === 'checkbox') return explicit;
+      const cbInside = deep('ytcp-checkbox, tp-yt-paper-checkbox, paper-checkbox, [role="checkbox"]', explicit)[0];
+      if (cbInside) return cbInside;
+    }
+
+    // Strategy 2: Search for text element containing premiere keyword, then find its parent/container checkbox
+    const allElems = deep('*');
+    const matchesKeyword = el => {
+      const t = (el.textContent || el.innerText || el.getAttribute('aria-label') || '').trim().toLowerCase();
+      return (t.includes('premiere') || t.includes('gösterim') || t.includes('gosterim') || t.includes('premiyer')) && el.offsetParent !== null;
+    };
+
+    // First check if any checkbox directly matches keyword
+    const checkboxes = deep('ytcp-checkbox, tp-yt-paper-checkbox, paper-checkbox, ytcp-checkbox-lit, [role="checkbox"]').filter(el => el && el.offsetParent !== null);
+    for (const cb of checkboxes) {
+      const parent = cb.closest ? cb.closest('ytcp-checkbox-lit, ytcp-checkbox-group, ytcp-visibility-scheduler, div, label') : cb.parentElement;
+      if (matchesKeyword(cb) || (parent && matchesKeyword(parent))) {
+        return cb;
       }
     }
-    return match || null;
+
+    // Next check leaf text nodes matching keyword and climb DOM tree up to 6 levels to find checkbox
+    const textNodes = allElems.filter(el => el.children.length === 0 && matchesKeyword(el));
+    for (const tn of textNodes) {
+      let curr = tn;
+      for (let i = 0; i < 6 && curr; i++) {
+        if (curr.tagName && (curr.tagName.toLowerCase().includes('checkbox') || curr.getAttribute('role') === 'checkbox')) {
+          return curr;
+        }
+        const innerCb = deep('ytcp-checkbox, tp-yt-paper-checkbox, paper-checkbox, [role="checkbox"]', curr).find(el => el && el.offsetParent !== null);
+        if (innerCb) return innerCb;
+        curr = curr.parentElement;
+      }
+    }
+    return null;
   });
   const el = handle.asElement();
   if (!el) { await handle.dispose(); return null; }
@@ -978,11 +1051,17 @@ async function isPremiereChecked(page, handle) {
     if (cb.checked || cb.hasAttribute('checked') || cb.getAttribute('aria-checked') === 'true' || cb.getAttribute('checked') === 'true') {
       return true;
     }
+    if (cb.classList && cb.classList.contains('checked')) return true;
     if (cb.shadowRoot) {
-      const inner = cb.shadowRoot.querySelector('#checkbox, [role="checkbox"], .checkbox-container');
-      if (inner && (inner.classList.contains('checked') || inner.hasAttribute('checked') || inner.getAttribute('aria-checked') === 'true')) {
-        return true;
+      const inner = cb.shadowRoot.querySelector('#checkbox, [role="checkbox"], .checkbox-container, #checkboxContainer, .checked, [checked]');
+      if (inner) {
+        if (inner.classList.contains('checked') || inner.hasAttribute('checked') || inner.getAttribute('aria-checked') === 'true' || inner.getAttribute('checked') === 'true') {
+          return true;
+        }
       }
+    }
+    if (cb.parentElement && (cb.parentElement.hasAttribute('checked') || cb.parentElement.getAttribute('aria-checked') === 'true')) {
+      return true;
     }
     return false;
   }, handle);
@@ -992,7 +1071,9 @@ async function togglePremiere(page, desired, logFn = console.log) {
   const handle = await findPremiereCheckboxHandle(page);
   if (!handle) { logFn('[Puppet] Premiere checkbox not found.'); return 'not_found'; }
   try {
-    if (await isPremiereChecked(page, handle) === desired) {
+    const currentlyChecked = await isPremiereChecked(page, handle);
+    logFn(`[Puppet] Premiere checkbox handle resolved. currentlyChecked=${currentlyChecked}, desired=${desired}`);
+    if (currentlyChecked === desired) {
       return 'already_' + (desired ? 'checked' : 'unchecked');
     }
     try {
@@ -1006,7 +1087,7 @@ async function togglePremiere(page, desired, logFn = console.log) {
     if (await isPremiereChecked(page, handle) !== desired) {  // retry via inner clickable node
       try {
         const inner = await handle.evaluateHandle(el =>
-          (el.shadowRoot && el.shadowRoot.querySelector('#checkbox, [role="checkbox"], .checkbox-container'))
+          (el.shadowRoot && el.shadowRoot.querySelector('#checkbox, [role="checkbox"], .checkbox-container, #checkboxContainer'))
           || el.querySelector('#checkbox, [role="checkbox"]') || el);
         const innerEl = inner.asElement();
         if (innerEl) { await innerEl.click().catch(() => {}); }
@@ -1014,12 +1095,19 @@ async function togglePremiere(page, desired, logFn = console.log) {
       } catch (e) {}
       await new Promise(r => setTimeout(r, 700));
     }
-    if (await isPremiereChecked(page, handle) !== desired) {  // last resort: untrusted toggle
-      await handle.evaluate(el => el.click()).catch(() => {});
+    if (await isPremiereChecked(page, handle) !== desired) {  // last resort: synthetic click
+      await handle.evaluate(el => {
+        el.click();
+        if (el.shadowRoot) {
+          const chk = el.shadowRoot.querySelector('#checkbox, [role="checkbox"]');
+          if (chk) chk.click();
+        }
+      }).catch(() => {});
       await new Promise(r => setTimeout(r, 700));
     }
-    return (await isPremiereChecked(page, handle) === desired)
-      ? (desired ? 'checked' : 'unchecked') : 'toggle_failed';
+    const finalChecked = await isPremiereChecked(page, handle);
+    logFn(`[Puppet] Premiere toggle result: checked=${finalChecked} (desired=${desired})`);
+    return finalChecked === desired ? (desired ? 'checked' : 'unchecked') : 'toggle_failed';
   } finally {
     await handle.dispose();
   }
@@ -1461,7 +1549,7 @@ export async function uploadVideoBrowser(channelId, opts, logFn = console.log) {
     let _lastSnap = '';
     let _pollN = 0;
     while (Date.now() < _titleDeadline) {
-      titleInput = await page.$('#title-textarea #textbox');
+      titleInput = await getTitleInputHandle(page);
       if (titleInput) break;
       const _st = await page.evaluate(() => {
         const txt = (document.body.innerText || document.body.textContent || '').replace(/\s+/g, ' ').trim();
@@ -1561,7 +1649,7 @@ export async function uploadVideoBrowser(channelId, opts, logFn = console.log) {
     // optional on YouTube, so if it never shows we log and continue rather than failing the whole upload.
     let descInput = null;
     for (let a = 1; a <= 8 && !descInput; a++) {
-      descInput = await page.$('#description-textarea #textbox');
+      descInput = await getDescriptionInputHandle(page);
       if (!descInput) await new Promise(r => setTimeout(r, 2500));
     }
     if (descInput) {
@@ -2174,8 +2262,13 @@ export async function rescheduleVideoBrowser(channelId, youtubeVideoId, schedule
     // 1. Update Video Title if provided
     if (newTitle) {
       logFn(`[Puppet] Updating video title to: "${newTitle}"`);
-      const titleInput = await page.waitForSelector('#title-textarea #textbox', { timeout: 15000 });
-      await setEditableText(page, titleInput, newTitle, logFn);
+      const titleInput = await getTitleInputHandle(page);
+      if (titleInput) {
+        await setEditableText(page, titleInput, newTitle, logFn);
+        await titleInput.dispose();
+      } else {
+        logFn('[Puppet] Warning: could not locate title input box on edit page.');
+      }
       await new Promise(r => setTimeout(r, 400));
     }
 
